@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useStore } from "@/lib/store"
 import type { AppConfig, ConfigVersion, Station, TimerConfig } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -415,6 +415,18 @@ export default function ConfigPage() {
   const { config, configHistory, saveConfig, restoreConfig, rows, clearRows } = useStore()
   const [local, setLocal] = useState<AppConfig>(() => JSON.parse(JSON.stringify(config)))
   const [showSaveDialog, setShowSaveDialog] = useState(false)
+
+  // Sync local when the store's config is updated externally (e.g. the async
+  // default-config.json auto-load on a fresh install resolves after first render).
+  // Keying on configHistory.length catches the initial load (0→N) without
+  // clobbering edits the user has already started making.
+  const prevHistoryLen = useRef(configHistory.length)
+  useEffect(() => {
+    if (prevHistoryLen.current !== configHistory.length) {
+      prevHistoryLen.current = configHistory.length
+      setLocal(JSON.parse(JSON.stringify(config)))
+    }
+  }, [configHistory.length, config])
 
   const handleSave = (notes: string) => {
     saveConfig(local, notes)
