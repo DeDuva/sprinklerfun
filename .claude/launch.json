@@ -4,8 +4,8 @@
     {
       "name": "sprinkler-app",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "sprinkler-app"],
-      "port": 3001
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
     }
   ]
 }
