@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest"
+import { readFileSync } from "fs"
+import { join } from "path"
 import {
   enrichRows,
   enrichRowsMultiConfig,
@@ -6,9 +8,13 @@ import {
   buildWeeklyRows,
   aggregateForChart,
   computeStationWarnings,
+  activeWindowForDate,
+  windowDateRange,
+  diffConfigs,
+  addDays,
 } from "../analyze"
-import type { AppConfig, ConfigVersion, FlumeRow } from "../types"
-import { DEFAULT_CONFIG } from "../types"
+import type { AppConfig, ConfigWindow, FlumeRow } from "../types"
+import { DEFAULT_CONFIG, normalizeTime, toWindows } from "../types"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -56,6 +62,18 @@ function makeConfig(overrides: Partial<Omit<AppConfig, "timer1" | "timer2">> = {
     gallonsPerUnit: 748,
     costPerUnit: 10.47,
     ...overrides,
+  }
+}
+
+/** Build a ConfigWindow with effectiveFrom = the given date. */
+function win(effectiveFrom: string, config: AppConfig, notes = ""): ConfigWindow {
+  return {
+    id: effectiveFrom,
+    effectiveFrom,
+    notes,
+    config,
+    createdAt: effectiveFrom + "T00:00:00.000Z",
+    updatedAt: effectiveFrom + "T00:00:00.000Z",
   }
 }
 
@@ -209,44 +227,29 @@ describe("enrichRows", () => {
 // ---------------------------------------------------------------------------
 
 describe("enrichRowsMultiConfig", () => {
-  it("uses DEFAULT_CONFIG when history is empty", () => {
+  it("uses DEFAULT_CONFIG when there are no windows", () => {
     const rows = sprinklerDayRows("2024-01-01")
     const enriched = enrichRowsMultiConfig(rows, [])
     expect(enriched.length).toBe(rows.length)
   })
 
-  it("uses the saved config after its savedAt date", () => {
+  it("uses a window's config from its effectiveFrom date onward", () => {
     const customConfig = makeConfig({ sprinklerOnThreshold: 50 })
-    const history: ConfigVersion[] = [
-      {
-        id: "v1",
-        savedAt: "2024-01-01T00:00:00.000Z",
-        notes: "test",
-        config: customConfig,
-      },
-    ]
+    const windows = [win("2024-01-01", customConfig, "test")]
     const rows = sprinklerDayRows("2024-01-01")
-    const enriched = enrichRowsMultiConfig(rows, history)
+    const enriched = enrichRowsMultiConfig(rows, windows)
     expect(enriched.some((r) => r.isSprinklerDay)).toBe(true)
   })
 
-  it("uses the oldest saved config for dates before the first saved config", () => {
-    // The oldest saved config is the best proxy for what the system looked like
+  it("uses the earliest window's config for dates before it", () => {
+    // The earliest window is the best proxy for what the system looked like
     // before the user started tracking changes. DEFAULT_CONFIG (generic placeholder)
     // is NOT used — it has wrong timer start times for real installations.
     const customConfig = makeConfig({ sprinklerOnThreshold: 50 })
-    const history: ConfigVersion[] = [
-      {
-        id: "v1",
-        savedAt: "2024-06-01T00:00:00.000Z", // much later than the Jan data
-        notes: "test",
-        config: customConfig,
-      },
-    ]
-    // Jan row predates the config save — oldest config (threshold=50) applies
+    const windows = [win("2024-06-01", customConfig, "test")] // much later than the Jan data
+    // Jan row predates the window — earliest config (threshold=50) applies
     const rows = sprinklerDayRows("2024-01-01")
-    const enriched = enrichRowsMultiConfig(rows, history)
-    // With threshold=50, sprinklerDayRows (high-flow Monday) triggers detection
+    const enriched = enrichRowsMultiConfig(rows, windows)
     expect(enriched.some((r) => r.isSprinklerDay)).toBe(true)
   })
 
@@ -254,35 +257,254 @@ describe("enrichRowsMultiConfig", () => {
     const configA = makeConfig({ sprinklerOnThreshold: 50 })   // low threshold = easy to trigger
     const configB = makeConfig({ sprinklerOnThreshold: 9999 }) // high threshold = never triggers
 
-    const history: ConfigVersion[] = [
-      { id: "v1", savedAt: "2024-01-01T00:00:00.000Z", notes: "A", config: configA },
-      { id: "v2", savedAt: "2024-02-01T00:00:00.000Z", notes: "B", config: configB },
+    const windows = [
+      win("2024-01-01", configA, "A"),
+      win("2024-02-01", configB, "B"),
     ]
 
     const rowsJan = sprinklerDayRows("2024-01-08") // Monday in Jan → configA
     const rowsFeb = sprinklerDayRows("2024-02-05") // Monday in Feb → configB
     const allRows = [...rowsJan, ...rowsFeb]
 
-    const enriched = enrichRowsMultiConfig(allRows, history)
+    const enriched = enrichRowsMultiConfig(allRows, windows)
 
     expect(enriched.filter((r) => r.date === "2024-01-08").some((r) => r.isSprinklerDay)).toBe(true)
     expect(enriched.filter((r) => r.date === "2024-02-05").every((r) => r.isSprinklerDay === false)).toBe(true)
   })
 
-  it("returns rows sorted by datetime after merging segments", () => {
+  it("segments correctly even when windows are passed out of order", () => {
     const configA = makeConfig({ sprinklerOnThreshold: 50 })
-    const configB = makeConfig({ sprinklerOnThreshold: 50 })
-    const history: ConfigVersion[] = [
-      { id: "v1", savedAt: "2024-01-01T00:00:00.000Z", notes: "A", config: configA },
-      { id: "v2", savedAt: "2024-02-01T00:00:00.000Z", notes: "B", config: configB },
+    const configB = makeConfig({ sprinklerOnThreshold: 9999 })
+    // Newest first — function must sort by effectiveFrom internally
+    const windows = [
+      win("2024-02-01", configB, "B"),
+      win("2024-01-01", configA, "A"),
+    ]
+    const enriched = enrichRowsMultiConfig(
+      [...sprinklerDayRows("2024-01-08"), ...sprinklerDayRows("2024-02-05")],
+      windows
+    )
+    expect(enriched.filter((r) => r.date === "2024-01-08").some((r) => r.isSprinklerDay)).toBe(true)
+    expect(enriched.filter((r) => r.date === "2024-02-05").every((r) => r.isSprinklerDay === false)).toBe(true)
+  })
+
+  it("returns rows sorted by datetime after merging segments", () => {
+    const windows = [
+      win("2024-01-01", makeConfig({ sprinklerOnThreshold: 50 }), "A"),
+      win("2024-02-01", makeConfig({ sprinklerOnThreshold: 50 }), "B"),
     ]
     const rows = [
       ...sprinklerDayRows("2024-02-05"),
       ...sprinklerDayRows("2024-01-08"),
     ]
-    const enriched = enrichRowsMultiConfig(rows, history)
+    const enriched = enrichRowsMultiConfig(rows, windows)
     for (let i = 1; i < enriched.length; i++) {
       expect(enriched[i].datetime >= enriched[i - 1].datetime).toBe(true)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// activeWindowForDate / windowDateRange
+// ---------------------------------------------------------------------------
+
+describe("activeWindowForDate", () => {
+  const windows = [
+    win("2024-01-01", makeConfig(), "A"),
+    win("2024-03-01", makeConfig(), "B"),
+    win("2024-06-01", makeConfig(), "C"),
+  ]
+
+  it("returns null when there are no windows", () => {
+    expect(activeWindowForDate([], "2024-01-15")).toBeNull()
+  })
+
+  it("returns the earliest window for dates before the first boundary", () => {
+    expect(activeWindowForDate(windows, "2023-12-31")?.notes).toBe("A")
+  })
+
+  it("is inclusive of the effectiveFrom boundary", () => {
+    expect(activeWindowForDate(windows, "2024-03-01")?.notes).toBe("B")
+  })
+
+  it("returns the window whose range contains the date", () => {
+    expect(activeWindowForDate(windows, "2024-02-15")?.notes).toBe("A")
+    expect(activeWindowForDate(windows, "2024-05-31")?.notes).toBe("B")
+    expect(activeWindowForDate(windows, "2024-09-01")?.notes).toBe("C")
+  })
+
+  it("works regardless of input order", () => {
+    const shuffled = [windows[2], windows[0], windows[1]]
+    expect(activeWindowForDate(shuffled, "2024-04-01")?.notes).toBe("B")
+  })
+})
+
+describe("windowDateRange", () => {
+  it("derives contiguous ranges; last window is open", () => {
+    const windows = [
+      win("2024-01-01", makeConfig()),
+      win("2024-03-01", makeConfig()),
+    ]
+    const ranges = windowDateRange(windows)
+    expect(ranges[0].effectiveFrom).toBe("2024-01-01")
+    expect(ranges[0].effectiveTo).toBe("2024-02-29") // day before next start (leap year)
+    expect(ranges[1].effectiveTo).toBeNull()
+  })
+
+  it("addDays handles month/year boundaries", () => {
+    expect(addDays("2024-03-01", -1)).toBe("2024-02-29")
+    expect(addDays("2025-01-01", -1)).toBe("2024-12-31")
+    expect(addDays("2024-01-31", 1)).toBe("2024-02-01")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// diffConfigs
+// ---------------------------------------------------------------------------
+
+describe("diffConfigs", () => {
+  it("returns no changes for identical configs", () => {
+    expect(diffConfigs(makeConfig(), makeConfig())).toEqual([])
+  })
+
+  it("detects a start-time change", () => {
+    const a = makeConfig()
+    const b = makeConfig()
+    b.timer1.programs.A.start = "07:30:00"
+    const changes = diffConfigs(a, b)
+    const c = changes.find((x) => x.field === "Start time")
+    expect(c).toBeDefined()
+    expect(c!.from).toBe("06:00")
+    expect(c!.to).toBe("07:30")
+  })
+
+  it("detects a days change", () => {
+    const a = makeConfig()
+    const b = makeConfig()
+    b.timer1.programs.A.days = [0, 2, 4, 5]
+    expect(diffConfigs(a, b).some((x) => x.field === "Days")).toBe(true)
+  })
+
+  it("detects a station duration change", () => {
+    const a = makeConfig()
+    const b = makeConfig()
+    b.timer1.programs.A.stations["T1-01"].durationMin = 20
+    const c = diffConfigs(a, b).find((x) => x.field === "Front Lawn duration")
+    expect(c).toBeDefined()
+    expect(c!.from).toBe("10m")
+    expect(c!.to).toBe("20m")
+  })
+
+  it("detects a baseline gpm change", () => {
+    const a = makeConfig()
+    const b = makeConfig()
+    b.timer1.stations[0] = { ...b.timer1.stations[0], baselineGpm: 2.5 }
+    expect(diffConfigs(a, b).some((x) => x.field.includes("baseline gpm"))).toBe(true)
+  })
+
+  it("detects station add / remove", () => {
+    const a = makeConfig()
+    const b = makeConfig()
+    b.timer1.stations = [...b.timer1.stations, { id: "T1-03", name: "New Zone" }]
+    const changes = diffConfigs(a, b)
+    expect(changes.some((x) => x.field === "Station added" && x.to === "New Zone")).toBe(true)
+    // reverse direction → removed
+    expect(diffConfigs(b, a).some((x) => x.field === "Station removed" && x.from === "New Zone")).toBe(true)
+  })
+
+  it("detects billing changes", () => {
+    const a = makeConfig()
+    const b = makeConfig({ costPerUnit: 12.5 })
+    expect(diffConfigs(a, b).some((x) => x.field === "Cost per unit")).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Migration helpers (toWindows / normalizeTime)
+// ---------------------------------------------------------------------------
+
+describe("normalizeTime", () => {
+  it("fixes the malformed HH:MM:SS:SS bug", () => {
+    expect(normalizeTime("03:45:00:00")).toBe("03:45:00")
+  })
+  it("pads and passes through valid times", () => {
+    expect(normalizeTime("6:5")).toBe("06:05:00")
+    expect(normalizeTime("06:30:00")).toBe("06:30:00")
+  })
+})
+
+describe("toWindows", () => {
+  it("migrates legacy { config, configHistory } to sorted windows", () => {
+    const legacy = {
+      config: makeConfig(),
+      configHistory: [
+        { id: "b", savedAt: "2024-02-01T10:00:00.000Z", notes: "B", config: makeConfig() },
+        { id: "a", savedAt: "2024-01-01T10:00:00.000Z", notes: "A", config: makeConfig() },
+      ],
+    }
+    const windows = toWindows(legacy)
+    expect(windows.length).toBe(2)
+    expect(windows[0].effectiveFrom).toBe("2024-01-01") // sorted ascending
+    expect(windows[1].effectiveFrom).toBe("2024-02-01")
+    expect(windows[0].notes).toBe("A")
+  })
+
+  it("normalizes malformed start times during migration", () => {
+    const cfg = makeConfig()
+    cfg.timer1.programs.A.start = "03:45:00:00"
+    const windows = toWindows({ configHistory: [{ id: "x", savedAt: "2024-01-01T00:00:00.000Z", notes: "", config: cfg }] })
+    expect(windows[0].config.timer1.programs.A.start).toBe("03:45:00")
+  })
+
+  it("seeds a single window from a lone config", () => {
+    const windows = toWindows({ config: makeConfig() })
+    expect(windows.length).toBe(1)
+  })
+
+  it("passes through new-format windows", () => {
+    const existing = [win("2024-01-01", makeConfig(), "A")]
+    const windows = toWindows({ windows: existing })
+    expect(windows.length).toBe(1)
+    expect(windows[0].effectiveFrom).toBe("2024-01-01")
+  })
+
+  it("returns [] when there is nothing to migrate", () => {
+    expect(toWindows({})).toEqual([])
+  })
+
+  it("collapses multiple same-day saves to the latest one (behavior-preserving)", () => {
+    const windows = toWindows({
+      configHistory: [
+        { id: "1", savedAt: "2026-06-06T18:20:33.000Z", notes: "early", config: makeConfig() },
+        { id: "2", savedAt: "2026-06-06T18:33:46.000Z", notes: "late",  config: makeConfig() },
+        { id: "3", savedAt: "2026-06-03T21:37:38.000Z", notes: "init",  config: makeConfig() },
+      ],
+    })
+    expect(windows.length).toBe(2)
+    expect(windows[0].effectiveFrom).toBe("2026-06-03")
+    expect(windows[1].effectiveFrom).toBe("2026-06-06")
+    expect(windows[1].notes).toBe("late") // latest save that day wins
+  })
+
+  it("migrates the committed repo config snapshot into contiguous windows", () => {
+    // Back-compat: the repo's exported bundle is the legacy { config, configHistory }
+    // shape with several same-day saves. It must migrate to unique, sorted windows
+    // with malformed start times ("03:45:00:00") normalized.
+    const bundle = JSON.parse(
+      readFileSync(join(process.cwd(), "data", "sprinkler-config-2026-06-06.json"), "utf-8")
+    )
+    const windows = toWindows(bundle)
+    // 6 saves on 2 distinct days → 2 windows
+    expect(windows.map((w) => w.effectiveFrom)).toEqual(["2026-06-03", "2026-06-06"])
+    // every effectiveFrom is unique (contiguous-window invariant)
+    expect(new Set(windows.map((w) => w.effectiveFrom)).size).toBe(windows.length)
+    // no malformed "HH:MM:SS:SS" start times survive
+    for (const w of windows) {
+      for (const t of [w.config.timer1, w.config.timer2] as const) {
+        for (const pid of ["A", "B", "C"] as const) {
+          expect(t.programs[pid].start).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+        }
+      }
     }
   })
 })

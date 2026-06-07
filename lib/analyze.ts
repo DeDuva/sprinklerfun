@@ -2,17 +2,19 @@ import type {
   AppConfig,
   Breakdown,
   ChartBar,
-  ConfigVersion,
+  ConfigWindow,
   DailyRow,
   EnrichedRow,
   FlumeRow,
   ProgramConfig,
+  ProgramId,
   StationStats,
   TimeBucket,
+  TimerConfig,
   TimeWindow,
   WeeklyRow,
 } from "./types"
-import { DEFAULT_CONFIG } from "./types"
+import { DEFAULT_CONFIG, normalizeTime } from "./types"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -173,29 +175,29 @@ export function enrichRows(rows: FlumeRow[], config: AppConfig): EnrichedRow[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Enrich rows using the correct config version for each date.
+ * Enrich rows using the config window active on each date.
  *
- * A config saved on date D applies to all data from D onward, until the next
- * config version. Data before the first saved config uses that OLDEST saved
- * config (not the built-in DEFAULT_CONFIG), because the oldest saved config
- * is the best approximation of what the system looked like before the user
- * started tracking changes. DEFAULT_CONFIG is a generic placeholder that
- * almost never matches a real installation's timer start times.
+ * A window with effectiveFrom = D applies to all data from D onward, until the
+ * next window. Data before the earliest window uses that EARLIEST window's
+ * config (not the built-in DEFAULT_CONFIG), because the earliest window is the
+ * best approximation of what the system looked like before the user started
+ * tracking changes. DEFAULT_CONFIG is a generic placeholder that almost never
+ * matches a real installation's timer start times.
  */
 export function enrichRowsMultiConfig(
   rows: FlumeRow[],
-  configHistory: ConfigVersion[]
+  windows: ConfigWindow[]
 ): EnrichedRow[] {
   if (rows.length === 0) return []
-  if (configHistory.length === 0) return enrichRows(rows, DEFAULT_CONFIG)
+  if (windows.length === 0) return enrichRows(rows, DEFAULT_CONFIG)
 
   // Oldest-first segments: [{ fromDate, config }]
-  const sorted = [...configHistory].sort((a, b) => a.savedAt.localeCompare(b.savedAt))
+  const sorted = [...windows].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))
   const segments: Array<{ fromDate: string; config: AppConfig }> = [
-    // Use the oldest saved config for all data that predates it.
-    // This correctly handles historical data loaded before the user first saved.
+    // Use the earliest window's config for all data that predates it.
+    // This correctly handles historical data loaded before the first window.
     { fromDate: "0000-00-00", config: sorted[0].config },
-    ...sorted.map((v) => ({ fromDate: v.savedAt.slice(0, 10), config: v.config })),
+    ...sorted.map((w) => ({ fromDate: w.effectiveFrom, config: w.config })),
   ]
 
   // Which segment index applies to a given date?
@@ -222,6 +224,136 @@ export function enrichRowsMultiConfig(
     results.push(...enrichRows(batch, segments[idx].config))
   }
   return results.sort((a, b) => a.datetime.localeCompare(b.datetime))
+}
+
+// ---------------------------------------------------------------------------
+// Window selection / ranges / diffing — shared by the config page, dashboard,
+// and chart so the "which config was active when" logic lives in one place.
+// ---------------------------------------------------------------------------
+
+/** Add (or subtract) whole days to a "YYYY-MM-DD" date string. */
+export function addDays(dateStr: string, delta: number): string {
+  const d = new Date(dateStr + "T12:00:00")
+  d.setDate(d.getDate() + delta)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * The config window active on a given date. The earliest window also covers
+ * all dates before it (matches enrichRowsMultiConfig). Returns null only when
+ * there are no windows.
+ */
+export function activeWindowForDate(windows: ConfigWindow[], date: string): ConfigWindow | null {
+  if (windows.length === 0) return null
+  const sorted = [...windows].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))
+  let active = sorted[0] // earliest covers the past
+  for (const w of sorted) {
+    if (w.effectiveFrom <= date) active = w
+    else break
+  }
+  return active
+}
+
+export interface WindowRange {
+  id: string
+  effectiveFrom: string
+  effectiveTo: string | null // null = open (current / "now")
+}
+
+/**
+ * Derive each window's [effectiveFrom, effectiveTo] from contiguous boundaries:
+ * a window ends the day before the next window starts; the last window is open.
+ */
+export function windowDateRange(windows: ConfigWindow[]): WindowRange[] {
+  const sorted = [...windows].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))
+  return sorted.map((w, i) => {
+    const next = sorted[i + 1]
+    return {
+      id: w.id,
+      effectiveFrom: w.effectiveFrom,
+      effectiveTo: next ? addDays(next.effectiveFrom, -1) : null,
+    }
+  })
+}
+
+/** The config in effect today (for "current" displays: names, billing). */
+export function currentConfig(windows: ConfigWindow[]): AppConfig {
+  const today = new Date().toISOString().slice(0, 10)
+  return activeWindowForDate(windows, today)?.config ?? DEFAULT_CONFIG
+}
+
+// ---- Config diffing -------------------------------------------------------
+
+export interface ConfigChange {
+  area: string  // e.g. "Timer 1 · Program A", "Detection & Billing"
+  field: string // e.g. "Start time", "Front Lawn duration"
+  from: string
+  to: string
+}
+
+const DIFF_DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+function fmtDays(days: number[]): string {
+  if (!days || days.length === 0) return "none"
+  return [...days].sort((a, b) => a - b).map((d) => DIFF_DAY_NAMES[d] ?? String(d)).join(" ")
+}
+const hm = (t: string) => normalizeTime(t).slice(0, 5)
+
+/**
+ * Human-readable diff of two configs (previous window → this window). Powers the
+ * "changed vs. previous window" panel and richer chart-marker context.
+ */
+export function diffConfigs(prev: AppConfig, next: AppConfig): ConfigChange[] {
+  const changes: ConfigChange[] = []
+  if (!prev || !next) return changes
+
+  for (const [tk, tlabel] of [["timer1", "Timer 1"], ["timer2", "Timer 2"]] as const) {
+    const pt: TimerConfig = prev[tk]
+    const nt: TimerConfig = next[tk]
+    if (!pt || !nt) continue
+
+    // Hardware: station add/remove, name + baseline changes
+    const pById = new Map(pt.stations.map((s) => [s.id, s]))
+    const nById = new Map(nt.stations.map((s) => [s.id, s]))
+    for (const s of nt.stations) if (!pById.has(s.id)) changes.push({ area: tlabel, field: "Station added", from: "—", to: s.name || s.id })
+    for (const s of pt.stations) if (!nById.has(s.id)) changes.push({ area: tlabel, field: "Station removed", from: s.name || s.id, to: "—" })
+    for (const s of nt.stations) {
+      const ps = pById.get(s.id)
+      if (!ps) continue
+      if (ps.name !== s.name) changes.push({ area: tlabel, field: `${s.id} name`, from: ps.name, to: s.name })
+      const pb = ps.baselineGpm ?? null
+      const nb = s.baselineGpm ?? null
+      if (pb !== nb) changes.push({ area: tlabel, field: `${s.name || s.id} baseline gpm`, from: pb == null ? "—" : String(pb), to: nb == null ? "—" : String(nb) })
+    }
+
+    // Schedule: per-program start / days / enabled / station durations
+    for (const pid of ["A", "B", "C"] as ProgramId[]) {
+      const pp = pt.programs[pid]
+      const np = nt.programs[pid]
+      if (!pp || !np) continue
+      const area = `${tlabel} · Program ${pid}`
+      if (pp.enabled !== np.enabled) changes.push({ area, field: "Enabled", from: pp.enabled ? "on" : "off", to: np.enabled ? "on" : "off" })
+      if (hm(pp.start) !== hm(np.start)) changes.push({ area, field: "Start time", from: hm(pp.start), to: hm(np.start) })
+      if (fmtDays(pp.days) !== fmtDays(np.days)) changes.push({ area, field: "Days", from: fmtDays(pp.days), to: fmtDays(np.days) })
+
+      const ids = new Set([...Object.keys(pp.stations), ...Object.keys(np.stations)])
+      const nameOf = (id: string) => nById.get(id)?.name ?? pById.get(id)?.name ?? id
+      for (const id of ids) {
+        const a = pp.stations[id] ?? { durationMin: 0, enabled: false }
+        const b = np.stations[id] ?? { durationMin: 0, enabled: false }
+        const aOn = a.enabled && a.durationMin > 0
+        const bOn = b.enabled && b.durationMin > 0
+        if (aOn !== bOn) changes.push({ area, field: nameOf(id), from: aOn ? `${a.durationMin}m` : "off", to: bOn ? `${b.durationMin}m` : "off" })
+        else if (bOn && a.durationMin !== b.durationMin) changes.push({ area, field: `${nameOf(id)} duration`, from: `${a.durationMin}m`, to: `${b.durationMin}m` })
+      }
+    }
+  }
+
+  // Detection & billing
+  if (prev.sprinklerOnThreshold !== next.sprinklerOnThreshold) changes.push({ area: "Detection & Billing", field: "Sprinkler-on threshold", from: String(prev.sprinklerOnThreshold), to: String(next.sprinklerOnThreshold) })
+  if (prev.gallonsPerUnit !== next.gallonsPerUnit) changes.push({ area: "Detection & Billing", field: "Gallons per unit", from: String(prev.gallonsPerUnit), to: String(next.gallonsPerUnit) })
+  if (prev.costPerUnit !== next.costPerUnit) changes.push({ area: "Detection & Billing", field: "Cost per unit", from: String(prev.costPerUnit), to: String(next.costPerUnit) })
+
+  return changes
 }
 
 // ---------------------------------------------------------------------------

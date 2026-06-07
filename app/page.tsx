@@ -1,6 +1,8 @@
 "use client"
 
 import { useDeferredValue, useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { useStore } from "@/lib/store"
 import {
   enrichRowsMultiConfig,
@@ -8,6 +10,8 @@ import {
   buildStationStats,
   computeSummary,
   computeStationWarnings,
+  activeWindowForDate,
+  currentConfig,
 } from "@/lib/analyze"
 import SummaryCards from "@/components/SummaryCards"
 import ConsumptionChart from "@/components/ConsumptionChart"
@@ -30,13 +34,15 @@ function fmt(n: number) {
 }
 
 export default function DashboardPage() {
+  const router        = useRouter()
   const rows          = useStore((s) => s.rows)
-  const config        = useStore((s) => s.config)
-  const configHistory = useStore((s) => s.configHistory)
+  const windows       = useStore((s) => s.windows)
 
   const deferredRows    = useDeferredValue(rows)
-  const deferredConfig  = useDeferredValue(config)
-  const deferredHistory = useDeferredValue(configHistory)
+  const deferredWindows = useDeferredValue(windows)
+
+  // "Current" config (today's window) — for billing, names, and warning baselines.
+  const deferredConfig  = useMemo(() => currentConfig(deferredWindows), [deferredWindows])
 
   const isStale = deferredRows !== rows
 
@@ -51,7 +57,7 @@ export default function DashboardPage() {
   const derived = useMemo(() => {
     if (deferredRows.length === 0) return null
 
-    const enriched = enrichRowsMultiConfig(deferredRows, deferredHistory)
+    const enriched = enrichRowsMultiConfig(deferredRows, deferredWindows)
     const allDaily  = buildDailyRows(enriched)
 
     const warnings = computeStationWarnings(enriched, deferredConfig, 21)
@@ -71,7 +77,7 @@ export default function DashboardPage() {
       : (last ?? null)
 
     return { enriched, allDaily, warnings, hasBaselines, dateRange, sprinklerDates, defaultFlowDay }
-  }, [deferredRows, deferredConfig, deferredHistory])
+  }, [deferredRows, deferredWindows, deferredConfig])
 
   // ---- Monthly summary (cheap filter — reruns only when month changes) ---
   const monthlySummary = useMemo(() => {
@@ -103,19 +109,19 @@ export default function DashboardPage() {
     if (!day) return null
     const dayRows  = derived.enriched.filter((r) => r.date === day)
     const dayDaily = derived.allDaily.filter((d) => d.date === day)
-    const daySummary = computeSummary(dayDaily, deferredConfig)
 
-    // Find the config version that was active on this day (same logic as enrichRowsMultiConfig)
-    const sorted = [...deferredHistory].sort((a, b) => a.savedAt.localeCompare(b.savedAt))
-    let activeVersion = sorted.findLast((v) => v.savedAt.slice(0, 10) <= day) ?? sorted[0] ?? null
-    const configVersionLabel = activeVersion
-      ? new Date(activeVersion.savedAt).toLocaleDateString(undefined, {
+    // Use the config window active on this day (matches enrichRowsMultiConfig)
+    const activeWin = activeWindowForDate(deferredWindows, day)
+    const dayConfig = activeWin?.config ?? deferredConfig
+    const daySummary = computeSummary(dayDaily, dayConfig)
+    const configVersionLabel = activeWin
+      ? new Date(activeWin.effectiveFrom + "T12:00:00").toLocaleDateString(undefined, {
           month: "short", day: "numeric", year: "numeric",
         })
       : null
 
-    return { stats: buildStationStats(dayRows, deferredConfig), day, daySummary, configVersionLabel }
-  }, [derived, selectedFlowDay, deferredConfig, deferredHistory])
+    return { stats: buildStationStats(dayRows, dayConfig), day, dayConfig, daySummary, configVersionLabel }
+  }, [derived, selectedFlowDay, deferredWindows, deferredConfig])
 
   // Month nav bounds
   const firstMonth = derived?.dateRange?.first.slice(0, 7) ?? currentMonth
@@ -229,9 +235,10 @@ export default function DashboardPage() {
           {derived ? (
             <ConsumptionChart
               enriched={derived.enriched}
-              configHistory={deferredHistory}
+              windows={deferredWindows}
               onDaySelect={setSelectedFlowDay}
               selectedDay={selectedFlowDay ?? derived.defaultFlowDay}
+              onConfigClick={(id) => router.push(`/config?window=${id}`)}
             />
           ) : (
             <div className="h-80 rounded bg-gray-100 animate-pulse" />
@@ -242,12 +249,23 @@ export default function DashboardPage() {
       {/* Per-station flow — selected day */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">
-            Per-Station Flow Rate
-            <span className="ml-2 text-xs font-normal text-gray-400">
-              orange dashes = your baseline
-            </span>
-          </CardTitle>
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="text-base">
+              Per-Station Flow Rate
+              <span className="ml-2 text-xs font-normal text-gray-400">
+                orange dashes = your baseline
+              </span>
+            </CardTitle>
+            {flowDayStats && (
+              <Link
+                href={`/config?date=${flowDayStats.day}`}
+                className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline shrink-0"
+                title="Edit the config that was active on this day"
+              >
+                ⚙ Tune config for this day →
+              </Link>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           {flowDayStats ? (
@@ -297,7 +315,7 @@ export default function DashboardPage() {
               {/* Station flow chart */}
               <StationFlowChart
                 stats={flowDayStats.stats}
-                config={deferredConfig}
+                config={flowDayStats.dayConfig}
                 selectedDay={flowDayStats.day}
                 sprinklerDates={derived?.sprinklerDates ?? []}
                 onDayChange={setSelectedFlowDay}
