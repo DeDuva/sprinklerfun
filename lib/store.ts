@@ -1,7 +1,7 @@
 import { create } from "zustand"
 import { persist, createJSONStorage } from "zustand/middleware"
 import type { AppConfig, ConfigVersion, FlumeRow } from "./types"
-import { DEFAULT_CONFIG } from "./types"
+import { DEFAULT_CONFIG, migrateConfig } from "./types"
 
 interface AppState {
   config: AppConfig
@@ -65,6 +65,15 @@ export const useStore = create<AppState>()(
         return localStorage
       }),
       skipHydration: true,
+      // Run migration on every rehydration so old localStorage data is transparently upgraded.
+      onRehydrateStorage: () => (state) => {
+        if (!state) return
+        state.config = migrateConfig(state.config)
+        state.configHistory = state.configHistory.map((v) => ({
+          ...v,
+          config: migrateConfig(v.config),
+        }))
+      },
     }
   )
 )

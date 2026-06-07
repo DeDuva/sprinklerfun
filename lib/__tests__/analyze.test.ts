@@ -14,32 +14,49 @@ import { DEFAULT_CONFIG } from "../types"
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+function makeConfig(overrides: Partial<Omit<AppConfig, "timer1" | "timer2">> = {}): AppConfig {
   return {
     timer1: {
-      start: "06:00:00",
       stations: [
-        { id: "T1-01", name: "Front Lawn",  durationMin: 10, enabled: true },
-        { id: "T1-02", name: "Back Garden", durationMin: 5,  enabled: true },
+        { id: "T1-01", name: "Front Lawn" },
+        { id: "T1-02", name: "Back Garden" },
       ],
+      programs: {
+        A: {
+          enabled: true,
+          start: "06:00:00",
+          days: [0, 2, 4], // Mon Wed Fri
+          stations: {
+            "T1-01": { durationMin: 10, enabled: true },
+            "T1-02": { durationMin: 5,  enabled: true },
+          },
+        },
+        B: { enabled: false, start: "06:00:00", days: [], stations: {} },
+        C: { enabled: false, start: "06:00:00", days: [], stations: {} },
+      },
     },
     timer2: {
-      start: "08:00:00",
       stations: [
-        { id: "T2-01", name: "Side Yard", durationMin: 8, enabled: true },
+        { id: "T2-01", name: "Side Yard" },
       ],
+      programs: {
+        A: {
+          enabled: true,
+          start: "08:00:00",
+          days: [0, 2, 4],
+          stations: {
+            "T2-01": { durationMin: 8, enabled: true },
+          },
+        },
+        B: { enabled: false, start: "08:00:00", days: [], stations: {} },
+        C: { enabled: false, start: "08:00:00", days: [], stations: {} },
+      },
     },
-    sprinklerDays: [0, 2, 4], // Mon Wed Fri
-    sprinklerOnThreshold: 50,   // sprinklerDayRows generates ~89 gal in window; keep below that
+    sprinklerOnThreshold: 50,
     gallonsPerUnit: 748,
     costPerUnit: 10.47,
     ...overrides,
   }
-}
-
-/** Monday 2024-01-01 */
-function makeRow(dateTimeMin: string, gallons: number): FlumeRow {
-  return { datetime: dateTimeMin, gallons }
 }
 
 /** Build one minute's worth of rows for a full day (00:00 – 23:59) with uniform gallons */
@@ -84,7 +101,7 @@ describe("enrichRows", () => {
   const config = makeConfig()
 
   it("assigns correct station during T1-01 window on a sprinkler day", () => {
-    const rows = sprinklerDayRows("2024-01-01") // Monday = sprinkler day
+    const rows = sprinklerDayRows("2024-01-01") // Monday = in program.days
     const enriched = enrichRows(rows, config)
     const t1_01 = enriched.filter((r) => r.station === "T1-01")
     expect(t1_01.length).toBe(10) // minutes 361–370
@@ -108,8 +125,8 @@ describe("enrichRows", () => {
     expect(row376?.timer).toBe("house")
   })
 
-  it("assigns 'house' for ALL minutes on a non-sprinkler day", () => {
-    // Tuesday = not a sprinkler day (config has [0,2,4])
+  it("assigns 'house' for ALL minutes on a day not in program.days", () => {
+    // Tuesday (dow=1) is not in [0,2,4], so no programs are active → not a sprinkler day
     const rows = dayRows("2024-01-02", 0.1)
     const enriched = enrichRows(rows, config)
     expect(enriched.every((r) => r.station === "house")).toBe(true)
@@ -117,8 +134,8 @@ describe("enrichRows", () => {
   })
 
   it("does NOT flag as sprinkler day when total gallons < threshold", () => {
-    // Use very low flow — won't exceed threshold of 100 gal in the morning window
-    const rows = dayRows("2024-01-01", 0.01) // Monday but low flow
+    // Low flow on a scheduled day — won't exceed threshold of 50
+    const rows = dayRows("2024-01-01", 0.01) // Monday, very low flow
     const enriched = enrichRows(rows, config)
     expect(enriched.every((r) => r.isSprinklerDay === false)).toBe(true)
   })
@@ -126,18 +143,64 @@ describe("enrichRows", () => {
   it("flags as sprinkler day when total gallons in window exceeds threshold", () => {
     const rows = sprinklerDayRows("2024-01-01")
     const enriched = enrichRows(rows, config)
-    const sprinklerDay = enriched.filter((r) => r.date === "2024-01-01")
-    expect(sprinklerDay.every((r) => r.isSprinklerDay)).toBe(true)
+    expect(enriched.filter((r) => r.date === "2024-01-01").every((r) => r.isSprinklerDay)).toBe(true)
   })
 
-  it("skips disabled stations (zero duration passes cursor but creates no window)", () => {
-    const cfg = makeConfig()
-    cfg.timer1.stations[0].enabled = false
+  it("skips disabled stations (enabled: false in programStations)", () => {
+    const cfg: AppConfig = {
+      ...makeConfig(),
+      timer1: {
+        ...makeConfig().timer1,
+        programs: {
+          ...makeConfig().timer1.programs,
+          A: {
+            ...makeConfig().timer1.programs.A,
+            stations: {
+              "T1-01": { durationMin: 10, enabled: false }, // disabled
+              "T1-02": { durationMin: 5,  enabled: true },
+            },
+          },
+        },
+      },
+    }
     const rows = sprinklerDayRows("2024-01-01")
     const enriched = enrichRows(rows, cfg)
-    // T1-01 is disabled — those minutes should be house
     const t1_01 = enriched.filter((r) => r.station === "T1-01")
     expect(t1_01.length).toBe(0)
+  })
+
+  it("Program B active on its own days, Program A on different days", () => {
+    const cfg: AppConfig = {
+      ...makeConfig(),
+      timer1: {
+        ...makeConfig().timer1,
+        programs: {
+          A: { enabled: true,  start: "06:00:00", days: [0],    stations: { "T1-01": { durationMin: 10, enabled: true }, "T1-02": { durationMin: 5, enabled: true } } },
+          B: { enabled: true,  start: "06:00:00", days: [2],    stations: { "T1-01": { durationMin: 5,  enabled: true }, "T1-02": { durationMin: 3, enabled: false } } },
+          C: { enabled: false, start: "06:00:00", days: [],      stations: {} },
+        },
+      },
+      timer2: {
+        ...makeConfig().timer2,
+        programs: {
+          A: { enabled: true,  start: "08:00:00", days: [0, 2], stations: { "T2-01": { durationMin: 8, enabled: true } } },
+          B: { enabled: false, start: "08:00:00", days: [],      stations: {} },
+          C: { enabled: false, start: "08:00:00", days: [],      stations: {} },
+        },
+      },
+    }
+
+    // Monday (dow=0): Program A for T1 is active. T1-01 window = 360→370
+    const monRows = sprinklerDayRows("2024-01-01")
+    const monEnriched = enrichRows(monRows, cfg)
+    const monT101 = monEnriched.filter((r) => r.station === "T1-01")
+    expect(monT101.length).toBe(10) // Program A duration
+
+    // Wednesday (dow=2): Program B for T1 is active. T1-01 window = 360→365 (5 min)
+    const wedRows = sprinklerDayRows("2024-01-03")
+    const wedEnriched = enrichRows(wedRows, cfg)
+    const wedT101 = wedEnriched.filter((r) => r.station === "T1-01")
+    expect(wedT101.length).toBe(5) // Program B duration
   })
 })
 
@@ -148,14 +211,12 @@ describe("enrichRows", () => {
 describe("enrichRowsMultiConfig", () => {
   it("uses DEFAULT_CONFIG when history is empty", () => {
     const rows = sprinklerDayRows("2024-01-01")
-    // With default config, threshold is 500 — Monday rows won't pass unless high flow
     const enriched = enrichRowsMultiConfig(rows, [])
-    // Just verify it runs without error and returns enriched rows
     expect(enriched.length).toBe(rows.length)
   })
 
   it("uses the saved config after its savedAt date", () => {
-    const customConfig = makeConfig({ sprinklerOnThreshold: 50 }) // lower threshold
+    const customConfig = makeConfig({ sprinklerOnThreshold: 50 })
     const history: ConfigVersion[] = [
       {
         id: "v1",
@@ -166,30 +227,31 @@ describe("enrichRowsMultiConfig", () => {
     ]
     const rows = sprinklerDayRows("2024-01-01")
     const enriched = enrichRowsMultiConfig(rows, history)
-    // With threshold=50, the Monday rows should be flagged as sprinkler day
-    const isSprinkler = enriched.some((r) => r.isSprinklerDay)
-    expect(isSprinkler).toBe(true)
+    expect(enriched.some((r) => r.isSprinklerDay)).toBe(true)
   })
 
-  it("uses DEFAULT_CONFIG for dates before the first saved config", () => {
+  it("uses the oldest saved config for dates before the first saved config", () => {
+    // The oldest saved config is the best proxy for what the system looked like
+    // before the user started tracking changes. DEFAULT_CONFIG (generic placeholder)
+    // is NOT used — it has wrong timer start times for real installations.
     const customConfig = makeConfig({ sprinklerOnThreshold: 50 })
     const history: ConfigVersion[] = [
       {
         id: "v1",
-        savedAt: "2024-06-01T00:00:00.000Z", // much later
+        savedAt: "2024-06-01T00:00:00.000Z", // much later than the Jan data
         notes: "test",
         config: customConfig,
       },
     ]
-    // Jan row is before the config save — DEFAULT_CONFIG applies (threshold=500)
+    // Jan row predates the config save — oldest config (threshold=50) applies
     const rows = sprinklerDayRows("2024-01-01")
     const enriched = enrichRowsMultiConfig(rows, history)
-    // DEFAULT_CONFIG threshold is 500, sprinklerDayRows won't generate enough flow
-    expect(enriched.every((r) => r.isSprinklerDay === false)).toBe(true)
+    // With threshold=50, sprinklerDayRows (high-flow Monday) triggers detection
+    expect(enriched.some((r) => r.isSprinklerDay)).toBe(true)
   })
 
   it("applies different configs to different date ranges", () => {
-    const configA = makeConfig({ sprinklerOnThreshold: 50 })  // low threshold = easy to trigger
+    const configA = makeConfig({ sprinklerOnThreshold: 50 })   // low threshold = easy to trigger
     const configB = makeConfig({ sprinklerOnThreshold: 9999 }) // high threshold = never triggers
 
     const history: ConfigVersion[] = [
@@ -197,17 +259,14 @@ describe("enrichRowsMultiConfig", () => {
       { id: "v2", savedAt: "2024-02-01T00:00:00.000Z", notes: "B", config: configB },
     ]
 
-    const rowsJan = sprinklerDayRows("2024-01-08") // Monday in Jan → configA applies
-    const rowsFeb = sprinklerDayRows("2024-02-05") // Monday in Feb → configB applies
+    const rowsJan = sprinklerDayRows("2024-01-08") // Monday in Jan → configA
+    const rowsFeb = sprinklerDayRows("2024-02-05") // Monday in Feb → configB
     const allRows = [...rowsJan, ...rowsFeb]
 
     const enriched = enrichRowsMultiConfig(allRows, history)
 
-    const janEnriched = enriched.filter((r) => r.date === "2024-01-08")
-    const febEnriched = enriched.filter((r) => r.date === "2024-02-05")
-
-    expect(janEnriched.some((r) => r.isSprinklerDay)).toBe(true)  // configA triggers
-    expect(febEnriched.every((r) => r.isSprinklerDay === false)).toBe(true) // configB does not
+    expect(enriched.filter((r) => r.date === "2024-01-08").some((r) => r.isSprinklerDay)).toBe(true)
+    expect(enriched.filter((r) => r.date === "2024-02-05").every((r) => r.isSprinklerDay === false)).toBe(true)
   })
 
   it("returns rows sorted by datetime after merging segments", () => {
@@ -235,30 +294,25 @@ describe("enrichRowsMultiConfig", () => {
 describe("buildWeeklyRows", () => {
   it("groups days in the same ISO week together", () => {
     // 2024-01-01 (Mon) and 2024-01-07 (Sun) are in the same ISO week
-    const dailyRows = buildDailyRows(
-      enrichRows(
-        [...dayRows("2024-01-01", 1), ...dayRows("2024-01-07", 1)],
-        makeConfig({ sprinklerOnThreshold: 9999 }) // disable sprinkler detection
-      )
+    const cfg = makeConfig({ sprinklerOnThreshold: 9999 })
+    const daily = buildDailyRows(
+      enrichRows([...dayRows("2024-01-01", 1), ...dayRows("2024-01-07", 1)], cfg)
     )
-    const weekly = buildWeeklyRows(dailyRows)
+    const weekly = buildWeeklyRows(daily)
     expect(weekly.length).toBe(1)
     expect(weekly[0].weekStart).toBe("2024-01-01")
   })
 
   it("puts days in different weeks into separate buckets", () => {
-    const dailyRows = buildDailyRows(
-      enrichRows(
-        [...dayRows("2024-01-01", 1), ...dayRows("2024-01-08", 1)],
-        makeConfig({ sprinklerOnThreshold: 9999 })
-      )
+    const cfg = makeConfig({ sprinklerOnThreshold: 9999 })
+    const daily = buildDailyRows(
+      enrichRows([...dayRows("2024-01-01", 1), ...dayRows("2024-01-08", 1)], cfg)
     )
-    const weekly = buildWeeklyRows(dailyRows)
+    const weekly = buildWeeklyRows(daily)
     expect(weekly.length).toBe(2)
   })
 
   it("correctly totals sprinkler and house gallons per week", () => {
-    // sprinklerDayRows produces significant flow → should be flagged as sprinkler day
     const config = makeConfig()
     const rows = sprinklerDayRows("2024-01-01")
     const daily = buildDailyRows(enrichRows(rows, config))
@@ -313,21 +367,19 @@ describe("aggregateForChart", () => {
   })
 
   it("flags anomaly bar when total is far above the rest", () => {
-    // Build 6 normal days + 1 day with 10x flow
     const normalDays = [
       "2024-01-08", "2024-01-09", "2024-01-10",
       "2024-01-11", "2024-01-12", "2024-01-13",
     ].flatMap((d) => dayRows(d, 0.1))
-    const spikeDay = dayRows("2024-01-14", 10) // massive spike
+    const spikeDay = dayRows("2024-01-14", 10)
 
-    const cfg = makeConfig({ sprinklerOnThreshold: 9999 }) // all house, simpler
+    const cfg = makeConfig({ sprinklerOnThreshold: 9999 }) // all house
     const enriched = enrichRows([...normalDays, ...spikeDay], cfg)
     const bars = aggregateForChart(enriched, "day", "simple")
 
     const spikebar = bars.find((b) => b.dateStart === "2024-01-14")
     expect(spikebar?.isAnomaly).toBe(true)
 
-    // Normal days should not be flagged
     const normalBars = bars.filter((b) => b.dateStart !== "2024-01-14")
     expect(normalBars.every((b) => !b.isAnomaly)).toBe(true)
   })
@@ -340,18 +392,26 @@ describe("aggregateForChart", () => {
 describe("computeStationWarnings", () => {
   function configWithBaseline(): AppConfig {
     const cfg = makeConfig()
-    cfg.timer1.stations[0].baselineGpm = 2.0  // T1-01 baseline = 2 gpm
-    return cfg
+    return {
+      ...cfg,
+      timer1: {
+        ...cfg.timer1,
+        stations: [
+          { id: "T1-01", name: "Front Lawn", baselineGpm: 2.0 },
+          { id: "T1-02", name: "Back Garden" },
+        ],
+      },
+    }
   }
 
   it("fires warning when station is >20% above baseline for 2+ consecutive days", () => {
     const config = configWithBaseline()
-    // Monday (01) and Wednesday (03) are sprinkler days
-    // sprinklerDayRows gives T1-01 = 2 gal/min, but let's crank it to 3 gal/min (50% above)
+    // Build on sprinklerDayRows so the detection window is already crossed, then
+    // boost T1-01 to 3 gpm (50% above its baseline of 2).
     function highFlowDay(date: string): FlumeRow[] {
-      return dayRows(date, 0.1).map((r) => {
+      return sprinklerDayRows(date).map((r) => {
         const min = Number(r.datetime.slice(11, 13)) * 60 + Number(r.datetime.slice(14, 16))
-        if (min > 360 && min <= 370) return { ...r, gallons: 3 } // T1-01 window, 3 gpm
+        if (min > 360 && min <= 370) return { ...r, gallons: 3 } // T1-01 window, 3 gpm (50% above)
         return r
       })
     }
@@ -367,26 +427,24 @@ describe("computeStationWarnings", () => {
   it("does NOT fire when only one day is above threshold", () => {
     const config = configWithBaseline()
     function highFlowDay(date: string): FlumeRow[] {
-      return dayRows(date, 0.1).map((r) => {
+      return sprinklerDayRows(date).map((r) => {
         const min = Number(r.datetime.slice(11, 13)) * 60 + Number(r.datetime.slice(14, 16))
         if (min > 360 && min <= 370) return { ...r, gallons: 3 }
         return r
       })
     }
-    // Only one sprinkler day above baseline
     const rows = [
-      ...highFlowDay("2024-01-01"),           // above
-      ...sprinklerDayRows("2024-01-03"),       // normal (2 gpm = at baseline)
+      ...highFlowDay("2024-01-01"),       // above
+      ...sprinklerDayRows("2024-01-03"),  // normal (2 gpm = at baseline)
     ]
     const enriched = enrichRows(rows, config)
     const warnings = computeStationWarnings(enriched, config, 21)
-    // T1-01 may appear but consecutiveDaysAbove should be 0 or 1 (normal day most recent)
     const w = warnings.find((w) => w.stationId === "T1-01")
     expect(w).toBeUndefined()
   })
 
   it("does NOT fire when no baseline is set", () => {
-    const config = makeConfig() // no baselineGpm on any station
+    const config = makeConfig()
     const rows = sprinklerDayRows("2024-01-01")
     const enriched = enrichRows(rows, config)
     const warnings = computeStationWarnings(enriched, config, 21)

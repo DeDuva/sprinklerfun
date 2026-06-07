@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useStore } from "@/lib/store"
-import type { AppConfig, ConfigVersion, Station, TimerConfig } from "@/lib/types"
+import { migrateConfig } from "@/lib/types"
+import type { AppConfig, ConfigVersion, ProgramConfig, ProgramId, Station, TimerConfig } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -12,34 +13,47 @@ import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+const PROGRAM_IDS: ProgramId[] = ["A", "B", "C"]
 
-// ---- Station editor -------------------------------------------------------
+// ---- Program station table ------------------------------------------------
 
-function StationEditor({
+function ProgramStationEditor({
   stations,
-  onChange,
+  programStations,
+  isBaseProgram,
+  onProgramStationsChange,
+  onStationUpdate,
+  onStationRemove,
 }: {
   stations: Station[]
-  onChange: (stations: Station[]) => void
+  programStations: ProgramConfig["stations"]
+  isBaseProgram: boolean
+  onProgramStationsChange: (ps: ProgramConfig["stations"]) => void
+  onStationUpdate: (id: string, field: keyof Station, value: string | number | undefined) => void
+  onStationRemove: (id: string) => void
 }) {
   const [showDisabled, setShowDisabled] = useState(false)
 
-  const update = (idx: number, field: keyof Station, value: string | number | boolean | undefined) =>
-    onChange(stations.map((s, i) => (i === idx ? { ...s, [field]: value } : s)))
+  const getPs = (id: string) => programStations[id] ?? { durationMin: 0, enabled: false }
 
-  const add = () => {
-    const id = `S-${Date.now()}`
-    onChange([...stations, { id, name: "", durationMin: 0, enabled: false }])
+  const updatePs = (id: string, field: "durationMin" | "enabled", value: number | boolean) => {
+    const current = getPs(id)
+    onProgramStationsChange({ ...programStations, [id]: { ...current, [field]: value } })
   }
 
-  const remove = (idx: number) => onChange(stations.filter((_, i) => i !== idx))
+  // Entering a duration > 0 implicitly enables the station
+  const handleDurationChange = (id: string, value: number) => {
+    const current = getPs(id)
+    const next = { ...current, durationMin: value }
+    if (value > 0 && !current.enabled) next.enabled = true
+    onProgramStationsChange({ ...programStations, [id]: next })
+  }
 
-  const active   = stations.filter((s) => s.enabled && s.durationMin > 0)
-  const inactive = stations.filter((s) => !s.enabled || s.durationMin === 0)
-  const visible  = showDisabled ? stations : active
-  const visibleIndexes = showDisabled
-    ? stations.map((_, i) => i)
-    : stations.map((s, i) => (s.enabled && s.durationMin > 0 ? i : -1)).filter((i) => i !== -1)
+  const active   = stations.filter((s) => { const ps = getPs(s.id); return ps.enabled && ps.durationMin > 0 })
+  const inactive = stations.filter((s) => { const ps = getPs(s.id); return !ps.enabled || ps.durationMin === 0 })
+  // When no stations are active yet (e.g. freshly enabled program B/C), show all so the
+  // user can see them and start entering durations without hunting for a toggle first.
+  const visible  = (showDisabled || active.length === 0) ? stations : active
 
   return (
     <div className="space-y-2">
@@ -51,59 +65,76 @@ function StationEditor({
               <th className="pb-1 pr-2 font-normal">Name</th>
               <th className="pb-1 pr-2 font-normal w-16 text-right">Min</th>
               <th className="pb-1 pr-2 font-normal w-24 text-right">Baseline gpm</th>
-              <th className="pb-1 w-6"></th>
+              {isBaseProgram && <th className="pb-1 w-6"></th>}
             </tr>
           </thead>
           <tbody>
-            {visibleIndexes.map((realIdx) => {
-              const s = stations[realIdx]
-              const dim = !s.enabled || s.durationMin === 0
+            {visible.map((s) => {
+              const ps = getPs(s.id)
+              const dim = !ps.enabled || ps.durationMin === 0
               return (
                 <tr key={s.id} className={`align-middle ${dim ? "opacity-40" : ""}`}>
                   <td className="py-0.5 pr-2">
                     <Checkbox
-                      checked={s.enabled}
-                      onCheckedChange={(v) => update(realIdx, "enabled", Boolean(v))}
+                      checked={ps.enabled}
+                      onCheckedChange={(v) => updatePs(s.id, "enabled", Boolean(v))}
                     />
                   </td>
                   <td className="py-0.5 pr-2">
-                    <Input
-                      value={s.name}
-                      onChange={(e) => update(realIdx, "name", e.target.value)}
-                      className="h-7 text-sm"
-                    />
+                    {isBaseProgram ? (
+                      <Input
+                        value={s.name}
+                        onChange={(e) => onStationUpdate(s.id, "name", e.target.value)}
+                        className="h-7 text-sm"
+                      />
+                    ) : (
+                      <span className="text-sm text-gray-600 px-1">{s.name}</span>
+                    )}
                   </td>
                   <td className="py-0.5 pr-2">
                     <Input
                       type="number"
                       min={0}
-                      value={s.durationMin}
-                      onChange={(e) => update(realIdx, "durationMin", Number(e.target.value))}
+                      value={ps.durationMin}
+                      onChange={(e) => handleDurationChange(s.id, Number(e.target.value))}
+                      onFocus={(e) => e.target.select()}
                       className="h-7 text-sm text-right w-16"
                     />
                   </td>
                   <td className="py-0.5 pr-2">
-                    <Input
-                      type="number"
-                      min={0}
-                      step="0.001"
-                      placeholder="—"
-                      value={s.baselineGpm ?? ""}
-                      onChange={(e) =>
-                        update(realIdx, "baselineGpm", e.target.value === "" ? undefined : Number(e.target.value))
-                      }
-                      className="h-7 text-sm text-right w-24"
-                    />
+                    {isBaseProgram ? (
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.001"
+                        placeholder="—"
+                        value={s.baselineGpm ?? ""}
+                        onChange={(e) =>
+                          onStationUpdate(s.id, "baselineGpm", e.target.value === "" ? undefined : Number(e.target.value))
+                        }
+                        className="h-7 text-sm text-right w-24"
+                      />
+                    ) : (
+                      <span className="text-xs text-gray-400 flex items-center justify-end gap-1 pr-1 h-7">
+                        <svg width="10" height="10" viewBox="0 0 10 10" className="shrink-0 opacity-50">
+                          <rect x="2" y="4" width="6" height="5" rx="1" fill="currentColor" />
+                          <path d="M3 4V3a2 2 0 0 1 4 0v1" stroke="currentColor" strokeWidth="1.2" fill="none" />
+                        </svg>
+                        {s.baselineGpm != null ? s.baselineGpm.toFixed(3) : "—"}
+                      </span>
+                    )}
                   </td>
-                  <td className="py-0.5">
-                    <button
-                      onClick={() => remove(realIdx)}
-                      className="text-gray-300 hover:text-red-500 text-lg leading-none px-1"
-                      title="Remove"
-                    >
-                      ×
-                    </button>
-                  </td>
+                  {isBaseProgram && (
+                    <td className="py-0.5">
+                      <button
+                        onClick={() => onStationRemove(s.id)}
+                        className="text-gray-300 hover:text-red-500 text-lg leading-none px-1"
+                        title="Remove"
+                      >
+                        ×
+                      </button>
+                    </td>
+                  )}
                 </tr>
               )
             })}
@@ -112,17 +143,12 @@ function StationEditor({
       </div>
 
       <div className="flex items-center gap-3 pt-1">
-        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={add}>
-          + Add station
-        </Button>
         {inactive.length > 0 && (
           <button
             className="text-xs text-gray-400 hover:text-gray-600"
             onClick={() => setShowDisabled((v) => !v)}
           >
-            {showDisabled
-              ? `Hide ${inactive.length} disabled`
-              : `Show ${inactive.length} disabled`}
+            {showDisabled ? `Hide ${inactive.length} disabled` : `Show ${inactive.length} disabled`}
           </button>
         )}
       </div>
@@ -130,7 +156,7 @@ function StationEditor({
   )
 }
 
-// ---- Timer section --------------------------------------------------------
+// ---- Timer section with program tabs -------------------------------------
 
 function TimerSection({
   label,
@@ -141,35 +167,187 @@ function TimerSection({
   timer: TimerConfig
   onChange: (t: TimerConfig) => void
 }) {
-  const active = timer.stations.filter((s) => s.enabled && s.durationMin > 0)
-  const totalMin = active.reduce((s, st) => s + st.durationMin, 0)
+  const [activeProgram, setActiveProgram] = useState<ProgramId>("A")
+
+  const prog = timer.programs[activeProgram]
+
+  // Derived stats for the active program
+  const activeStations = timer.stations.filter((s) => {
+    const ps = prog.stations[s.id]
+    return ps?.enabled && (ps?.durationMin ?? 0) > 0
+  })
+  const totalMin = activeStations.reduce((sum, s) => sum + (prog.stations[s.id]?.durationMin ?? 0), 0)
+
+  const updateProgram = (pid: ProgramId, update: Partial<ProgramConfig>) => {
+    onChange({
+      ...timer,
+      programs: { ...timer.programs, [pid]: { ...timer.programs[pid], ...update } },
+    })
+  }
+
+  const toggleProgramEnabled = (pid: ProgramId) => {
+    if (pid === "A") return
+    updateProgram(pid, { enabled: !timer.programs[pid].enabled })
+  }
+
+  const toggleDay = (pid: ProgramId, day: number) => {
+    const days = timer.programs[pid].days.includes(day)
+      ? timer.programs[pid].days.filter((d) => d !== day)
+      : [...timer.programs[pid].days, day].sort()
+    updateProgram(pid, { days })
+  }
+
+  const addStation = () => {
+    const id = `S-${Date.now()}`
+    const newStation: Station = { id, name: "", }
+    const newPs = { durationMin: 0, enabled: false }
+    // Add to global station list
+    const stations = [...timer.stations, newStation]
+    // Add default settings to every program
+    const programs = { ...timer.programs } as typeof timer.programs
+    for (const pid of PROGRAM_IDS) {
+      programs[pid] = { ...programs[pid], stations: { ...programs[pid].stations, [id]: newPs } }
+    }
+    onChange({ ...timer, stations, programs })
+  }
+
+  const removeStation = (id: string) => {
+    const stations = timer.stations.filter((s) => s.id !== id)
+    const programs = { ...timer.programs } as typeof timer.programs
+    for (const pid of PROGRAM_IDS) {
+      const { [id]: _, ...rest } = programs[pid].stations
+      programs[pid] = { ...programs[pid], stations: rest }
+    }
+    onChange({ ...timer, stations, programs })
+  }
+
+  const updateStationField = (id: string, field: keyof Station, value: string | number | undefined) => {
+    onChange({
+      ...timer,
+      stations: timer.stations.map((s) => (s.id === id ? { ...s, [field]: value } : s)),
+    })
+  }
+
+  const updateProgramStations = (pid: ProgramId, ps: ProgramConfig["stations"]) => {
+    updateProgram(pid, { stations: ps })
+  }
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-base">{label}</CardTitle>
-          <span className="text-xs text-gray-400">{active.length} active · {totalMin} min total</span>
+          <span className="text-xs text-gray-400">{activeStations.length} active · {totalMin} min</span>
+        </div>
+
+        {/* Program tab bar */}
+        <div className="flex gap-0.5 mt-2 border-b border-gray-100">
+          {PROGRAM_IDS.map((pid) => {
+            const p = timer.programs[pid]
+            const isActive = activeProgram === pid
+            return (
+              <button
+                key={pid}
+                onClick={() => setActiveProgram(pid)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-t transition-colors relative -mb-px ${
+                  isActive
+                    ? "bg-white border border-b-white border-gray-200 text-gray-800 font-medium z-10"
+                    : "text-gray-400 hover:text-gray-600"
+                }`}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                    p.enabled ? "bg-green-400" : "bg-gray-300"
+                  }`}
+                />
+                Program {pid}
+                {pid !== "A" && !p.enabled && (
+                  <span className="text-xs text-gray-300 ml-0.5">off</span>
+                )}
+              </button>
+            )
+          })}
         </div>
       </CardHeader>
+
       <CardContent className="space-y-4">
-        <div className="flex items-center gap-3">
-          <Label className="w-24 shrink-0 text-sm">Start time</Label>
-          <Input
-            type="time"
-            step="1"
-            value={timer.start}
-            onChange={(e) => onChange({ ...timer, start: e.target.value || timer.start })}
-            className="w-36 h-8"
-          />
-        </div>
-        <div>
-          <Label className="text-sm mb-2 block">Stations (run in order)</Label>
-          <StationEditor
-            stations={timer.stations}
-            onChange={(stations) => onChange({ ...timer, stations })}
-          />
-        </div>
+        {/* B/C: show enable prompt if off */}
+        {activeProgram !== "A" && !prog.enabled ? (
+          <div className="text-center py-10 space-y-3">
+            <p className="text-sm text-gray-400">
+              Program {activeProgram} is off. Enable it to add a parallel watering schedule
+              with different days or durations.
+            </p>
+            <Button size="sm" onClick={() => toggleProgramEnabled(activeProgram)}>
+              Enable Program {activeProgram}
+            </Button>
+          </div>
+        ) : (
+          <>
+            {/* Days */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <Label className="text-sm">Days</Label>
+                {activeProgram !== "A" && (
+                  <button
+                    onClick={() => toggleProgramEnabled(activeProgram)}
+                    className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+                  >
+                    Disable Program {activeProgram}
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-3 flex-wrap">
+                {DAY_LABELS.map((dayLabel, i) => (
+                  <label key={i} className="flex items-center gap-1.5 cursor-pointer text-sm">
+                    <Checkbox
+                      checked={prog.days.includes(i)}
+                      onCheckedChange={() => toggleDay(activeProgram, i)}
+                    />
+                    {dayLabel}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Start time */}
+            <div className="flex items-center gap-3">
+              <Label className="w-20 shrink-0 text-sm">Start time</Label>
+              <Input
+                type="time"
+                step="1"
+                value={prog.start}
+                onChange={(e) => updateProgram(activeProgram, { start: e.target.value || prog.start })}
+                className="w-36 h-8"
+              />
+            </div>
+
+            {/* Stations */}
+            <div>
+              <Label className="text-sm mb-2 block">
+                Stations (run in order)
+                {activeProgram !== "A" && (
+                  <span className="ml-2 text-xs font-normal text-gray-400">
+                    — names &amp; GPM set on Program A
+                  </span>
+                )}
+              </Label>
+              <ProgramStationEditor
+                stations={timer.stations}
+                programStations={prog.stations}
+                isBaseProgram={activeProgram === "A"}
+                onProgramStationsChange={(ps) => updateProgramStations(activeProgram, ps)}
+                onStationUpdate={updateStationField}
+                onStationRemove={removeStation}
+              />
+              {activeProgram === "A" && (
+                <Button variant="outline" size="sm" className="h-7 text-xs mt-2" onClick={addStation}>
+                  + Add station
+                </Button>
+              )}
+            </div>
+          </>
+        )}
       </CardContent>
     </Card>
   )
@@ -219,7 +397,7 @@ function HistoryPanel({ history, onRestore }: { history: ConfigVersion[]; onRest
         const label = dt.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
           + " " + dt.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
         const baselineCount = [...v.config.timer1.stations, ...v.config.timer2.stations]
-          .filter((s) => s.enabled && s.durationMin > 0 && s.baselineGpm).length
+          .filter((s) => s.baselineGpm && s.baselineGpm > 0).length
 
         return (
           <div key={v.id} className="border rounded-lg overflow-hidden">
@@ -243,22 +421,36 @@ function HistoryPanel({ history, onRestore }: { history: ConfigVersion[]; onRest
               <div className="border-t px-3 pb-3 pt-2 space-y-3 bg-gray-50">
                 {v.notes && <p className="text-sm text-gray-700">{v.notes}</p>}
                 <div className="grid grid-cols-2 gap-4">
-                  {[
-                    { label: `T1 — ${v.config.timer1.start.slice(0, 5)}`, stations: v.config.timer1.stations },
-                    { label: `T2 — ${v.config.timer2.start.slice(0, 5)}`, stations: v.config.timer2.stations },
-                  ].map((t) => (
-                    <div key={t.label}>
-                      <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">{t.label}</p>
-                      {t.stations.filter((s) => s.enabled && s.durationMin > 0).map((s) => (
-                        <div key={s.id} className="flex justify-between text-xs py-0.5">
-                          <span>{s.name}</span>
-                          <span className="text-gray-400">
-                            {s.durationMin}m{s.baselineGpm ? <span className="text-blue-600 ml-1">@{s.baselineGpm}</span> : ""}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
+                  {(["timer1", "timer2"] as const).map((tk) => {
+                    const timer = v.config[tk]
+                    const progA = timer.programs.A
+                    const start = progA.start.slice(0, 5)
+                    const days = progA.days.map((d) => DAY_LABELS[d]).join(", ")
+                    return (
+                      <div key={tk}>
+                        <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">
+                          {tk === "timer1" ? "T1" : "T2"} — {start} · {days || "no days"}
+                        </p>
+                        {timer.stations
+                          .filter((s) => {
+                            const ps = progA.stations[s.id]
+                            return ps?.enabled && (ps?.durationMin ?? 0) > 0
+                          })
+                          .map((s) => {
+                            const ps = progA.stations[s.id]
+                            return (
+                              <div key={s.id} className="flex justify-between text-xs py-0.5">
+                                <span>{s.name}</span>
+                                <span className="text-gray-400">
+                                  {ps?.durationMin}m
+                                  {s.baselineGpm ? <span className="text-blue-600 ml-1">@{s.baselineGpm}</span> : ""}
+                                </span>
+                              </div>
+                            )
+                          })}
+                      </div>
+                    )
+                  })}
                 </div>
                 <Button size="sm" variant="outline" className="h-7 text-xs"
                   onClick={() => { onRestore(v); toast.success("Restored — review and Save to make permanent") }}>
@@ -278,12 +470,14 @@ function HistoryPanel({ history, onRestore }: { history: ConfigVersion[]; onRest
 interface ConfigBundle {
   version: 1
   exportedAt: string
-  config: AppConfig
-  configHistory: ConfigVersion[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  config: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  configHistory: Array<Omit<ConfigVersion, "config"> & { config: any }>
 }
 
 function ExportImportCard() {
-  const { config, configHistory, saveConfig } = useStore()
+  const { config, configHistory } = useStore()
   const fileRef = useRef<HTMLInputElement>(null)
   const [urlInput, setUrlInput] = useState("")
   const [loadingUrl, setLoadingUrl] = useState(false)
@@ -310,8 +504,8 @@ function ExportImportCard() {
       return
     }
     useStore.setState({
-      config: bundle.config,
-      configHistory: bundle.configHistory,
+      config: migrateConfig(bundle.config),
+      configHistory: bundle.configHistory.map((v) => ({ ...v, config: migrateConfig(v.config) })),
     })
     toast.success(`Config loaded — ${bundle.configHistory.length} version${bundle.configHistory.length !== 1 ? "s" : ""} in history`)
   }
@@ -354,7 +548,6 @@ function ExportImportCard() {
         <CardTitle className="text-base">Export / Import</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Export */}
         <div className="flex items-start gap-4 flex-wrap">
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium">Export</p>
@@ -372,7 +565,6 @@ function ExportImportCard() {
 
         <hr />
 
-        {/* Import from file */}
         <div>
           <p className="text-sm font-medium mb-1">Import from file</p>
           <input
@@ -387,7 +579,6 @@ function ExportImportCard() {
           </Button>
         </div>
 
-        {/* Import from URL */}
         <div>
           <p className="text-sm font-medium mb-1">Import from URL</p>
           <p className="text-xs text-gray-400 mb-1.5">Paste a GitHub URL to your config file</p>
@@ -418,8 +609,6 @@ export default function ConfigPage() {
 
   // Sync local when the store's config is updated externally (e.g. the async
   // default-config.json auto-load on a fresh install resolves after first render).
-  // Keying on configHistory.length catches the initial load (0→N) without
-  // clobbering edits the user has already started making.
   const prevHistoryLen = useRef(configHistory.length)
   useEffect(() => {
     if (prevHistoryLen.current !== configHistory.length) {
@@ -439,13 +628,6 @@ export default function ConfigPage() {
     setLocal(JSON.parse(JSON.stringify(v.config)))
   }
 
-  const toggleDay = (day: number) => {
-    const days = local.sprinklerDays.includes(day)
-      ? local.sprinklerDays.filter((d) => d !== day)
-      : [...local.sprinklerDays, day].sort()
-    setLocal({ ...local, sprinklerDays: days })
-  }
-
   return (
     <div className="space-y-6 max-w-3xl">
       {showSaveDialog && <SaveDialog onSave={handleSave} onCancel={() => setShowSaveDialog(false)} />}
@@ -461,23 +643,17 @@ export default function ConfigPage() {
       </div>
 
       <div className="grid md:grid-cols-2 gap-4">
-        <TimerSection label="Timer 1" timer={local.timer1} onChange={(t) => setLocal({ ...local, timer1: t })} />
-        <TimerSection label="Timer 2" timer={local.timer2} onChange={(t) => setLocal({ ...local, timer2: t })} />
+        <TimerSection
+          label="Timer 1"
+          timer={local.timer1}
+          onChange={(t) => setLocal({ ...local, timer1: t })}
+        />
+        <TimerSection
+          label="Timer 2"
+          timer={local.timer2}
+          onChange={(t) => setLocal({ ...local, timer2: t })}
+        />
       </div>
-
-      <Card>
-        <CardHeader><CardTitle className="text-base">Watering Schedule</CardTitle></CardHeader>
-        <CardContent>
-          <div className="flex gap-3 flex-wrap">
-            {DAY_LABELS.map((label, i) => (
-              <label key={i} className="flex items-center gap-1.5 cursor-pointer text-sm">
-                <Checkbox checked={local.sprinklerDays.includes(i)} onCheckedChange={() => toggleDay(i)} />
-                {label}
-              </label>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
 
       <Card>
         <CardHeader><CardTitle className="text-base">Detection &amp; Billing</CardTitle></CardHeader>

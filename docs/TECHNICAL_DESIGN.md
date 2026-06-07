@@ -30,16 +30,16 @@ sprinkler-app/
 │   └── day/[date]/page.tsx     # Minute-by-minute day detail
 ├── components/
 │   ├── Navbar.tsx
-│   ├── StoreProvider.tsx       # Client-only Zustand rehydration
+│   ├── StoreProvider.tsx       # Client-only Zustand rehydration + default-config.json load
 │   ├── UploadModal.tsx         # CSV file + URL loader
 │   ├── SummaryCards.tsx
-│   ├── ConsumptionChart.tsx    # Unified time-series chart (replaces DailyChart + WeeklyChart)
-│   ├── StationFlowChart.tsx    # Horizontal bar chart with baseline refs
+│   ├── ConsumptionChart.tsx    # Unified time-series chart
+│   ├── StationFlowChart.tsx    # Horizontal bar chart for a single day with nav
 │   └── WarningsPanel.tsx
 ├── lib/
-│   ├── types.ts                # All shared TypeScript interfaces + DEFAULT_CONFIG
+│   ├── types.ts                # All shared TypeScript interfaces, DEFAULT_CONFIG, migrateConfig
 │   ├── analyze.ts              # Pure analysis functions (no React)
-│   ├── store.ts                # Zustand store
+│   ├── store.ts                # Zustand store with migration on rehydrate
 │   └── __tests__/
 │       └── analyze.test.ts     # Vitest unit tests
 ├── vitest.config.ts
@@ -48,12 +48,66 @@ sprinkler-app/
 
 ---
 
+## Data Types
+
+### Station (hardware — shared across programs)
+```ts
+interface Station {
+  id: string
+  name: string
+  baselineGpm?: number   // physical measurement from seasonal audit
+}
+```
+
+### ProgramStation (per-program schedule settings for one station)
+```ts
+interface ProgramStation {
+  durationMin: number
+  enabled: boolean
+}
+```
+
+### ProgramConfig (one scheduling program — A, B, or C)
+```ts
+type ProgramId = "A" | "B" | "C"
+
+interface ProgramConfig {
+  enabled: boolean                          // B and C are off by default
+  start: string                             // "HH:MM:SS"
+  days: number[]                            // 0=Mon … 6=Sun
+  stations: Record<string, ProgramStation>  // keyed by Station.id
+}
+```
+
+### TimerConfig
+```ts
+interface TimerConfig {
+  stations: Station[]                                     // ordered; defines run order
+  programs: { A: ProgramConfig; B: ProgramConfig; C: ProgramConfig }
+}
+```
+
+### AppConfig
+```ts
+interface AppConfig {
+  timer1: TimerConfig
+  timer2: TimerConfig
+  sprinklerOnThreshold: number   // gallons during any station window → sprinkler day
+  gallonsPerUnit: number
+  costPerUnit: number
+}
+```
+
+Note: `sprinklerDays` (formerly a top-level array) has been removed. Each program now carries its own `days` array.
+
+---
+
 ## Data Flow
 
 ```
 FlumeRow[]  +  ConfigVersion[]  (stored in localStorage via Zustand)
     │
-    ▼  enrichRowsMultiConfig(rows, configHistory, defaultConfig)
+    ▼  enrichRowsMultiConfig(rows, configHistory)
        ┌─ for each date range, find the active ConfigVersion
        └─ call enrichRows(batchRows, activeConfig) per segment
 EnrichedRow[]    (each minute: station id, timer "timer1"/"timer2"/"house", isSprinklerDay)
@@ -81,33 +135,33 @@ All functions are **pure** (no side effects, no React). They live in `lib/analyz
 
 **Algorithm**:
 1. Sort `configHistory` oldest-first (by `savedAt`)
-2. Build a list of segments: `[{ fromDate: "0000-00-00", config: DEFAULT_CONFIG }, { fromDate: v1.savedAt, config: v1.config }, ...]`
+2. Build a list of segments: `[{ fromDate: "0000-00-00", config: oldest_saved }, { fromDate: v1.savedAt, config: v1.config }, ...]`
 3. For each row date, find its segment (the last segment whose `fromDate ≤ row.date`)
 4. Group rows by segment index; call `enrichRows(batch, segment.config)` on each batch
 5. Merge and sort all results by datetime
 
 This means: changing today's config has no effect on how past data is analyzed. History is immutable.
 
-```
-configHistory:  v1(Mar 1)  v2(Jun 1)  v3(Sep 1)
-Segments:       [before Mar 1 → DEFAULT]
-                [Mar 1 → Jun 1) → config v1]
-                [Jun 1 → Sep 1) → config v2]
-                [Sep 1 → now   → config v3]
-```
+**Pre-history fallback**: data before the first saved config uses the **oldest saved config**, not `DEFAULT_CONFIG`. `DEFAULT_CONFIG` is a generic placeholder with wrong timer start times for real installations; the oldest saved config is always a better proxy for what the system looked like before the user started tracking changes.
 
-### 2. Sprinkler Day Detection (`enrichRows` step 1)
-For each date, sum `gallons` for minutes in `[T1_START, T2_START + 120 min]`. If > `sprinklerOnThreshold` → `isSprinklerDay = true`. Threshold default: 500 gal.
+### 2. Multi-Program Enrichment (`enrichRows`)
 
-### 3. Station & Timer Assignment (`enrichRows` step 2-3)
-Build ordered windows per timer:
-```
-T1 windows: T1-01[0→10min], T1-02[10→25min], ...
-T2 windows: T2-03[0→6min],  T2-04[6→21min], ...
-```
-Each minute on a sprinkler day: walk windows, assign first match. Mirrors original Python notebook logic: `startMin < minute <= endMin`. Enriched rows carry both `station` (id) and `timer` ("timer1" | "timer2" | "house").
+For each date:
+1. Compute the day-of-week (0=Mon … 6=Sun).
+2. For each timer (T1, T2), iterate over programs A, B, C. A program is **active** for this date if `program.enabled && program.days.includes(dow)`.
+3. For each active program, build ordered station windows:
+   - `cursor = parseTimeToMinutes(program.start)`
+   - For each station in `timer.stations` order: `end = cursor + programStation.durationMin`. If `enabled && durationMin > 0`, push `{ stationId, timer, startMin: cursor, endMin: end }`.
+4. Compute the detection window as `[min(all startMins), max(all endMins)]`.
+5. Sum gallons within that window. If > `sprinklerOnThreshold` → `isSprinklerDay = true`.
+6. Tag each row: walk windows in order; if `startMin < rowMin ≤ endMin`, assign that station/timer. Otherwise: `house`.
 
-### 4. Chart Aggregation (`aggregateForChart`)
+**Key properties:**
+- Multiple programs from the same timer can be active on the same day (if their `days` overlap). Their windows are merged into a single ordered window list.
+- A day with no active programs for either timer → `windowGallons = 0` → never a sprinkler day.
+- Analytics (timer, station) are oblivious to the program dimension — a station watered by Program A or Program B looks identical in the output.
+
+### 3. Chart Aggregation (`aggregateForChart`)
 Groups `EnrichedRow[]` into time buckets (`day` / `week` / `month`), then sums gallons per breakdown level:
 - **simple**: `{ house, sprinkler }` where sprinkler = sum of all non-house rows
 - **timer**: `{ house, timer1, timer2 }`
@@ -122,10 +176,10 @@ Time window → bucket mapping:
 | 3M, 6M | week |
 | 1Y, All | month |
 
-### 5. Config-Change Markers on Chart
+### 4. Config-Change Markers on Chart
 `configHistory` entries whose `savedAt` falls within the visible date range are mapped to their nearest bar label. Rendered as Recharts `ReferenceLine x={label}` with a custom label component. Tooltip on hover shows change notes.
 
-### 6. Baseline Warning (`computeStationWarnings`)
+### 5. Baseline Warning (`computeStationWarnings`)
 - Lookback: last 21 calendar days of data
 - Per station: compute daily avg gpm for each sprinkler day in window
 - Walk from most-recent day backward, count consecutive days where daily avg > `baseline × 1.20`
@@ -162,6 +216,25 @@ Persisted under `"sprinkler-store"` in localStorage.
 
 ---
 
+## Config Migration
+
+Old configs (before multi-program support) stored `start` and station `durationMin`/`enabled` directly on the timer. The migration function `migrateConfig(rawConfig)` in `lib/types.ts` detects old format (presence of `timer1.start`) and converts:
+
+1. `timer1.start` + `sprinklerDays` → `timer1.programs.A.{ start, days }`
+2. `station.{ durationMin, enabled }` → `programs.A.stations[id].{ durationMin, enabled }`
+3. `station.{ id, name, baselineGpm }` → `timer1.stations[id].{ id, name, baselineGpm }`
+4. Programs B and C initialized as `{ enabled: false, start: timer.start, days: [], stations: {} }`
+5. Top-level `sprinklerDays` removed
+
+Migration is applied:
+- In `store.ts` `onRehydrateStorage` — for configs persisted in localStorage
+- In `StoreProvider.tsx` — when loading `public/default-config.json` on fresh install
+- In `ExportImportCard.applyBundle` — when importing a JSON file or URL
+
+Migration is idempotent: new-format configs pass through unchanged.
+
+---
+
 ## Config Versioning
 
 ```ts
@@ -177,7 +250,7 @@ interface ConfigVersion {
 
 History is never pruned. `restoreConfig` loads into the editor's local state only; the user must Save to commit.
 
-**Time-aware analysis**: all analysis functions accept `configHistory` and use `enrichRowsMultiConfig` to apply the correct config per date range. The current `config` in the store is only used for the Config editor UI and as the fallback for the most recent segment.
+**Time-aware analysis**: all analysis functions accept `configHistory` and use `enrichRowsMultiConfig` to apply the correct config per date range.
 
 ---
 
@@ -193,32 +266,6 @@ Column matching: `datetime | Datetime | DateTime`, `gallons | Gallons`. Invalid 
 
 ---
 
-## ConsumptionChart Component
-
-Unified replacement for `DailyChart` + `WeeklyChart`.
-
-### Props
-```ts
-{
-  enriched: EnrichedRow[]
-  configHistory: ConfigVersion[]
-  window: TimeWindow        // "2w"|"1m"|"3m"|"6m"|"1y"|"all"
-  breakdown: Breakdown      // "simple"|"timer"|"station"
-  onWindowChange: (w) => void
-  onBreakdownChange: (b) => void
-}
-```
-
-### Rendering
-1. Filter enriched rows to the selected time window
-2. Call `aggregateForChart(filtered, bucket, breakdown)` → `ChartBar[]`
-3. Recharts `ComposedChart` with stacked `Bar` series + `Line` for total
-4. `ReferenceLine` per config change in range (dashed, labeled with notes on hover)
-5. Custom bar shape renders a `⚠` indicator above anomalous bars
-6. Legend auto-generated from the active breakdown level
-
----
-
 ## Testing
 
 **Runner**: Vitest (`npm test` = `vitest run`, `npm run test:watch` = `vitest`)
@@ -227,14 +274,15 @@ Unified replacement for `DailyChart` + `WeeklyChart`.
 
 | Test | What it verifies |
 |---|---|
-| Station assignment on sprinkler day | Correct station id assigned for each time window |
+| Station assignment on sprinkler day (Program A) | Correct station id assigned for each time window |
 | House assignment outside station window | Minutes between stations → "house" |
-| House assignment on non-sprinkler day | No station assigned when threshold not met |
+| House assignment on non-scheduled day | Day not in program.days → no windows → not a sprinkler day |
 | Sprinkler day threshold | Just-below threshold → not a sprinkler day |
+| Program B active on different days | B and A can have non-overlapping day sets |
 | `enrichRowsMultiConfig` — default config | Uses DEFAULT_CONFIG when no history |
 | `enrichRowsMultiConfig` — single version | Uses saved config after its savedAt date |
 | `enrichRowsMultiConfig` — multi-version | Each date range uses the correct version |
-| `enrichRowsMultiConfig` — pre-history data | Data before first version uses DEFAULT_CONFIG |
+| `enrichRowsMultiConfig` — pre-history data | Data before first version uses oldest saved config |
 | `buildWeeklyRows` — bucketing | Rows on same ISO week aggregate together |
 | `buildWeeklyRows` — week boundaries | Mon/Sun split into correct weeks |
 | `computeStationWarnings` — fires | >20% above baseline for 2+ days → warning |
@@ -266,3 +314,4 @@ Unified replacement for `DailyChart` + `WeeklyChart`.
 | No row validation beyond column names | Malformed timestamps silently dropped |
 | Config savedAt resolution is 1 day | Two configs saved on the same day: last one wins |
 | IQR anomaly detection is naive | No seasonal adjustment; many weeks of data needed before IQR is meaningful |
+| Programs A and B on same timer same day | Both programs' windows are merged; if they overlap in time, first-match wins |

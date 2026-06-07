@@ -9,6 +9,7 @@ A client-side web application that helps a homeowner analyze Flume smart meter d
 - Checks in weekly after downloading a new Flume CSV export
 - Makes seasonal schedule adjustments a few times a year; keeps notes on what changed and why
 - Does a seasonal audit: physically measures each station's flow rate and records the baseline gpm
+- May run multiple programs on a timer (e.g., full summer schedule on Mon/Wed/Fri, a lighter drought schedule on Sat)
 - Comfortable with web apps, not with Jupyter notebooks
 
 ---
@@ -21,13 +22,30 @@ Flume exports a CSV with a `datetime` column and `gallons` column (one row per m
 ### Configuration (versioned)
 ```
 timers:
-  T1: { start: "HH:MM:SS", stations: [{ id, name, durationMin, enabled, baselineGpm }] }
-  T2: { start: "HH:MM:SS", stations: [...] }
-sprinklerDays: number[]          # 0=Mon … 6=Sun
-sprinklerOnThreshold: number     # gallons during sprinkler window → counts as sprinkler day
-gallonsPerUnit: 748              # EBMUD billing unit
-costPerUnit: 10.47               # $/unit
+  T1:
+    stations: [{ id, name, baselineGpm }]   # hardware — order defines run order
+    programs:
+      A: { enabled: true,  start, days, stations: { id → { durationMin, enabled } } }
+      B: { enabled: false, start, days, stations: { ... } }
+      C: { enabled: false, start, days, stations: { ... } }
+  T2: (same structure)
+
+sprinklerOnThreshold: number   # gallons during station windows → counts as sprinkler day
+gallonsPerUnit: 748            # EBMUD billing unit
+costPerUnit: 10.47             # $/unit
 ```
+
+#### Programs
+Each timer supports three independent programs: **A**, **B**, and **C**.
+
+- **Program A** is always enabled. It is the primary schedule.
+- **Programs B and C** are off by default. Enable them to run a parallel schedule (e.g., a seasonal short cycle).
+- Each program has its own **start time** and **days of week**.
+- Station **run order** (id, name) is shared across all programs for a timer.
+- Station **duration and on/off** are per-program.
+- Station **baseline gpm** is a hardware property — set on Program A, displayed read-only on B/C.
+
+Analytics always aggregate by timer and station, ignoring the program dimension.
 
 **Config is time-aware.** Each `ConfigVersion { id, savedAt, notes, config }` has an effective date. When analyzing data, the config version active on each date is used — not the current config. This means:
 - A config saved on June 1 applies to all data from June 1 onward, until the next config change.
@@ -66,6 +84,9 @@ Vertical dashed lines on the chart at every date a config was saved within the v
 **Anomaly markers:**
 Bars that fall outside the normal range (IQR-based outlier detection) get a small warning indicator (⚠ above the bar). This surfaces leaks and blockages at a glance without requiring the user to compute anything.
 
+**Click-to-drill (2W / 1M views):**
+In daily-bar mode, clicking a bar sets the selected day for the Per-Station Flow Rate chart on the dashboard. A cyan vertical line marks the selected day.
+
 **Design rationale:**
 - One chart, not four. The user should not have to navigate between views to understand a trend.
 - Config changes as first-class visual objects. Without them, a step-change in consumption looks alarming; with them, the user immediately sees "oh, that's when I adjusted the schedule."
@@ -78,9 +99,9 @@ Bars that fall outside the normal range (IQR-based outlier detection) get a smal
 The primary landing page. Top-to-bottom layout:
 
 1. **Station Alerts panel** — red warning per station running >20% above baseline for 2+ consecutive days; green all-clear otherwise; prompt to add baselines if none set.
-2. **Summary Cards** — Total gallons · Sprinkler gallons · House gallons · Estimated cost, scoped to the selected window.
+2. **Summary Cards** — Total gallons · Sprinkler gallons · House gallons · Estimated cost, scoped to the current calendar month (1st → today).
 3. **Consumption Chart** — the unified chart described above.
-4. **Per-Station Flow Rate** — horizontal bar chart with baseline reference lines; bars >20% above baseline turn red.
+4. **Per-Station Flow Rate** — horizontal bar chart for a single selected day with prev/next navigation through sprinkler days; bars >20% above baseline turn red.
 
 ### Analysis (/analysis)
 Deep-dive into station performance across all loaded data:
@@ -97,11 +118,24 @@ Minute-by-minute view for a single sprinkler day, using the config version activ
 ### Configuration (/config)
 
 **Timer Editor**
-- Start time pickers for Timer 1 and Timer 2
-- Station table (one row per station): On | Name | Duration (min) | Baseline gpm
-- Baseline gpm entered after physical seasonal audit
 
-**Watering Schedule**: day-of-week checkboxes
+Each timer card contains a **program tab bar** (A / B / C) at the top.
+
+- **Program A tab** is always active and always enabled.
+- **Program B / C tabs** show a dot indicator: green = enabled, gray = off. Clicking a disabled program tab shows an "Enable Program X" prompt — no accidental activations.
+
+Within the active program view:
+- **Days of week** checkboxes — which days this program runs.
+- **Start time** picker — when the timer fires.
+- **Station table** (one row per station, run in order):
+  - On/Off toggle — per-program
+  - Name — editable on Program A only; read-only on B/C
+  - Minutes — per-program duration
+  - Baseline gpm — editable on Program A; shown with a lock icon on B/C (hardware property, not schedule)
+  - Remove button — Program A only
+
+- **Add Station** button appears on Program A only.
+- **Show/hide disabled** toggle collapses stations that are off with 0 duration.
 
 **Detection & Billing**: sprinkler-on threshold, gallons/unit, $/unit
 
@@ -127,7 +161,7 @@ Minute-by-minute view for a single sprinkler day, using the config version activ
 ### First-Time Setup
 1. Land on Dashboard → empty state → click Upload CSV
 2. Upload or URL-load Flume CSV → toast confirms row count
-3. Navigate to Config → verify timers, stations
+3. Navigate to Config → verify timers, stations, Program A schedule
 4. Enter baseline gpm per station (or skip until seasonal audit)
 5. Save config with notes → return to Dashboard
 
@@ -137,21 +171,23 @@ Minute-by-minute view for a single sprinkler day, using the config version activ
 3. Scan Station Alerts for red warnings
 4. Review Consumption Chart (1M window) for anomaly markers or unexpected steps
 5. If something looks off — check whether it coincides with a config-change marker
-6. Click suspicious day → Day Detail
+6. Click suspicious day → day's station flow shown in the Per-Station chart below
 
 ### Seasonal Config Update
 1. Do physical audit: measure each station's gpm
 2. Navigate to Config
-3. Update durations and baseline gpm values
-4. Save → enter notes (e.g. "Spring 2025 — reduced T1-03 to 12 min, updated all baselines")
-5. Config change marker appears on the chart going forward
+3. Update Program A durations and baseline gpm values
+4. Optionally add a Program B for a shorter drought schedule
+5. Save → enter notes (e.g. "Spring 2025 — reduced T1-03 to 12 min, updated all baselines")
+6. Config change marker appears on the chart going forward
 
 ### Anomaly Investigation
 1. Anomaly marker (⚠) on chart — not coinciding with a config-change marker
 2. Narrow the window to 2W to see daily detail
 3. Station Alerts: identify which station is high
-4. Day Detail: check minute chart for that station
-5. Fix hardware; confirm next watering cycle looks normal
+4. Click the anomaly bar → Per-Station chart jumps to that day
+5. Day Detail: check minute chart for that station
+6. Fix hardware; confirm next watering cycle looks normal
 
 ---
 
@@ -162,6 +198,7 @@ Minute-by-minute view for a single sprinkler day, using the config version activ
 4. **Progressive breakdown**: Simple → Timer → Station. Coarse first, drill when needed.
 5. **Flat is healthy**: Weekly chart should be flat; anything else demands attention.
 6. **Notes are mandatory on config save**: Enforces a lightweight change log.
+7. **Programs are opt-in**: Program A is the default path. B and C require an explicit enable step; most users never need them.
 
 ---
 

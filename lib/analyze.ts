@@ -6,6 +6,7 @@ import type {
   DailyRow,
   EnrichedRow,
   FlumeRow,
+  ProgramConfig,
   StationStats,
   TimeBucket,
   TimeWindow,
@@ -46,78 +47,125 @@ function monthKey(dateStr: string): string {
 // Core enrichment (single config)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Local-time helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract local-time date string ("YYYY-MM-DD") and minutes-since-midnight from
+ * a datetime string. Using new Date() and getFullYear/getMonth/getDate/getHours/
+ * getMinutes ensures UTC-stamped Flume data (e.g. "2024-05-22T10:45:00Z") is
+ * converted to the browser's local timezone before comparing against configured
+ * times (which the user enters in their local timezone).
+ *
+ * For timezone-naive strings (no Z/offset), JS treats them as local time —
+ * so test data and manually-entered datetimes are handled correctly too.
+ */
+function localDateAndMin(datetime: string): { date: string; rowMin: number } {
+  const d = new Date(datetime)
+  const y  = d.getFullYear()
+  const mo = d.getMonth() + 1
+  const dy = d.getDate()
+  const date = `${y}-${String(mo).padStart(2, "0")}-${String(dy).padStart(2, "0")}`
+  const rowMin = d.getHours() * 60 + d.getMinutes()
+  return { date, rowMin }
+}
+
 export function enrichRows(rows: FlumeRow[], config: AppConfig): EnrichedRow[] {
   if (rows.length === 0) return []
 
-  // Step 1: detect sprinkler days
-  const t1Min = parseTimeToMinutes(config.timer1.start)
-  const t2StartMin = parseTimeToMinutes(config.timer2.start)
-  const windowEndMin = t2StartMin + 120
-
-  const windowGallons: Record<string, number> = {}
+  // Group rows by LOCAL date and precompute local rowMin — one Date object per row.
+  // Flume exports UTC timestamps; using new Date() converts them to local time so
+  // the computed minutes align with the user's configured start times.
+  const byDate = new Map<string, { rows: Array<{ row: FlumeRow; rowMin: number }>; dow: number }>()
   for (const row of rows) {
-    const date = row.datetime.slice(0, 10)
-    const [rh, rm] = row.datetime.slice(11, 16).split(":").map(Number)
-    const rowMin = rh * 60 + rm
-    if (rowMin >= t1Min && rowMin <= windowEndMin) {
-      windowGallons[date] = (windowGallons[date] ?? 0) + row.gallons
+    const { date, rowMin } = localDateAndMin(row.datetime)
+    if (!byDate.has(date)) {
+      // Use noon on the local date for DOW to avoid any midnight-boundary ambiguity
+      const d = new Date(date + "T12:00:00")
+      const dow = (d.getDay() + 6) % 7 // 0=Mon
+      byDate.set(date, { rows: [], dow })
     }
+    byDate.get(date)!.rows.push({ row, rowMin })
   }
 
-  const sprinklerDaySet = new Set<string>()
-  for (const [date, gallons] of Object.entries(windowGallons)) {
-    if (gallons > config.sprinklerOnThreshold) sprinklerDaySet.add(date)
-  }
+  const results: EnrichedRow[] = []
 
-  // Step 2: build station windows (with timer tag)
-  function buildWindows(
-    timerStartStr: string,
-    stations: AppConfig["timer1"]["stations"],
-    timerTag: string
-  ) {
-    const windows: Array<{
+  for (const [date, { rows: dateRows, dow }] of byDate) {
+    // Build ordered station windows for this date by scanning all enabled programs
+    // on both timers whose days array includes today's DOW.
+    const allWindows: Array<{
       stationId: string
       timer: string
       startMin: number
       endMin: number
     }> = []
-    let cursor = parseTimeToMinutes(timerStartStr)
-    for (const s of stations) {
-      const end = cursor + s.durationMin
-      if (s.enabled && s.durationMin > 0) {
-        windows.push({ stationId: s.id, timer: timerTag, startMin: cursor, endMin: end })
-      }
-      cursor = end
-    }
-    return windows
-  }
+    let windowMin = Infinity
+    let windowMax = -Infinity
 
-  const allWindows = [
-    ...buildWindows(config.timer1.start, config.timer1.stations, "timer1"),
-    ...buildWindows(config.timer2.start, config.timer2.stations, "timer2"),
-  ]
+    for (const [timerKey, timer] of [
+      ["timer1", config.timer1],
+      ["timer2", config.timer2],
+    ] as const) {
+      for (const prog of Object.values(timer.programs) as ProgramConfig[]) {
+        if (!prog.enabled || !prog.days.includes(dow)) continue
 
-  // Step 3: tag each row
-  return rows.map((row) => {
-    const date = row.datetime.slice(0, 10)
-    const [rh, rm] = row.datetime.slice(11, 16).split(":").map(Number)
-    const rowMin = rh * 60 + rm
-    const isSprinklerDay = sprinklerDaySet.has(date)
+        const progStartMin = parseTimeToMinutes(prog.start)
+        let cursor = progStartMin
 
-    let station = "house"
-    let timer = "house"
-    if (isSprinklerDay) {
-      for (const w of allWindows) {
-        if (rowMin > w.startMin && rowMin <= w.endMin) {
-          station = w.stationId
-          timer = w.timer
-          break
+        for (const station of timer.stations) {
+          const ps = prog.stations[station.id]
+          const dur = ps?.durationMin ?? 0
+          const ena = ps?.enabled ?? false
+          const end = cursor + dur
+          if (ena && dur > 0) {
+            allWindows.push({ stationId: station.id, timer: timerKey, startMin: cursor, endMin: end })
+            if (cursor < windowMin) windowMin = cursor
+            if (end > windowMax) windowMax = end
+          }
+          cursor = end
         }
       }
     }
 
-    return { datetime: row.datetime, date, timeMin: rowMin, gallons: row.gallons, station, timer, isSprinklerDay }
-  })
+    // Detect sprinkler day: sum gallons within the full span of all windows
+    let windowGallons = 0
+    if (windowMin !== Infinity) {
+      for (const { row, rowMin } of dateRows) {
+        if (rowMin >= windowMin && rowMin <= windowMax) {
+          windowGallons += row.gallons
+        }
+      }
+    }
+    const isSprinklerDay = windowGallons > config.sprinklerOnThreshold
+
+    // Tag each row with its station and timer
+    for (const { row, rowMin } of dateRows) {
+      let station = "house"
+      let timer = "house"
+      if (isSprinklerDay) {
+        for (const w of allWindows) {
+          if (rowMin > w.startMin && rowMin <= w.endMin) {
+            station = w.stationId
+            timer = w.timer
+            break
+          }
+        }
+      }
+
+      results.push({
+        datetime: row.datetime,
+        date,
+        timeMin: rowMin,  // local minutes — aligns with configured times
+        gallons: row.gallons,
+        station,
+        timer,
+        isSprinklerDay,
+      })
+    }
+  }
+
+  return results.sort((a, b) => a.datetime.localeCompare(b.datetime))
 }
 
 // ---------------------------------------------------------------------------
@@ -128,9 +176,11 @@ export function enrichRows(rows: FlumeRow[], config: AppConfig): EnrichedRow[] {
  * Enrich rows using the correct config version for each date.
  *
  * A config saved on date D applies to all data from D onward, until the next
- * config version. Data before the first saved config uses DEFAULT_CONFIG.
- *
- * This means historical analysis is never affected by future config changes.
+ * config version. Data before the first saved config uses that OLDEST saved
+ * config (not the built-in DEFAULT_CONFIG), because the oldest saved config
+ * is the best approximation of what the system looked like before the user
+ * started tracking changes. DEFAULT_CONFIG is a generic placeholder that
+ * almost never matches a real installation's timer start times.
  */
 export function enrichRowsMultiConfig(
   rows: FlumeRow[],
@@ -142,7 +192,9 @@ export function enrichRowsMultiConfig(
   // Oldest-first segments: [{ fromDate, config }]
   const sorted = [...configHistory].sort((a, b) => a.savedAt.localeCompare(b.savedAt))
   const segments: Array<{ fromDate: string; config: AppConfig }> = [
-    { fromDate: "0000-00-00", config: DEFAULT_CONFIG },
+    // Use the oldest saved config for all data that predates it.
+    // This correctly handles historical data loaded before the user first saved.
+    { fromDate: "0000-00-00", config: sorted[0].config },
     ...sorted.map((v) => ({ fromDate: v.savedAt.slice(0, 10), config: v.config })),
   ]
 
@@ -173,7 +225,7 @@ export function enrichRowsMultiConfig(
 }
 
 // ---------------------------------------------------------------------------
-// Daily / Weekly aggregations (unchanged)
+// Daily / Weekly aggregations
 // ---------------------------------------------------------------------------
 
 export function buildDailyRows(enriched: EnrichedRow[]): DailyRow[] {
@@ -243,7 +295,6 @@ export function aggregateForChart(
 ): ChartBar[] {
   if (enriched.length === 0) return []
 
-  // Bucket key + metadata
   function bucketOf(date: string): { key: string; label: string; start: string } {
     if (bucket === "day") {
       const d = new Date(date + "T12:00:00")
@@ -263,7 +314,6 @@ export function aggregateForChart(
     return { key, label, start: key + "-01" }
   }
 
-  // Accumulate into buckets
   const buckets = new Map<
     string,
     { label: string; start: string; end: string; stacks: Record<string, number>; total: number }
@@ -278,14 +328,13 @@ export function aggregateForChart(
     if (row.date > b.end) b.end = row.date
     b.total += row.gallons
 
-    // Stack key depends on breakdown
     let stackKey: string
     if (breakdown === "simple") {
       stackKey = row.timer === "house" ? "house" : "sprinkler"
     } else if (breakdown === "timer") {
-      stackKey = row.timer // "house" | "timer1" | "timer2"
+      stackKey = row.timer
     } else {
-      stackKey = row.station // station id or "house"
+      stackKey = row.station
     }
     b.stacks[stackKey] = (b.stacks[stackKey] ?? 0) + row.gallons
   }

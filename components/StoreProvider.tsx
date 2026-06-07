@@ -2,17 +2,20 @@
 
 import { useEffect } from "react"
 import { useStore } from "@/lib/store"
-import type { AppConfig, ConfigVersion } from "@/lib/types"
+import { migrateConfig } from "@/lib/types"
+import type { ConfigVersion } from "@/lib/types"
 
 interface ConfigBundle {
   version: 1
-  config: AppConfig
-  configHistory: ConfigVersion[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  config: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  configHistory: Array<Omit<ConfigVersion, "config"> & { config: any }>
 }
 
 export default function StoreProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
-    // 1. Rehydrate from localStorage
+    // 1. Rehydrate from localStorage (migration runs in onRehydrateStorage)
     useStore.persist.rehydrate()
 
     // 2. If this is a fresh install (no saved history), try to load the
@@ -26,8 +29,11 @@ export default function StoreProvider({ children }: { children: React.ReactNode 
           .then((bundle: ConfigBundle | null) => {
             if (!bundle || bundle.version !== 1 || !bundle.config) return
             useStore.setState({
-              config: bundle.config,
-              configHistory: bundle.configHistory ?? [],
+              config: migrateConfig(bundle.config),
+              configHistory: (bundle.configHistory ?? []).map((v) => ({
+                ...v,
+                config: migrateConfig(v.config),
+              })),
             })
           })
           .catch(() => {
