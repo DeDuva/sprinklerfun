@@ -111,9 +111,11 @@ function ConfigLabel({ viewBox, notes }: { viewBox?: { x: number; y: number }; n
 interface Props {
   enriched: EnrichedRow[]
   configHistory: ConfigVersion[]
+  onDaySelect?: (date: string) => void
+  selectedDay?: string | null
 }
 
-export default function ConsumptionChart({ enriched, configHistory }: Props) {
+export default function ConsumptionChart({ enriched, configHistory, onDaySelect, selectedDay }: Props) {
   const [timeWindow, setTimeWindow] = useState<TimeWindow>("3m")
   const [breakdown, setBreakdown] = useState<Breakdown>("simple")
 
@@ -122,6 +124,9 @@ export default function ConsumptionChart({ enriched, configHistory }: Props) {
   const deferredBreakdown = useDeferredValue(breakdown)
   const deferredEnriched  = useDeferredValue(enriched)
   const isStale = deferredWindow !== timeWindow || deferredBreakdown !== breakdown
+
+  // Only daily (2w/1m) windows support click-to-drill
+  const isClickable = (timeWindow === "2w" || timeWindow === "1m") && !!onDaySelect
 
   const { bars, stackKeys, configMarkers, bucketLabel, rangeLabel } = useMemo(() => {
     if (deferredEnriched.length === 0) return { bars: [], stackKeys: [], configMarkers: [] }
@@ -175,6 +180,11 @@ export default function ConsumptionChart({ enriched, configHistory }: Props) {
     return { bars, stackKeys, configMarkers, bucketLabel, rangeLabel }
   }, [deferredEnriched, deferredWindow, deferredBreakdown, configHistory])
 
+  // Label of the currently selected bar (for the ReferenceLine highlight)
+  const selectedBarLabel = isClickable && selectedDay
+    ? (bars.find((b) => b.dateStart === selectedDay)?.label ?? null)
+    : null
+
   if (enriched.length === 0) {
     return <div className="flex items-center justify-center h-64 text-gray-400">No data</div>
   }
@@ -189,6 +199,15 @@ export default function ConsumptionChart({ enriched, configHistory }: Props) {
       house: "House", sprinkler: "Sprinkler", timer1: "Timer 1", timer2: "Timer 2",
     }
     return map[key] ?? key
+  }
+
+  // Bar-level click handler: receives the bar's data object directly, which is
+  // more reliable than ComposedChart.onClick (that depends on hover activePayload).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function handleBarClick(barData: any) {
+    if (!isClickable) return
+    const dateStart = barData?.dateStart as string | undefined
+    if (dateStart) onDaySelect?.(dateStart)
   }
 
   return (
@@ -222,68 +241,89 @@ export default function ConsumptionChart({ enriched, configHistory }: Props) {
         </div>
       )}
 
-      {rangeLabel && (
-        <p className="text-xs text-gray-400">
-          {bucketLabel} bars · {rangeLabel}
-        </p>
-      )}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        {rangeLabel && (
+          <p className="text-xs text-gray-400">
+            {bucketLabel} bars · {rangeLabel}
+          </p>
+        )}
+        {isClickable && (
+          <p className="text-xs text-sky-500">
+            Click a bar to view that day&apos;s station flow ↓
+          </p>
+        )}
+      </div>
 
-      <ResponsiveContainer width="100%" height={320}>
-        <ComposedChart data={bars} margin={{ top: 16, right: 8, left: 8, bottom: 4 }}>
-          <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-          <YAxis tick={{ fontSize: 11 }} />
-          <Tooltip
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            formatter={(v: any, name: any) => [
-              `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })} gal`,
-              labelFor(String(name)),
-            ]}
-          />
-          <Legend
-            formatter={(value) => labelFor(String(value))}
-            wrapperStyle={{ fontSize: 11 }}
-          />
-
-          {/* Stacked bars */}
-          {stackKeys.map((key, i) => (
-            <Bar
-              key={key}
-              dataKey={key}
-              stackId="stack"
-              fill={colorFor(key, i)}
-              // Pass anomaly flag to custom shape on the last (top) bar only
-              shape={i === stackKeys.length - 1
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                ? (props: any) => <AnomalyBar {...props} fill={colorFor(key, i)} />
-                : undefined
-              }
-            />
-          ))}
-
-          {/* Total line */}
-          <Line
-            type="monotone"
-            dataKey="total"
-            stroke="#1e293b"
-            dot={false}
-            strokeWidth={1.5}
-            name="Total"
-          />
-
-          {/* Config change markers */}
-          {configMarkers.map((m) => (
-            <ReferenceLine
-              key={m.label}
-              x={m.label}
-              stroke="#6366f1"
-              strokeDasharray="4 3"
-              strokeWidth={1.5}
+      <div>
+        <ResponsiveContainer width="100%" height={320}>
+          <ComposedChart data={bars} margin={{ top: 16, right: 8, left: 8, bottom: 4 }}>
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              label={(props: any) => <ConfigLabel {...props} notes={m.notes} />}
+              formatter={(v: any, name: any) => [
+                `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })} gal`,
+                labelFor(String(name)),
+              ]}
             />
-          ))}
-        </ComposedChart>
-      </ResponsiveContainer>
+            <Legend
+              formatter={(value) => labelFor(String(value))}
+              wrapperStyle={{ fontSize: 11 }}
+            />
+
+            {/* Stacked bars */}
+            {stackKeys.map((key, i) => (
+              <Bar
+                key={key}
+                dataKey={key}
+                stackId="stack"
+                fill={colorFor(key, i)}
+                cursor={isClickable ? "pointer" : undefined}
+                onClick={handleBarClick}
+                // Pass anomaly flag to custom shape on the last (top) bar only
+                shape={i === stackKeys.length - 1
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  ? (props: any) => <AnomalyBar {...props} fill={colorFor(key, i)} />
+                  : undefined
+                }
+              />
+            ))}
+
+            {/* Total line */}
+            <Line
+              type="monotone"
+              dataKey="total"
+              stroke="#1e293b"
+              dot={false}
+              strokeWidth={1.5}
+              name="Total"
+            />
+
+            {/* Config change markers */}
+            {configMarkers.map((m) => (
+              <ReferenceLine
+                key={m.label}
+                x={m.label}
+                stroke="#6366f1"
+                strokeDasharray="4 3"
+                strokeWidth={1.5}
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                label={(props: any) => <ConfigLabel {...props} notes={m.notes} />}
+              />
+            ))}
+
+            {/* Selected day highlight */}
+            {selectedBarLabel && (
+              <ReferenceLine
+                x={selectedBarLabel}
+                stroke="#0ea5e9"
+                strokeWidth={2}
+                strokeDasharray="0"
+              />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   )
 }
