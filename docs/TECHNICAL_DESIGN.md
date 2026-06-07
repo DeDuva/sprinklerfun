@@ -34,7 +34,7 @@ sprinkler-app/
 │   ├── UploadModal.tsx         # CSV file + URL loader
 │   ├── SummaryCards.tsx
 │   ├── ConsumptionChart.tsx    # Unified time-series chart
-│   ├── StationFlowChart.tsx    # Horizontal bar chart for a single day with nav
+│   ├── StationFlowChart.tsx    # Horizontal bar chart for a single day with nav, day tiles, and enriched tooltip
 │   └── WarningsPanel.tsx
 ├── lib/
 │   ├── types.ts                # All shared TypeScript interfaces, DEFAULT_CONFIG, migrateConfig
@@ -214,6 +214,11 @@ Persisted under `"sprinkler-store"` in localStorage.
 ### Performance: `useDeferredValue`
 `enrichRowsMultiConfig` is O(n) over all rows. All three analysis pages wrap `rows` and `config` in `useDeferredValue` before the heavy `useMemo`. React commits UI updates (e.g. navigation) first, then runs computation in background. Skeleton loaders shown while stale. This prevents the main thread from blocking on navigation.
 
+The Dashboard splits computation into two memos:
+- **`derived`** (expensive, deferred) — runs `enrichRowsMultiConfig` + `buildDailyRows` + warnings once per data/config change; memoises `enriched`, `allDaily`, `sprinklerDates`, `defaultFlowDay`.
+- **`monthlySummary`** (cheap) — filters `allDaily` by the selected month and calls `computeSummary`; reruns only when the month selector changes, not when data changes.
+- **`flowDayStats`** (cheap) — filters `enriched` and `allDaily` by the selected day, calls `buildStationStats` + `computeSummary`, and resolves the active `ConfigVersion` for that day via `findLast`. Reruns only when the selected day changes.
+
 ---
 
 ## Config Migration
@@ -291,6 +296,27 @@ Column matching: `datetime | Datetime | DateTime`, `gallons | Gallons`. Invalid 
 | `aggregateForChart` — simple breakdown | house vs sprinkler sums correct |
 | `aggregateForChart` — timer breakdown | timer1 vs timer2 split correct |
 | `aggregateForChart` — anomaly detection | IQR outlier correctly flagged |
+
+---
+
+## Component Notes
+
+### `StationFlowChart` props
+```ts
+interface Props {
+  stats: StationStats[]
+  config: AppConfig
+  selectedDay: string | null
+  sprinklerDates: string[]
+  onDayChange: (date: string) => void
+  configVersionLabel?: string | null   // e.g. "Jun 3, 2026" — date of the config active on selectedDay
+}
+```
+
+`configVersionLabel` is resolved in `page.tsx`'s `flowDayStats` memo using `findLast` over a date-sorted `configHistory` (same lookup as `enrichRowsMultiConfig` uses). It is passed into a custom Recharts `<Tooltip content={…}>` that renders:
+- Avg GPM (measured)
+- Baseline GPM (orange) + % delta (green / red / blue)
+- "Config from [date]" footer row (hidden when no history exists)
 
 ---
 

@@ -6,10 +6,10 @@ A client-side web app for analyzing [Flume smart meter](https://flumewater.com) 
 
 Upload a Flume CSV export and the app shows you:
 
-- **Dashboard** — station alerts (red if a zone is running >20% above its baseline for 2+ days), summary cards (total / sprinkler / house gallons, estimated cost), a unified consumption chart with configurable time windows (2W–All) and breakdown levels (simple / by timer / by station), and per-station flow rates vs. baselines.
+- **Dashboard** — station alerts (red if a zone is running >20% above its baseline for 2+ days); monthly summary cards (total / sprinkler / house gallons, estimated cost) with ← month → navigation; a unified consumption chart with configurable time windows (2W–All) and breakdown levels (simple / by timer / by station); and a per-station flow rate chart for a single day with prev/next navigation, day-scoped summary tiles, and a hover tooltip showing avg gpm, baseline gpm, % delta, and active config version. Clicking a bar in the 2W or 1M chart jumps the per-station chart to that day.
 - **Analysis** — sortable table of per-station totals, average gpm, std deviation, and estimated cost across all loaded data.
 - **Day Detail** — minute-by-minute stacked area chart for any single sprinkler day.
-- **Configuration** — timer start times, station durations, baseline gpm values, watering days, and EBMUD billing constants. Config is **versioned with timestamps and required notes** so that schedule changes appear as markers on the consumption chart — distinguishing "usage jumped because I changed the schedule" from "usage jumped for no obvious reason."
+- **Configuration** — each timer supports three independent programs (A, B, C) each with its own start time, days of week, and per-station duration. Station run order and baseline gpm are shared hardware properties; schedule settings are per-program. Programs B and C are off by default. Config is **versioned with timestamps and required notes** so that schedule changes appear as markers on the consumption chart — distinguishing "usage jumped because I changed the schedule" from "usage jumped for no obvious reason."
 
 ## Getting started
 
@@ -28,7 +28,7 @@ npm run dev        # http://localhost:3000
 1. Upload your new CSV → data appends, duplicates skipped.
 2. Scan **Station Alerts** for red warnings.
 3. Review the **Consumption Chart** (1M window) for anomaly markers (⚠) or unexpected step-changes.
-4. Click a suspicious day → **Day Detail** to see minute-by-minute flow.
+4. Click a suspicious bar → **Per-Station Flow Rate** chart updates to that day; hover a bar to see gpm vs. baseline and the active config version.
 
 ## Project layout
 
@@ -40,7 +40,7 @@ npm run dev        # http://localhost:3000
 │   └── day/[date]/         # Day detail (/day/YYYY-MM-DD)
 ├── components/             # React components
 ├── lib/
-│   ├── types.ts            # Shared TypeScript interfaces + DEFAULT_CONFIG
+│   ├── types.ts            # Shared TypeScript interfaces, DEFAULT_CONFIG, migrateConfig
 │   ├── analyze.ts          # Core analysis logic (pure functions)
 │   ├── store.ts            # Zustand store with localStorage persistence
 │   └── __tests__/          # Vitest unit tests

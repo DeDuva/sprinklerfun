@@ -49,7 +49,7 @@ Analytics always aggregate by timer and station, ignoring the program dimension.
 
 **Config is time-aware.** Each `ConfigVersion { id, savedAt, notes, config }` has an effective date. When analyzing data, the config version active on each date is used — not the current config. This means:
 - A config saved on June 1 applies to all data from June 1 onward, until the next config change.
-- Data before the first saved config uses the built-in default.
+- Data before the first saved config uses the **oldest saved config** (not a generic default — the oldest saved config is always a better proxy for what the system looked like before change tracking began).
 - Changing the config today does not retroactively change how past data is interpreted.
 
 ---
@@ -99,9 +99,13 @@ In daily-bar mode, clicking a bar sets the selected day for the Per-Station Flow
 The primary landing page. Top-to-bottom layout:
 
 1. **Station Alerts panel** — red warning per station running >20% above baseline for 2+ consecutive days; green all-clear otherwise; prompt to add baselines if none set.
-2. **Summary Cards** — Total gallons · Sprinkler gallons · House gallons · Estimated cost, scoped to the current calendar month (1st → today).
-3. **Consumption Chart** — the unified chart described above.
-4. **Per-Station Flow Rate** — horizontal bar chart for a single selected day with prev/next navigation through sprinkler days; bars >20% above baseline turn red.
+2. **Monthly Summary Cards** — Total gallons · Sprinkler gallons · House gallons · Estimated cost. Scoped to a selected calendar month (1st → last day, or today for the current month). ← month → arrows let the user page backward through historical months, defaulting to the current month.
+3. **Consumption Chart** — the unified chart described above. In 2W / 1M (daily-bar) views, clicking a bar sets the selected day for the Per-Station Flow Rate chart.
+4. **Per-Station Flow Rate** — inside a single card:
+   - **Day summary tiles** (Total · Sprinkler · House · Est. Cost) scoped to the selected day, updated whenever the day changes.
+   - **Date navigation** (← prev sprinkler day · date label · next sprinkler day →).
+   - **Horizontal bar chart** — one bar per active station; bars >20% above baseline turn red; orange tick marks the baseline.
+   - **Hover tooltip** — shows avg gpm, baseline gpm (with % delta above/below), and the date of the config version that was active on the selected day.
 
 ### Analysis (/analysis)
 Deep-dive into station performance across all loaded data:
