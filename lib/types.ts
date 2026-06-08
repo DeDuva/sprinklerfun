@@ -29,12 +29,29 @@ export interface TimerConfig {
   programs: { A: ProgramConfig; B: ProgramConfig; C: ProgramConfig }
 }
 
-// A saved snapshot of the config, stored in history
-export interface ConfigVersion {
-  id: string           // uuid-ish timestamp key
-  savedAt: string      // ISO timestamp
+// ---------------------------------------------------------------------------
+// ConfigWindow — a config that took effect on a specific date and stays active
+// until the next window. The timeline of windows is contiguous: window i covers
+// [effectiveFrom_i, effectiveFrom_{i+1}). The earliest window also covers all
+// data before it. `effectiveFrom` is the real-world date the change took effect
+// on the timer — decoupled from when it was entered in the app (createdAt).
+// ---------------------------------------------------------------------------
+export interface ConfigWindow {
+  id: string           // stable unique id
+  effectiveFrom: string // "YYYY-MM-DD" — when this config took effect (editable)
   notes: string        // user-entered change notes
   config: AppConfig
+  createdAt: string    // ISO — when this window was created in the app (bookkeeping)
+  updatedAt: string    // ISO — last edit (bookkeeping)
+}
+
+// Legacy snapshot shape (pre-windows). Kept only for migration / import.
+export interface LegacyConfigVersion {
+  id: string
+  savedAt: string
+  notes: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  config: any
 }
 
 export interface AppConfig {
@@ -285,4 +302,127 @@ export function migrateConfig(raw: any): AppConfig {
     gallonsPerUnit: raw.gallonsPerUnit ?? 748,
     costPerUnit: raw.costPerUnit ?? 10.47,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Window helpers — time normalization, id generation, and migration to the
+// ConfigWindow model. Used by the store (persist migrate / rehydrate), the
+// config import flow, and the StoreProvider default-config loader.
+// ---------------------------------------------------------------------------
+
+/** Normalize a time string to "HH:MM:SS". Fixes malformed values like
+ *  "03:45:00:00" (an old data bug) by keeping only the first three parts. */
+export function normalizeTime(t: string): string {
+  if (typeof t !== "string" || t.trim() === "") return "00:00:00"
+  const parts = t.split(":")
+  const h = (parts[0] ?? "0").padStart(2, "0").slice(0, 2)
+  const m = (parts[1] ?? "0").padStart(2, "0").slice(0, 2)
+  const s = (parts[2] ?? "0").padStart(2, "0").slice(0, 2)
+  return `${h}:${m}:${s}`
+}
+
+/** Normalize every program start time in a config (defensive against old data). */
+export function normalizeConfigTimes(config: AppConfig): AppConfig {
+  if (!config?.timer1 || !config?.timer2) return config
+  const fixProg = (p: ProgramConfig): ProgramConfig =>
+    p ? { ...p, start: normalizeTime(p.start) } : p
+  const fixTimer = (t: TimerConfig): TimerConfig =>
+    t?.programs
+      ? { ...t, programs: { A: fixProg(t.programs.A), B: fixProg(t.programs.B), C: fixProg(t.programs.C) } }
+      : t
+  return { ...config, timer1: fixTimer(config.timer1), timer2: fixTimer(config.timer2) }
+}
+
+/** Stable unique id (crypto.randomUUID when available, else timestamp+random). */
+export function newId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+}
+
+/** Windows sorted ascending by effectiveFrom (timeline order). */
+export function sortWindows(windows: ConfigWindow[]): ConfigWindow[] {
+  return [...windows].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))
+}
+
+/** Map a legacy { savedAt } version to a ConfigWindow (effectiveFrom = save date). */
+export function legacyVersionToWindow(v: LegacyConfigVersion): ConfigWindow {
+  const savedAt = v?.savedAt ?? new Date().toISOString()
+  return {
+    id: v?.id ?? newId(),
+    effectiveFrom: savedAt.slice(0, 10),
+    notes: v?.notes ?? "",
+    config: normalizeConfigTimes(migrateConfig(v?.config)),
+    createdAt: savedAt,
+    updatedAt: savedAt,
+  }
+}
+
+/** Coerce a possibly-partial window object into a valid ConfigWindow. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function normalizeWindow(w: any): ConfigWindow {
+  const fallback = new Date().toISOString()
+  const effectiveFrom = (w?.effectiveFrom ?? w?.savedAt ?? fallback).slice(0, 10)
+  return {
+    id: w?.id ?? newId(),
+    effectiveFrom,
+    notes: w?.notes ?? "",
+    config: normalizeConfigTimes(migrateConfig(w?.config)),
+    createdAt: w?.createdAt ?? w?.savedAt ?? fallback,
+    updatedAt: w?.updatedAt ?? w?.createdAt ?? w?.savedAt ?? fallback,
+  }
+}
+
+/**
+ * Collapse windows that share an effectiveFrom date, keeping the most recently
+ * created one. The window model is day-resolution and contiguous, so only one
+ * config can be active per date. Legacy data often has several saves on the same
+ * day; old analysis already used only the last save per day, so keeping the
+ * latest is behavior-preserving. Returns the result sorted ascending.
+ */
+export function dedupeByEffectiveFrom(windows: ConfigWindow[]): ConfigWindow[] {
+  const byDate = new Map<string, ConfigWindow>()
+  for (const w of windows) {
+    const existing = byDate.get(w.effectiveFrom)
+    if (!existing || w.createdAt > existing.createdAt) byDate.set(w.effectiveFrom, w)
+  }
+  return sortWindows([...byDate.values()])
+}
+
+/**
+ * Build a sorted, de-duplicated ConfigWindow[] from any persisted/bundle shape —
+ * new ({ windows }) or legacy ({ config, configHistory }). Always normalizes
+ * config times and collapses same-day entries. Returns [] only when there is
+ * genuinely nothing to seed from.
+ */
+export function toWindows(input: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  windows?: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  config?: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  configHistory?: any
+}): ConfigWindow[] {
+  if (Array.isArray(input?.windows) && input.windows.length > 0) {
+    return dedupeByEffectiveFrom(input.windows.map(normalizeWindow))
+  }
+  const history = Array.isArray(input?.configHistory) ? input.configHistory : []
+  if (history.length > 0) {
+    return dedupeByEffectiveFrom(history.map(legacyVersionToWindow))
+  }
+  if (input?.config) {
+    const now = new Date().toISOString()
+    return [
+      {
+        id: newId(),
+        effectiveFrom: now.slice(0, 10),
+        notes: "Initial config",
+        config: normalizeConfigTimes(migrateConfig(input.config)),
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]
+  }
+  return []
 }

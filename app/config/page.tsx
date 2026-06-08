@@ -1,9 +1,17 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { Suspense, useEffect, useMemo, useRef, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { useStore } from "@/lib/store"
-import { migrateConfig } from "@/lib/types"
-import type { AppConfig, ConfigVersion, ProgramConfig, ProgramId, Station, TimerConfig } from "@/lib/types"
+import { sortWindows, toWindows } from "@/lib/types"
+import type { AppConfig, ConfigWindow, ProgramConfig, ProgramId, Station, TimerConfig } from "@/lib/types"
+import {
+  enrichRowsMultiConfig,
+  buildDailyRows,
+  activeWindowForDate,
+  windowDateRange,
+  diffConfigs,
+} from "@/lib/analyze"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -14,6 +22,11 @@ import { toast } from "sonner"
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 const PROGRAM_IDS: ProgramId[] = ["A", "B", "C"]
+
+const fmtDate = (d: string) =>
+  new Date(d + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+
+const todayStr = () => new Date().toISOString().slice(0, 10)
 
 // ---- Program station table ------------------------------------------------
 
@@ -353,142 +366,203 @@ function TimerSection({
   )
 }
 
-// ---- Save dialog ----------------------------------------------------------
+// ---- Detection & billing --------------------------------------------------
 
-function SaveDialog({ onSave, onCancel }: { onSave: (notes: string) => void; onCancel: () => void }) {
-  const [notes, setNotes] = useState("")
+function BillingCard({ config, onChange }: { config: AppConfig; onChange: (c: AppConfig) => void }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md space-y-4">
-        <h2 className="text-lg font-semibold">Save Configuration</h2>
+    <Card>
+      <CardHeader><CardTitle className="text-base">Detection &amp; Billing</CardTitle></CardHeader>
+      <CardContent className="grid sm:grid-cols-2 gap-4">
         <div>
-          <Label className="text-sm">Change notes</Label>
-          <p className="text-xs text-gray-400 mb-1">What changed and why?</p>
-          <textarea
-            className="w-full border rounded-md p-2 text-sm h-24 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="e.g. Spring startup — re-enabled T2-04, updated baselines"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            autoFocus
-          />
+          <Label className="text-sm">Sprinkler-on threshold (gal)</Label>
+          <p className="text-xs text-gray-400 mb-1">Gallons in the sprinkler window to count as a sprinkler day</p>
+          <Input type="number" value={config.sprinklerOnThreshold}
+            onChange={(e) => onChange({ ...config, sprinklerOnThreshold: Number(e.target.value) })}
+            className="w-40 h-8" />
         </div>
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onCancel}>Cancel</Button>
-          <Button onClick={() => onSave(notes)}>Save</Button>
+        <div>
+          <Label className="text-sm">Gallons per billing unit</Label>
+          <p className="text-xs text-gray-400 mb-1">EBMUD: 748 gal = 1 unit</p>
+          <Input type="number" value={config.gallonsPerUnit}
+            onChange={(e) => onChange({ ...config, gallonsPerUnit: Number(e.target.value) })}
+            className="w-40 h-8" />
         </div>
-      </div>
+        <div>
+          <Label className="text-sm">Cost per unit ($/unit)</Label>
+          <p className="text-xs text-gray-400 mb-1">From your last water bill</p>
+          <Input type="number" step="0.01" value={config.costPerUnit}
+            onChange={(e) => onChange({ ...config, costPerUnit: Number(e.target.value) })}
+            className="w-40 h-8" />
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ---- Window timeline rail -------------------------------------------------
+
+function WindowTimeline({
+  windows,
+  counts,
+  selectedId,
+  currentId,
+  onSelect,
+  onNew,
+}: {
+  windows: ConfigWindow[] // sorted ascending
+  counts: Record<string, { days: number; sprinklerDays: number }>
+  selectedId: string | null
+  currentId: string | null
+  onSelect: (id: string) => void
+  onNew: () => void
+}) {
+  const ranges = windowDateRange(windows)
+  const rangeById = Object.fromEntries(ranges.map((r) => [r.id, r]))
+
+  return (
+    <div className="flex gap-2 overflow-x-auto pb-2">
+      {windows.map((w, i) => {
+        const r = rangeById[w.id]
+        const c = counts[w.id]
+        const isSel = w.id === selectedId
+        const isCurrent = w.id === currentId
+        const isEarliest = i === 0
+        return (
+          <button
+            key={w.id}
+            onClick={() => onSelect(w.id)}
+            className={`shrink-0 w-48 text-left rounded-lg border p-3 transition-colors ${
+              isSel ? "border-blue-500 ring-1 ring-blue-500 bg-blue-50/40" : "border-gray-200 hover:border-gray-300"
+            }`}
+          >
+            <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+              {isCurrent && <Badge className="text-[10px] px-1.5 py-0">current</Badge>}
+              {isEarliest && <Badge variant="secondary" className="text-[10px] px-1.5 py-0">earliest</Badge>}
+            </div>
+            <div className="text-sm font-medium leading-tight">
+              {fmtDate(w.effectiveFrom)}
+              <span className="text-gray-400 font-normal"> → {r?.effectiveTo ? fmtDate(r.effectiveTo) : "now"}</span>
+            </div>
+            <p className="text-xs text-gray-500 mt-1 line-clamp-2 min-h-[2rem]">{w.notes || <span className="italic text-gray-300">no notes</span>}</p>
+            <p className="text-[11px] text-gray-400 mt-1">
+              {c ? `${c.days} day${c.days !== 1 ? "s" : ""} · ${c.sprinklerDays} sprinkler` : "no data in range"}
+            </p>
+          </button>
+        )
+      })}
+      <button
+        onClick={onNew}
+        className="shrink-0 w-36 rounded-lg border border-dashed border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors flex items-center justify-center text-sm"
+      >
+        ＋ New config
+      </button>
     </div>
   )
 }
 
-// ---- History panel --------------------------------------------------------
+// ---- New window form ------------------------------------------------------
 
-function HistoryPanel({ history, onRestore }: { history: ConfigVersion[]; onRestore: (v: ConfigVersion) => void }) {
-  const [expanded, setExpanded] = useState<string | null>(null)
+function NewWindowForm({
+  existingDates,
+  onCreate,
+  onCancel,
+}: {
+  existingDates: string[]
+  onCreate: (effectiveFrom: string, notes: string) => void
+  onCancel: () => void
+}) {
+  const [date, setDate] = useState(todayStr())
+  const [notes, setNotes] = useState("")
 
-  if (history.length === 0) {
-    return <p className="text-sm text-gray-400">No saved versions yet. Save your first config above.</p>
-  }
+  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(date)
+  const dup = existingDates.includes(date)
+  const canCreate = validDate && !dup
 
   return (
-    <div className="space-y-2">
-      {history.map((v) => {
-        const dt = new Date(v.savedAt)
-        const label = dt.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
-          + " " + dt.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
-        const baselineCount = [...v.config.timer1.stations, ...v.config.timer2.stations]
-          .filter((s) => s.baselineGpm && s.baselineGpm > 0).length
-
-        return (
-          <div key={v.id} className="border rounded-lg overflow-hidden">
-            <button
-              className="w-full flex items-start gap-3 p-3 text-left hover:bg-gray-50 transition-colors"
-              onClick={() => setExpanded(expanded === v.id ? null : v.id)}
-            >
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-sm font-medium">{label}</span>
-                  {baselineCount > 0 && (
-                    <Badge variant="secondary" className="text-xs">{baselineCount} baselines</Badge>
-                  )}
-                </div>
-                {v.notes && <p className="text-sm text-gray-500 mt-0.5 truncate">{v.notes}</p>}
-              </div>
-              <span className="text-gray-400 text-xs shrink-0">{expanded === v.id ? "▲" : "▼"}</span>
-            </button>
-
-            {expanded === v.id && (
-              <div className="border-t px-3 pb-3 pt-2 space-y-3 bg-gray-50">
-                {v.notes && <p className="text-sm text-gray-700">{v.notes}</p>}
-                <div className="grid grid-cols-2 gap-4">
-                  {(["timer1", "timer2"] as const).map((tk) => {
-                    const timer = v.config[tk]
-                    const progA = timer.programs.A
-                    const start = progA.start.slice(0, 5)
-                    const days = progA.days.map((d) => DAY_LABELS[d]).join(", ")
-                    return (
-                      <div key={tk}>
-                        <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">
-                          {tk === "timer1" ? "T1" : "T2"} — {start} · {days || "no days"}
-                        </p>
-                        {timer.stations
-                          .filter((s) => {
-                            const ps = progA.stations[s.id]
-                            return ps?.enabled && (ps?.durationMin ?? 0) > 0
-                          })
-                          .map((s) => {
-                            const ps = progA.stations[s.id]
-                            return (
-                              <div key={s.id} className="flex justify-between text-xs py-0.5">
-                                <span>{s.name}</span>
-                                <span className="text-gray-400">
-                                  {ps?.durationMin}m
-                                  {s.baselineGpm ? <span className="text-blue-600 ml-1">@{s.baselineGpm}</span> : ""}
-                                </span>
-                              </div>
-                            )
-                          })}
-                      </div>
-                    )
-                  })}
-                </div>
-                <Button size="sm" variant="outline" className="h-7 text-xs"
-                  onClick={() => { onRestore(v); toast.success("Restored — review and Save to make permanent") }}>
-                  Restore this version
-                </Button>
-              </div>
-            )}
+    <Card className="border-blue-200">
+      <CardHeader className="pb-2"><CardTitle className="text-base">New config window</CardTitle></CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-sm text-gray-500">
+          Starts as a copy of the config active on the chosen date. Set the date to when the change took
+          effect on your timer — analysis from that date forward uses the new settings.
+        </p>
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <Label className="text-sm">Effective from</Label>
+            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-44 h-8 mt-1" />
+            {dup && <p className="text-xs text-red-500 mt-1">A window already starts on this date</p>}
           </div>
-        )
-      })}
+          <div className="flex-1 min-w-[12rem]">
+            <Label className="text-sm">Notes</Label>
+            <Input
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="e.g. Reduced T1-03 to 12 min; new spring baselines"
+              className="h-8 mt-1"
+            />
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={onCancel}>Cancel</Button>
+          <Button size="sm" disabled={!canCreate} onClick={() => onCreate(date, notes)}>Create window</Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ---- Changed-vs-previous diff --------------------------------------------
+
+function WindowDiff({ prev, next }: { prev: ConfigWindow | null; next: AppConfig }) {
+  if (!prev) {
+    return (
+      <p className="text-sm text-gray-400">
+        This is the earliest window — it also applies to all data before its start date. Nothing to compare against.
+      </p>
+    )
+  }
+  const changes = diffConfigs(prev.config, next)
+  if (changes.length === 0) {
+    return <p className="text-sm text-gray-400">No differences from the previous window ({fmtDate(prev.effectiveFrom)}).</p>
+  }
+  // Group by area
+  const byArea = new Map<string, typeof changes>()
+  for (const c of changes) {
+    if (!byArea.has(c.area)) byArea.set(c.area, [])
+    byArea.get(c.area)!.push(c)
+  }
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-gray-400">Compared with the previous window ({fmtDate(prev.effectiveFrom)})</p>
+      {[...byArea.entries()].map(([area, items]) => (
+        <div key={area}>
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">{area}</p>
+          <div className="space-y-0.5">
+            {items.map((c, i) => (
+              <div key={i} className="flex items-baseline gap-2 text-sm">
+                <span className="text-gray-600 min-w-[10rem]">{c.field}</span>
+                <span className="text-gray-400 line-through">{c.from}</span>
+                <span className="text-gray-300">→</span>
+                <span className="font-medium text-gray-800">{c.to}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
 
 // ---- Export / Import ------------------------------------------------------
 
-interface ConfigBundle {
-  version: 1
-  exportedAt: string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  config: any
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  configHistory: Array<Omit<ConfigVersion, "config"> & { config: any }>
-}
-
 function ExportImportCard() {
-  const { config, configHistory } = useStore()
+  const windows = useStore((s) => s.windows)
   const fileRef = useRef<HTMLInputElement>(null)
   const [urlInput, setUrlInput] = useState("")
   const [loadingUrl, setLoadingUrl] = useState(false)
 
   function doExport() {
-    const bundle: ConfigBundle = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      config,
-      configHistory,
-    }
+    const bundle = { version: 2, exportedAt: new Date().toISOString(), windows }
     const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" })
     const a = document.createElement("a")
     a.href = URL.createObjectURL(blob)
@@ -498,24 +572,26 @@ function ExportImportCard() {
     toast.success("Config exported")
   }
 
-  function applyBundle(bundle: ConfigBundle) {
-    if (bundle.version !== 1 || !bundle.config || !Array.isArray(bundle.configHistory)) {
-      toast.error("Invalid config file")
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function applyBundle(bundle: any) {
+    const next = toWindows({
+      windows: bundle?.windows,
+      config: bundle?.config,
+      configHistory: bundle?.configHistory,
+    })
+    if (next.length === 0) {
+      toast.error("No config found in this file")
       return
     }
-    useStore.setState({
-      config: migrateConfig(bundle.config),
-      configHistory: bundle.configHistory.map((v) => ({ ...v, config: migrateConfig(v.config) })),
-    })
-    toast.success(`Config loaded — ${bundle.configHistory.length} version${bundle.configHistory.length !== 1 ? "s" : ""} in history`)
+    useStore.setState({ windows: next })
+    toast.success(`Config loaded — ${next.length} window${next.length !== 1 ? "s" : ""}`)
   }
 
   function handleFile(file: File) {
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
-        const bundle = JSON.parse(e.target?.result as string) as ConfigBundle
-        applyBundle(bundle)
+        applyBundle(JSON.parse(e.target?.result as string))
       } catch {
         toast.error("Could not parse config file")
       }
@@ -532,8 +608,7 @@ function ExportImportCard() {
     try {
       const res = await fetch(rawUrl)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const bundle = await res.json() as ConfigBundle
-      applyBundle(bundle)
+      applyBundle(await res.json())
       setUrlInput("")
     } catch (e) {
       toast.error(`Could not load: ${e instanceof Error ? e.message : e}`)
@@ -552,10 +627,9 @@ function ExportImportCard() {
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium">Export</p>
             <p className="text-xs text-gray-400 mt-0.5">
-              Downloads a JSON file with your current config and full version history.
-              Commit it to your repo as{" "}
+              Downloads a JSON file with all your config windows. Commit it to your repo as{" "}
               <code className="bg-gray-100 px-1 rounded text-xs">public/default-config.json</code>{" "}
-              to make it the default for new installs.
+              to make it the default for new installs. Old-format exports still import fine.
             </p>
           </div>
           <Button size="sm" variant="outline" onClick={doExport} className="shrink-0">
@@ -602,94 +676,271 @@ function ExportImportCard() {
 
 // ---- Main page ------------------------------------------------------------
 
-export default function ConfigPage() {
-  const { config, configHistory, saveConfig, restoreConfig, rows, clearRows } = useStore()
-  const [local, setLocal] = useState<AppConfig>(() => JSON.parse(JSON.stringify(config)))
-  const [showSaveDialog, setShowSaveDialog] = useState(false)
+function ConfigPageInner() {
+  const searchParams = useSearchParams()
+  const windows = useStore((s) => s.windows)
+  const rows = useStore((s) => s.rows)
+  const addWindowFromDate = useStore((s) => s.addWindowFromDate)
+  const updateWindow = useStore((s) => s.updateWindow)
+  const deleteWindow = useStore((s) => s.deleteWindow)
+  const copyBaselinesForward = useStore((s) => s.copyBaselinesForward)
+  const clearRows = useStore((s) => s.clearRows)
 
-  // Sync local when the store's config is updated externally (e.g. the async
-  // default-config.json auto-load on a fresh install resolves after first render).
-  const prevHistoryLen = useRef(configHistory.length)
+  // Track persist hydration so we can distinguish "loading" from "no config yet".
+  const [hydrated, setHydrated] = useState(false)
   useEffect(() => {
-    if (prevHistoryLen.current !== configHistory.length) {
-      prevHistoryLen.current = configHistory.length
-      setLocal(JSON.parse(JSON.stringify(config)))
+    setHydrated(useStore.persist.hasHydrated())
+    return useStore.persist.onFinishHydration(() => setHydrated(true))
+  }, [])
+
+  const sorted = useMemo(() => sortWindows(windows), [windows])
+  const currentId = useMemo(() => activeWindowForDate(windows, todayStr())?.id ?? null, [windows])
+
+  // Resolve the selected window: explicit click → URL ?window / ?date → current window.
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const resolvedId = useMemo(() => {
+    if (selectedId && windows.some((w) => w.id === selectedId)) return selectedId
+    const wParam = searchParams.get("window")
+    if (wParam && windows.some((w) => w.id === wParam)) return wParam
+    const dParam = searchParams.get("date")
+    if (dParam) {
+      const w = activeWindowForDate(windows, dParam)
+      if (w) return w.id
     }
-  }, [configHistory.length, config])
+    return currentId ?? sorted[sorted.length - 1]?.id ?? null
+  }, [selectedId, windows, searchParams, currentId, sorted])
 
-  const handleSave = (notes: string) => {
-    saveConfig(local, notes)
-    setShowSaveDialog(false)
-    toast.success("Configuration saved")
+  const selectedWindow = windows.find((w) => w.id === resolvedId) ?? null
+
+  // Local editable draft of the selected window. Reset when the selection or the
+  // underlying stored window changes (id + updatedAt), never while editing.
+  const makeDraft = (w: ConfigWindow | null) =>
+    w
+      ? { config: JSON.parse(JSON.stringify(w.config)) as AppConfig, notes: w.notes, effectiveFrom: w.effectiveFrom }
+      : { config: null as AppConfig | null, notes: "", effectiveFrom: "" }
+  const [draft, setDraft] = useState(() => makeDraft(selectedWindow))
+  const loadedKey = useRef<string>("")
+  useEffect(() => {
+    const key = selectedWindow ? `${selectedWindow.id}:${selectedWindow.updatedAt}` : ""
+    if (key !== loadedKey.current) {
+      loadedKey.current = key
+      setDraft(makeDraft(selectedWindow))
+    }
+  }, [selectedWindow])
+
+  // Enriched data for per-window day counts.
+  const counts = useMemo(() => {
+    if (rows.length === 0 || windows.length === 0) return {}
+    const daily = buildDailyRows(enrichRowsMultiConfig(rows, windows))
+    const m: Record<string, { days: number; sprinklerDays: number }> = {}
+    for (const d of daily) {
+      const w = activeWindowForDate(windows, d.date)
+      if (!w) continue
+      if (!m[w.id]) m[w.id] = { days: 0, sprinklerDays: 0 }
+      m[w.id].days++
+      if (d.isSprinklerDay) m[w.id].sprinklerDays++
+    }
+    return m
+  }, [rows, windows])
+
+  const [showNew, setShowNew] = useState(false)
+
+  // ---- Empty / loading states ----
+  if (!hydrated) {
+    return <div className="max-w-3xl"><div className="h-40 rounded-lg bg-gray-100 animate-pulse" /></div>
+  }
+  if (windows.length === 0) {
+    return (
+      <div className="space-y-6 max-w-3xl">
+        <h1 className="text-2xl font-bold">Configuration</h1>
+        <Card>
+          <CardContent className="py-10 text-center space-y-3">
+            <p className="text-gray-500">No config yet. Create your first config window to start tracking schedule changes over time.</p>
+            <Button onClick={() => { const id = addWindowFromDate(todayStr(), "Initial config"); setSelectedId(id); toast.success("First config created") }}>
+              Create first config
+            </Button>
+          </CardContent>
+        </Card>
+        <ExportImportCard />
+      </div>
+    )
   }
 
-  const handleRestore = (v: ConfigVersion) => {
-    restoreConfig(v)
-    setLocal(JSON.parse(JSON.stringify(v.config)))
+  // ---- Derived editor state ----
+  const selIdx = sorted.findIndex((w) => w.id === resolvedId)
+  const prevWindow = selIdx > 0 ? sorted[selIdx - 1] : null
+  const isEarliest = selIdx === 0
+  const range = windowDateRange(windows).find((r) => r.id === resolvedId)
+
+  const dirty =
+    !!selectedWindow && !!draft.config &&
+    (draft.notes !== selectedWindow.notes ||
+      draft.effectiveFrom !== selectedWindow.effectiveFrom ||
+      JSON.stringify(draft.config) !== JSON.stringify(selectedWindow.config))
+
+  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(draft.effectiveFrom)
+  const dupDate = !!selectedWindow && windows.some((w) => w.id !== selectedWindow.id && w.effectiveFrom === draft.effectiveFrom)
+  const canSave = dirty && validDate && !dupDate
+
+  const handleSave = () => {
+    if (!selectedWindow || !draft.config || !canSave) return
+    updateWindow(selectedWindow.id, { config: draft.config, notes: draft.notes, effectiveFrom: draft.effectiveFrom })
+    toast.success("Window saved")
   }
+
+  const handleDelete = () => {
+    if (!selectedWindow || windows.length <= 1) return
+    if (!confirm(`Delete the config window starting ${fmtDate(selectedWindow.effectiveFrom)}? Data in its range will fall back to the adjacent window.`)) return
+    deleteWindow(selectedWindow.id)
+    setSelectedId(null)
+    toast.success("Window deleted")
+  }
+
+  const setConfig = (c: AppConfig) => setDraft((d) => ({ ...d, config: c }))
 
   return (
     <div className="space-y-6 max-w-3xl">
-      {showSaveDialog && <SaveDialog onSave={handleSave} onCancel={() => setShowSaveDialog(false)} />}
-
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Configuration</h1>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setLocal(JSON.parse(JSON.stringify(config)))}>
-            Reset
-          </Button>
-          <Button onClick={() => setShowSaveDialog(true)}>Save…</Button>
+      </div>
+
+      {/* Timeline rail */}
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <h2 className="text-sm font-semibold text-gray-600 uppercase tracking-wide">Config Windows</h2>
+          <span className="text-xs text-gray-400">{windows.length} window{windows.length !== 1 ? "s" : ""}</span>
         </div>
-      </div>
-
-      <div className="grid md:grid-cols-2 gap-4">
-        <TimerSection
-          label="Timer 1"
-          timer={local.timer1}
-          onChange={(t) => setLocal({ ...local, timer1: t })}
-        />
-        <TimerSection
-          label="Timer 2"
-          timer={local.timer2}
-          onChange={(t) => setLocal({ ...local, timer2: t })}
+        <WindowTimeline
+          windows={sorted}
+          counts={counts}
+          selectedId={resolvedId}
+          currentId={currentId}
+          onSelect={(id) => { setSelectedId(id); setShowNew(false) }}
+          onNew={() => setShowNew(true)}
         />
       </div>
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">Detection &amp; Billing</CardTitle></CardHeader>
-        <CardContent className="grid sm:grid-cols-2 gap-4">
-          <div>
-            <Label className="text-sm">Sprinkler-on threshold (gal)</Label>
-            <p className="text-xs text-gray-400 mb-1">Gallons in the sprinkler window to count as a sprinkler day</p>
-            <Input type="number" value={local.sprinklerOnThreshold}
-              onChange={(e) => setLocal({ ...local, sprinklerOnThreshold: Number(e.target.value) })}
-              className="w-40 h-8" />
+      {showNew && (
+        <NewWindowForm
+          existingDates={windows.map((w) => w.effectiveFrom)}
+          onCreate={(date, notes) => {
+            const id = addWindowFromDate(date, notes)
+            setSelectedId(id)
+            setShowNew(false)
+            toast.success(`New window effective ${fmtDate(date)}`)
+          }}
+          onCancel={() => setShowNew(false)}
+        />
+      )}
+
+      {selectedWindow && draft.config && (
+        <>
+          {/* Window header: dates, notes, actions */}
+          <Card>
+            <CardContent className="pt-6 space-y-4">
+              <div className="flex flex-wrap items-end justify-between gap-4">
+                <div className="flex flex-wrap items-end gap-4">
+                  <div>
+                    <Label className="text-sm">Effective from</Label>
+                    <Input
+                      type="date"
+                      value={draft.effectiveFrom}
+                      onChange={(e) => setDraft((d) => ({ ...d, effectiveFrom: e.target.value }))}
+                      className="w-44 h-8 mt-1"
+                    />
+                  </div>
+                  <div className="text-sm text-gray-500 pb-1.5">
+                    Active {fmtDate(draft.effectiveFrom)} → {range?.effectiveTo ? fmtDate(range.effectiveTo) : "now"}
+                    {(() => { const c = counts[selectedWindow.id]; return c ? ` · ${c.days} days, ${c.sprinklerDays} sprinkler` : "" })()}
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-gray-400 hover:text-red-500"
+                  disabled={windows.length <= 1}
+                  onClick={handleDelete}
+                  title={windows.length <= 1 ? "Can't delete the only window" : "Delete this window"}
+                >
+                  Delete window
+                </Button>
+              </div>
+
+              {dupDate && <p className="text-xs text-red-500">Another window already starts on this date — pick a different one.</p>}
+              {isEarliest && (
+                <p className="text-xs text-gray-400">
+                  This is the earliest window — its config also applies to all data before {fmtDate(draft.effectiveFrom)}.
+                </p>
+              )}
+
+              <div>
+                <Label className="text-sm">Notes</Label>
+                <Input
+                  value={draft.notes}
+                  onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
+                  placeholder="What changed and why?"
+                  className="h-8 mt-1"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <span className={`text-xs ${dirty ? "text-amber-600" : "text-gray-400"}`}>
+                  {dirty ? "Unsaved changes" : "All changes saved"}
+                </span>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" disabled={!dirty} onClick={() => setDraft(makeDraft(selectedWindow))}>
+                    Reset
+                  </Button>
+                  <Button size="sm" disabled={!canSave} onClick={handleSave}>Save window</Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Timer editors */}
+          <div className="grid md:grid-cols-2 gap-4">
+            <TimerSection
+              label="Timer 1"
+              timer={draft.config.timer1}
+              onChange={(t) => setConfig({ ...draft.config!, timer1: t })}
+            />
+            <TimerSection
+              label="Timer 2"
+              timer={draft.config.timer2}
+              onChange={(t) => setConfig({ ...draft.config!, timer2: t })}
+            />
           </div>
-          <div>
-            <Label className="text-sm">Gallons per billing unit</Label>
-            <p className="text-xs text-gray-400 mb-1">EBMUD: 748 gal = 1 unit</p>
-            <Input type="number" value={local.gallonsPerUnit}
-              onChange={(e) => setLocal({ ...local, gallonsPerUnit: Number(e.target.value) })}
-              className="w-40 h-8" />
-          </div>
-          <div>
-            <Label className="text-sm">Cost per unit ($/unit)</Label>
-            <p className="text-xs text-gray-400 mb-1">From your last water bill</p>
-            <Input type="number" step="0.01" value={local.costPerUnit}
-              onChange={(e) => setLocal({ ...local, costPerUnit: Number(e.target.value) })}
-              className="w-40 h-8" />
-          </div>
-        </CardContent>
-      </Card>
+
+          {/* Baseline helper */}
+          {selIdx < sorted.length - 1 && (
+            <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                disabled={dirty}
+                onClick={() => { copyBaselinesForward(selectedWindow.id); toast.success("Baselines copied to later windows") }}
+                title={dirty ? "Save changes first" : "Apply this window's baselines to all later windows"}
+              >
+                Copy baselines to later windows
+              </Button>
+              {dirty && <span className="text-xs text-gray-400">Save first to copy baselines</span>}
+            </div>
+          )}
+
+          <BillingCard config={draft.config} onChange={setConfig} />
+
+          {/* Changed vs previous window */}
+          <Card>
+            <CardHeader><CardTitle className="text-base">Changed vs. previous window</CardTitle></CardHeader>
+            <CardContent>
+              <WindowDiff prev={prevWindow} next={draft.config} />
+            </CardContent>
+          </Card>
+        </>
+      )}
 
       <ExportImportCard />
-
-      <Card>
-        <CardHeader><CardTitle className="text-base">Configuration History</CardTitle></CardHeader>
-        <CardContent>
-          <HistoryPanel history={configHistory} onRestore={handleRestore} />
-        </CardContent>
-      </Card>
 
       <Card className="border-red-200">
         <CardHeader><CardTitle className="text-base text-red-600">Danger Zone</CardTitle></CardHeader>
@@ -702,5 +953,13 @@ export default function ConfigPage() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+export default function ConfigPage() {
+  return (
+    <Suspense fallback={<div className="max-w-3xl"><div className="h-40 rounded-lg bg-gray-100 animate-pulse" /></div>}>
+      <ConfigPageInner />
+    </Suspense>
   )
 }

@@ -2,7 +2,7 @@
 
 import { use, useDeferredValue, useMemo } from "react"
 import { useStore } from "@/lib/store"
-import { enrichRowsMultiConfig } from "@/lib/analyze"
+import { enrichRowsMultiConfig, activeWindowForDate, currentConfig } from "@/lib/analyze"
 import {
   AreaChart,
   Area,
@@ -39,17 +39,21 @@ function getColor(id: string) {
 export default function DayDetailPage({ params }: { params: Promise<{ date: string }> }) {
   const { date } = use(params)
   const rows          = useStore((s) => s.rows)
-  const config        = useStore((s) => s.config)
-  const configHistory = useStore((s) => s.configHistory)
+  const windows       = useStore((s) => s.windows)
 
   const deferredRows    = useDeferredValue(rows)
-  const deferredConfig  = useDeferredValue(config)
-  const deferredHistory = useDeferredValue(configHistory)
+  const deferredWindows = useDeferredValue(windows)
+
+  // Billing comes from the config window active on this day.
+  const dayConfig = useMemo(
+    () => activeWindowForDate(deferredWindows, date)?.config ?? currentConfig(deferredWindows),
+    [deferredWindows, date]
+  )
 
   const { chartData, stationIds, stationTotals, totalGallons } = useMemo(() => {
     if (deferredRows.length === 0) return { chartData: [], stationIds: [], stationTotals: {}, totalGallons: 0 }
 
-    const enriched = enrichRowsMultiConfig(deferredRows, deferredHistory)
+    const enriched = enrichRowsMultiConfig(deferredRows, deferredWindows)
     const dayRows = enriched.filter((r) => r.date === date)
 
     const stationSet = new Set<string>()
@@ -79,7 +83,7 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
     const totalGallons = dayRows.reduce((s, r) => s + r.gallons, 0)
 
     return { chartData, stationIds, stationTotals, totalGallons }
-  }, [deferredRows, deferredConfig, deferredHistory, date])
+  }, [deferredRows, deferredWindows, date])
 
   const fmt = new Date(date + "T12:00:00").toLocaleDateString(undefined, {
     weekday: "long",
@@ -135,7 +139,7 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
         <div className="bg-white rounded-lg border p-3">
           <p className="text-gray-500">Est. Cost (day)</p>
           <p className="text-xl font-bold text-green-600">
-            ${((totalGallons / deferredConfig.gallonsPerUnit) * deferredConfig.costPerUnit).toFixed(2)}
+            ${((totalGallons / dayConfig.gallonsPerUnit) * dayConfig.costPerUnit).toFixed(2)}
           </p>
         </div>
       </div>

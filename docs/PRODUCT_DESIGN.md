@@ -19,7 +19,7 @@ A client-side web application that helps a homeowner analyze Flume smart meter d
 ### Input Data
 Flume exports a CSV with a `datetime` column and `gallons` column (one row per minute).
 
-### Configuration (versioned)
+### Configuration (windowed)
 ```
 timers:
   T1:
@@ -47,10 +47,12 @@ Each timer supports three independent programs: **A**, **B**, and **C**.
 
 Analytics always aggregate by timer and station, ignoring the program dimension.
 
-**Config is time-aware.** Each `ConfigVersion { id, savedAt, notes, config }` has an effective date. When analyzing data, the config version active on each date is used — not the current config. This means:
-- A config saved on June 1 applies to all data from June 1 onward, until the next config change.
-- Data before the first saved config uses the **oldest saved config** (not a generic default — the oldest saved config is always a better proxy for what the system looked like before change tracking began).
-- Changing the config today does not retroactively change how past data is interpreted.
+**Config is time-aware — a timeline of windows.** The config is a list of `ConfigWindow { id, effectiveFrom, notes, config, createdAt, updatedAt }` entries. Each window's `effectiveFrom` is the **real-world date the change took effect on the timer** — explicitly set by the user, decoupled from when it was entered in the app. Windows are contiguous: window *i* is active for `[effectiveFrom_i, effectiveFrom_{i+1})`, so exactly one config is active on any date. When analyzing data, the window active on each date is used — not the current config. This means:
+- A window effective June 1 applies to all data from June 1 onward, until the next window.
+- Data before the earliest window uses that **earliest window's config** (not a generic default — it's the best proxy for what the system looked like before change tracking began).
+- **Tuning** a window edits it in place; the boundary never moves (only `updatedAt` bumps).
+- **Establishing** a change at a past date sets `effectiveFrom` explicitly; the new window starts as a copy of the config that was active on that date.
+- **Adjusting** a window's range means editing one boundary date — the previous window's end follows automatically.
 
 ---
 
@@ -121,35 +123,25 @@ Minute-by-minute view for a single sprinkler day, using the config version activ
 
 ### Configuration (/config)
 
-**Timer Editor**
+The page is organized around a **timeline of config windows**.
 
-Each timer card contains a **program tab bar** (A / B / C) at the top.
+**Window timeline rail** (top)
+- A horizontal strip of windows, oldest → newest. Each chip shows its date range (`effectiveFrom → effectiveTo`, or "now"), notes, and how many days / sprinkler days fall in that range. The window active today is badged **current**; the first is badged **earliest** (it also covers all data before it).
+- Click a chip to load that window into the editor below.
+- **＋ New config** opens a small form: pick the **effective date** (when the change took effect on the timer) and add notes. The new window starts as a copy of the config active on that date — so by default it inherits all existing values.
 
-- **Program A tab** is always active and always enabled.
-- **Program B / C tabs** show a dot indicator: green = enabled, gray = off. Clicking a disabled program tab shows an "Enable Program X" prompt — no accidental activations.
+**Selected-window editor**
+- **Effective from** date — editing it moves this window's boundary (the previous window's end follows automatically). Two windows can't share a date.
+- **Notes** field, plus a live range readout (e.g. "Active May 15 → Jun 1 · 18 days, 8 sprinkler").
+- **Timer editor** — each timer card has a **program tab bar** (A / B / C):
+  - **Program A** is always active and enabled. **B / C** show a green/gray dot; clicking a disabled tab shows an "Enable Program X" prompt — no accidental activations.
+  - Per active program: **days of week**, **start time**, and a **station table** (run in order) with On/Off toggle and minutes per program; name + baseline gpm are editable on Program A (read-only with a lock on B/C, since they're hardware properties). **Add Station** / Remove on Program A; **Show/hide disabled** collapses off stations.
+- **Detection & Billing**: sprinkler-on threshold, gallons/unit, $/unit.
+- **Copy baselines to later windows** — applies this window's baselines to every later window (for when you re-measure or change heads).
+- **Changed vs. previous window** — a diff of exactly what differs from the chronologically previous window (start times, days, durations, baselines, station add/remove, billing), so each window's notes are backed by a real changelog.
+- **Save window** commits edits **in place** — no new window, and the boundary only moves if you changed the date. **Reset** reverts unsaved edits. **Delete window** removes it (the last window can't be deleted).
 
-Within the active program view:
-- **Days of week** checkboxes — which days this program runs.
-- **Start time** picker — when the timer fires.
-- **Station table** (one row per station, run in order):
-  - On/Off toggle — per-program
-  - Name — editable on Program A only; read-only on B/C
-  - Minutes — per-program duration
-  - Baseline gpm — editable on Program A; shown with a lock icon on B/C (hardware property, not schedule)
-  - Remove button — Program A only
-
-- **Add Station** button appears on Program A only.
-- **Show/hide disabled** toggle collapses stations that are off with 0 duration.
-
-**Detection & Billing**: sprinkler-on threshold, gallons/unit, $/unit
-
-**Save flow**: clicking Save opens a dialog requiring change notes (enforces a change log).
-
-**Configuration History**
-- Collapsible list of all saved versions: date/time, notes, baseline count
-- Expand to see full station list; click Restore to load into editor
-- History is never pruned
-- Config versions are shown as markers on the Consumption Chart
+**Chart integration**: each window's `effectiveFrom` is a marker on the Consumption Chart; clicking a marker jumps to that window. From the dashboard's per-day view, **Tune config for this day** deep-links to the window active on that day.
 
 **Data management**: row count; clear-all button.
 
@@ -177,13 +169,19 @@ Within the active program view:
 5. If something looks off — check whether it coincides with a config-change marker
 6. Click suspicious day → day's station flow shown in the Per-Station chart below
 
-### Seasonal Config Update
+### Seasonal Config Update (establish a new window)
 1. Do physical audit: measure each station's gpm
-2. Navigate to Config
-3. Update Program A durations and baseline gpm values
+2. Navigate to Config → **＋ New config**, set **effective date** to when the change took effect on the timer
+3. The new window opens as a copy of the prior config — adjust Program A durations and baseline gpm values
 4. Optionally add a Program B for a shorter drought schedule
-5. Save → enter notes (e.g. "Spring 2025 — reduced T1-03 to 12 min, updated all baselines")
-6. Config change marker appears on the chart going forward
+5. Edit notes (e.g. "Spring 2025 — reduced T1-03 to 12 min, updated all baselines") → **Save window**
+6. A config-change marker appears on the chart at the effective date; analysis from that date forward uses the new settings
+
+### Tune & Troubleshoot Across Windows
+1. Spot a step-change or anomaly on the chart; click the day → per-station flow
+2. **Tune config for this day** jumps to the window active then. Adjust start time / baseline / durations and **Save** — the edit stays in place, the window boundary doesn't move
+3. Realize the real change happened on a different date? Edit the window's **Effective from** (or create a new window at the right date) — adjacent boundaries follow automatically
+4. Use **Changed vs. previous window** to confirm exactly what differs between configs
 
 ### Anomaly Investigation
 1. Anomaly marker (⚠) on chart — not coinciding with a config-change marker
@@ -197,11 +195,11 @@ Within the active program view:
 
 ## Design Principles
 1. **Zero friction**: Upload → see charts immediately.
-2. **Config is time-aware**: Analysis uses the right config for each date — changing today's config never distorts history.
+2. **Config is time-aware**: Analysis uses the window active on each date. Each window's effective date is the real-world change date, set explicitly — so tuning a window never distorts history, and you can establish a change on the date it actually happened.
 3. **Context on the chart**: Config changes and anomalies are visible directly on the time series, not in a separate panel.
 4. **Progressive breakdown**: Simple → Timer → Station. Coarse first, drill when needed.
 5. **Flat is healthy**: Weekly chart should be flat; anything else demands attention.
-6. **Notes are mandatory on config save**: Enforces a lightweight change log.
+6. **Every window carries notes + a diff**: Each window has change notes and an auto-computed diff vs. the previous window — a lightweight, verifiable change log.
 7. **Programs are opt-in**: Program A is the default path. B and C require an explicit enable step; most users never need them.
 
 ---

@@ -13,7 +13,7 @@ import {
   ReferenceLine,
   Rectangle,
 } from "recharts"
-import type { Breakdown, ChartBar, ConfigVersion, TimeBucket, TimeWindow } from "@/lib/types"
+import type { Breakdown, ChartBar, ConfigWindow, TimeBucket, TimeWindow } from "@/lib/types"
 import { aggregateForChart, windowCutoff } from "@/lib/analyze"
 import type { EnrichedRow } from "@/lib/types"
 
@@ -92,13 +92,15 @@ function AnomalyBar(props: any) {
   )
 }
 
-// Tooltip for config-change reference lines
-function ConfigLabel({ viewBox, notes }: { viewBox?: { x: number; y: number }; notes: string }) {
+// Label + (optional) click target for config-change reference lines
+function ConfigLabel({ viewBox, notes, onClick }: { viewBox?: { x: number; y: number }; notes: string; onClick?: () => void }) {
   if (!viewBox) return null
   const { x, y } = viewBox
   return (
-    <g>
+    <g onClick={onClick} style={{ cursor: onClick ? "pointer" : undefined }}>
       <rect x={x - 1} y={y} width={2} height={200} fill="#6366f1" opacity={0.4} />
+      {/* wider transparent hit area so the marker is easy to click */}
+      {onClick && <rect x={x - 4} y={y} width={150} height={16} fill="transparent" />}
       <text x={x + 4} y={y + 12} fontSize={9} fill="#6366f1" style={{ pointerEvents: "none" }}>
         ⚙ {notes.length > 24 ? notes.slice(0, 24) + "…" : notes}
       </text>
@@ -110,12 +112,13 @@ function ConfigLabel({ viewBox, notes }: { viewBox?: { x: number; y: number }; n
 
 interface Props {
   enriched: EnrichedRow[]
-  configHistory: ConfigVersion[]
+  windows: ConfigWindow[]
   onDaySelect?: (date: string) => void
   selectedDay?: string | null
+  onConfigClick?: (windowId: string) => void
 }
 
-export default function ConsumptionChart({ enriched, configHistory, onDaySelect, selectedDay }: Props) {
+export default function ConsumptionChart({ enriched, windows, onDaySelect, selectedDay, onConfigClick }: Props) {
   const [timeWindow, setTimeWindow] = useState<TimeWindow>("3m")
   const [breakdown, setBreakdown] = useState<Breakdown>("simple")
 
@@ -160,15 +163,16 @@ export default function ConsumptionChart({ enriched, configHistory, onDaySelect,
       ["house", ...Array.from(keySet).filter((k) => k !== "house").sort()]
     const stackKeys = stackOrder.filter((k) => keySet.has(k))
 
-    // Config change markers — find which bar label each version maps to
-    const visibleVersions = configHistory.filter((v) => v.savedAt.slice(0, 10) >= cutoff)
-    const configMarkers: Array<{ label: string; notes: string }> = []
-    for (const v of visibleVersions) {
-      const changeDate = v.savedAt.slice(0, 10)
+    // Config change markers — find which bar label each window's effectiveFrom maps to
+    const sortedWindows = [...windows].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))
+    const visibleWindows = sortedWindows.filter((w) => w.effectiveFrom >= cutoff)
+    const configMarkers: Array<{ label: string; notes: string; windowId: string }> = []
+    for (const w of visibleWindows) {
+      const changeDate = w.effectiveFrom
       const bar = bars.find((b) => b.dateStart <= changeDate && b.dateEnd >= changeDate)
         ?? bars.find((b) => b.dateStart >= changeDate)
       if (bar && !configMarkers.find((m) => m.label === bar.label)) {
-        configMarkers.push({ label: bar.label, notes: v.notes || "Config changed" })
+        configMarkers.push({ label: bar.label, notes: w.notes || "Config changed", windowId: w.id })
       }
     }
 
@@ -178,7 +182,7 @@ export default function ConsumptionChart({ enriched, configHistory, onDaySelect,
       : ""
 
     return { bars, stackKeys, configMarkers, bucketLabel, rangeLabel }
-  }, [deferredEnriched, deferredWindow, deferredBreakdown, configHistory])
+  }, [deferredEnriched, deferredWindow, deferredBreakdown, windows])
 
   // Label of the currently selected bar (for the ReferenceLine highlight)
   const selectedBarLabel = isClickable && selectedDay
@@ -307,8 +311,13 @@ export default function ConsumptionChart({ enriched, configHistory, onDaySelect,
                 stroke="#6366f1"
                 strokeDasharray="4 3"
                 strokeWidth={1.5}
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                label={(props: any) => <ConfigLabel {...props} notes={m.notes} />}
+                label={(props: { viewBox?: { x: number; y: number } }) => (
+                  <ConfigLabel
+                    {...props}
+                    notes={m.notes}
+                    onClick={onConfigClick ? () => onConfigClick(m.windowId) : undefined}
+                  />
+                )}
               />
             ))}
 

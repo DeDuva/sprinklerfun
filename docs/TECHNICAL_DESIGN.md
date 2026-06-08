@@ -105,10 +105,10 @@ Note: `sprinklerDays` (formerly a top-level array) has been removed. Each progra
 ## Data Flow
 
 ```
-FlumeRow[]  +  ConfigVersion[]  (stored in localStorage via Zustand)
+FlumeRow[]  +  ConfigWindow[]  (stored in localStorage via Zustand)
     │
-    ▼  enrichRowsMultiConfig(rows, configHistory)
-       ┌─ for each date range, find the active ConfigVersion
+    ▼  enrichRowsMultiConfig(rows, windows)
+       ┌─ for each date range, find the active ConfigWindow (by effectiveFrom)
        └─ call enrichRows(batchRows, activeConfig) per segment
 EnrichedRow[]    (each minute: station id, timer "timer1"/"timer2"/"house", isSprinklerDay)
     │
@@ -131,18 +131,24 @@ All functions are **pure** (no side effects, no React). They live in `lib/analyz
 
 ### 1. Config-Aware Enrichment (`enrichRowsMultiConfig`)
 
-**Problem**: A config saved on date D should apply to all data from D onward (and not retroactively change earlier data). This means analysis must use the correct config version for each date, not just the current config.
+**Problem**: A config window with `effectiveFrom = D` should apply to all data from D onward (and not retroactively change earlier data). This means analysis must use the config window active on each date, not just the current config. Crucially, `effectiveFrom` is the **real-world date the change took effect on the timer** — decoupled from when the user entered it in the app (`createdAt`). Editing a window's settings does not move its boundary.
 
 **Algorithm**:
-1. Sort `configHistory` oldest-first (by `savedAt`)
-2. Build a list of segments: `[{ fromDate: "0000-00-00", config: oldest_saved }, { fromDate: v1.savedAt, config: v1.config }, ...]`
+1. Sort `windows` oldest-first (by `effectiveFrom`)
+2. Build a list of segments: `[{ fromDate: "0000-00-00", config: earliest }, { fromDate: w1.effectiveFrom, config: w1.config }, ...]`
 3. For each row date, find its segment (the last segment whose `fromDate ≤ row.date`)
 4. Group rows by segment index; call `enrichRows(batch, segment.config)` on each batch
 5. Merge and sort all results by datetime
 
-This means: changing today's config has no effect on how past data is analyzed. History is immutable.
+Windows are **contiguous**: window i covers `[effectiveFrom_i, effectiveFrom_{i+1})`, so exactly one config is active on any date — no gaps or overlaps are representable.
 
-**Pre-history fallback**: data before the first saved config uses the **oldest saved config**, not `DEFAULT_CONFIG`. `DEFAULT_CONFIG` is a generic placeholder with wrong timer start times for real installations; the oldest saved config is always a better proxy for what the system looked like before the user started tracking changes.
+**Pre-history fallback**: data before the earliest window uses that **earliest window's config**, not `DEFAULT_CONFIG`. `DEFAULT_CONFIG` is a generic placeholder with wrong timer start times for real installations; the earliest window is always a better proxy for what the system looked like before the user started tracking changes.
+
+**Shared helpers** (also in `lib/analyze.ts`, single source of truth for "which config when"):
+- `activeWindowForDate(windows, date)` — the window active on a date (earliest covers the past).
+- `windowDateRange(windows)` — derives each window's `effectiveTo` (day before the next start; last is open).
+- `currentConfig(windows)` — the config active today, for "current" displays (names, billing).
+- `diffConfigs(prev, next)` — structured human-readable diff powering the "changed vs. previous window" panel.
 
 ### 2. Multi-Program Enrichment (`enrichRows`)
 
@@ -177,7 +183,7 @@ Time window → bucket mapping:
 | 1Y, All | month |
 
 ### 4. Config-Change Markers on Chart
-`configHistory` entries whose `savedAt` falls within the visible date range are mapped to their nearest bar label. Rendered as Recharts `ReferenceLine x={label}` with a custom label component. Tooltip on hover shows change notes.
+Config windows whose `effectiveFrom` falls within the visible date range are mapped to their nearest bar label. Rendered as Recharts `ReferenceLine x={label}` with a custom label component. The label shows change notes and is clickable — it deep-links to `/config?window=<id>` to edit that window.
 
 ### 5. Baseline Warning (`computeStationWarnings`)
 - Lookback: last 21 calendar days of data
@@ -193,18 +199,21 @@ Time window → bucket mapping:
 ### Zustand Store
 ```ts
 {
-  config: AppConfig             // active / current config
-  configHistory: ConfigVersion[] // ordered newest-first
+  windows: ConfigWindow[]       // sorted ascending by effectiveFrom; the active
+                                // window for today is the "current" config
   rows: FlumeRow[]              // all CSV rows, sorted by datetime
 
-  saveConfig(config, notes)     // deep-copies config → ConfigVersion → prepends to history
-  restoreConfig(version)        // loads historical config into active (no history entry)
-  appendRows(newRows)           // merge + deduplicate by datetime key, re-sort
+  addWindowFromDate(date, notes)  // clone the config active on `date` → new window
+  updateWindow(id, patch)         // edit config/notes/effectiveFrom in place (no new
+                                  // window; changing effectiveFrom moves only this boundary)
+  deleteWindow(id)                // remove a window (last one cannot be deleted)
+  copyBaselinesForward(id)        // apply this window's baselines to all later windows
+  appendRows(newRows)             // merge + deduplicate by datetime key, re-sort
   clearRows()
 }
 ```
 
-Persisted under `"sprinkler-store"` in localStorage.
+Persisted under `"sprinkler-store"` (persist `version: 2`) in localStorage.
 
 ### SSR Safety
 - Storage adapter no-ops when `typeof window === "undefined"`
@@ -217,7 +226,7 @@ Persisted under `"sprinkler-store"` in localStorage.
 The Dashboard splits computation into two memos:
 - **`derived`** (expensive, deferred) — runs `enrichRowsMultiConfig` + `buildDailyRows` + warnings once per data/config change; memoises `enriched`, `allDaily`, `sprinklerDates`, `defaultFlowDay`.
 - **`monthlySummary`** (cheap) — filters `allDaily` by the selected month and calls `computeSummary`; reruns only when the month selector changes, not when data changes.
-- **`flowDayStats`** (cheap) — filters `enriched` and `allDaily` by the selected day, calls `buildStationStats` + `computeSummary`, and resolves the active `ConfigVersion` for that day via `findLast`. Reruns only when the selected day changes.
+- **`flowDayStats`** (cheap) — filters `enriched` and `allDaily` by the selected day, calls `buildStationStats` + `computeSummary` with that day's config, and resolves the active window for that day via `activeWindowForDate`. Reruns only when the selected day changes.
 
 ---
 
@@ -231,31 +240,46 @@ Old configs (before multi-program support) stored `start` and station `durationM
 4. Programs B and C initialized as `{ enabled: false, start: timer.start, days: [], stations: {} }`
 5. Top-level `sprinklerDays` removed
 
-Migration is applied:
-- In `store.ts` `onRehydrateStorage` — for configs persisted in localStorage
-- In `StoreProvider.tsx` — when loading `public/default-config.json` on fresh install
-- In `ExportImportCard.applyBundle` — when importing a JSON file or URL
-
 Migration is idempotent: new-format configs pass through unchanged.
+
+### Windows migration (`toWindows`)
+
+A second migration converts the legacy store shape (`{ config, configHistory }`, where each
+`ConfigVersion.savedAt` implicitly defined a boundary) into the `ConfigWindow[]` model. `toWindows`
+in `lib/types.ts` accepts any of: new `{ windows }`, legacy `{ config, configHistory }`, or a lone
+`{ config }`. Each legacy version's `savedAt` date becomes a window's `effectiveFrom`. It also runs
+`migrateConfig` and `normalizeTime` on every config (the latter fixes the old malformed
+`"03:45:00:00"` start-time bug).
+
+Both migrations are applied:
+- In `store.ts` persist `migrate` (v1→v2) and `onRehydrateStorage` — for localStorage data
+- In `StoreProvider.tsx` — when loading `public/default-config.json` on fresh install
+- In `ExportImportCard.applyBundle` — when importing a JSON file or URL (old exports still load)
 
 ---
 
-## Config Versioning
+## Config Windows
 
 ```ts
-interface ConfigVersion {
-  id: string        // Date.now().toString()
-  savedAt: string   // ISO timestamp
-  notes: string     // user change notes
-  config: AppConfig // deep copy at save time
+interface ConfigWindow {
+  id: string          // stable unique id (crypto.randomUUID)
+  effectiveFrom: string // "YYYY-MM-DD" — when this took effect on the timer (editable)
+  notes: string       // user change notes
+  config: AppConfig   // full snapshot (timers + billing)
+  createdAt: string   // ISO — when created in the app (bookkeeping)
+  updatedAt: string   // ISO — last edit (bookkeeping)
 }
 ```
 
-`saveConfig` deep-copies before storing so in-progress edits don't corrupt history.
+The key design decision: **`effectiveFrom` (real-world change date) is decoupled from `createdAt`/
+`updatedAt` (when it was entered/edited in the app)**. Tuning a window edits it in place and only
+bumps `updatedAt` — the boundary never moves. Establishing a change at a past date sets
+`effectiveFrom` explicitly. Adjusting a window's range edits `effectiveFrom` (contiguity makes the
+previous window's end follow automatically).
 
-History is never pruned. `restoreConfig` loads into the editor's local state only; the user must Save to commit.
+Windows are never auto-pruned; the user deletes them explicitly (the last one cannot be deleted).
 
-**Time-aware analysis**: all analysis functions accept `configHistory` and use `enrichRowsMultiConfig` to apply the correct config per date range.
+**Time-aware analysis**: all analysis functions accept `windows` and use `enrichRowsMultiConfig` to apply the active window's config per date range.
 
 ---
 
@@ -284,10 +308,13 @@ Column matching: `datetime | Datetime | DateTime`, `gallons | Gallons`. Invalid 
 | House assignment on non-scheduled day | Day not in program.days → no windows → not a sprinkler day |
 | Sprinkler day threshold | Just-below threshold → not a sprinkler day |
 | Program B active on different days | B and A can have non-overlapping day sets |
-| `enrichRowsMultiConfig` — default config | Uses DEFAULT_CONFIG when no history |
-| `enrichRowsMultiConfig` — single version | Uses saved config after its savedAt date |
-| `enrichRowsMultiConfig` — multi-version | Each date range uses the correct version |
-| `enrichRowsMultiConfig` — pre-history data | Data before first version uses oldest saved config |
+| `enrichRowsMultiConfig` — no windows | Uses DEFAULT_CONFIG when there are no windows |
+| `enrichRowsMultiConfig` — single window | Uses a window's config from its effectiveFrom onward |
+| `enrichRowsMultiConfig` — multi-window | Each date range uses the active window (even if passed out of order) |
+| `enrichRowsMultiConfig` — pre-history data | Data before the earliest window uses that window's config |
+| `activeWindowForDate` / `windowDateRange` | Boundary inclusivity, range derivation, input-order independence |
+| `diffConfigs` | Detects start/days/duration/baseline/station add-remove/billing changes |
+| `toWindows` / `normalizeTime` | Legacy→windows migration; malformed `HH:MM:SS:SS` normalized |
 | `buildWeeklyRows` — bucketing | Rows on same ISO week aggregate together |
 | `buildWeeklyRows` — week boundaries | Mon/Sun split into correct weeks |
 | `computeStationWarnings` — fires | >20% above baseline for 2+ days → warning |
@@ -313,7 +340,7 @@ interface Props {
 }
 ```
 
-`configVersionLabel` is resolved in `page.tsx`'s `flowDayStats` memo using `findLast` over a date-sorted `configHistory` (same lookup as `enrichRowsMultiConfig` uses). It is passed into a custom Recharts `<Tooltip content={…}>` that renders:
+`configVersionLabel` is resolved in `page.tsx`'s `flowDayStats` memo via `activeWindowForDate(windows, day)` (the same lookup `enrichRowsMultiConfig` uses), formatting that window's `effectiveFrom`. It is passed into a custom Recharts `<Tooltip content={…}>` that renders:
 - Avg GPM (measured)
 - Baseline GPM (orange) + % delta (green / red / blue)
 - "Config from [date]" footer row (hidden when no history exists)
@@ -338,6 +365,6 @@ interface Props {
 | `enrichRows` is O(n) synchronous | OK to ~1M rows; beyond that, move to Web Worker |
 | localStorage ~5MB limit | ~1 year Flume data ≈ 15MB uncompressed. May need `lz-string` compression or IndexedDB |
 | No row validation beyond column names | Malformed timestamps silently dropped |
-| Config savedAt resolution is 1 day | Two configs saved on the same day: last one wins |
+| Config `effectiveFrom` resolution is 1 day | Two windows can't share a date (enforced in the editor); sub-day changes aren't representable |
 | IQR anomaly detection is naive | No seasonal adjustment; many weeks of data needed before IQR is meaningful |
 | Programs A and B on same timer same day | Both programs' windows are merged; if they overlap in time, first-match wins |
