@@ -2,7 +2,7 @@
 
 import { useDeferredValue, useMemo, useState } from "react"
 import { useStore } from "@/lib/store"
-import { enrichRowsMultiConfig, buildStationStats, currentConfig } from "@/lib/analyze"
+import { deriveData, buildStationStats, currentConfig } from "@/lib/analyze"
 import {
   BarChart,
   Bar,
@@ -28,17 +28,19 @@ type SortKey = keyof StationStats
 export default function AnalysisPage() {
   const rows          = useStore((s) => s.rows)
   const windows       = useStore((s) => s.windows)
+  const rowsVersion   = useStore((s) => s.rowsVersion)
   const [sortKey, setSortKey] = useState<SortKey>("totalGallons")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
 
   const deferredRows    = useDeferredValue(rows)
   const deferredWindows = useDeferredValue(windows)
+  const deferredVersion = useDeferredValue(rowsVersion)
 
   const stats = useMemo(() => {
     if (deferredRows.length === 0) return []
-    const enriched = enrichRowsMultiConfig(deferredRows, deferredWindows)
+    const { enriched } = deriveData(deferredRows, deferredWindows, deferredVersion)
     return buildStationStats(enriched, currentConfig(deferredWindows))
-  }, [deferredRows, deferredWindows])
+  }, [deferredRows, deferredWindows, deferredVersion])
 
   const sorted = useMemo(() => {
     return [...stats].sort((a, b) => {

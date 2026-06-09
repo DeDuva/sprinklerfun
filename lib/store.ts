@@ -9,6 +9,10 @@ interface AppState {
   // [effectiveFrom_i, effectiveFrom_{i+1}); the earliest also covers earlier data.
   windows: ConfigWindow[]
   rows: FlumeRow[]
+  // Bumped whenever `rows` is replaced (upload / clear). Used as a cheap cache
+  // key for the expensive enrichment so derived data is reused across renders
+  // and page navigations until the data actually changes.
+  rowsVersion: number
 
   // Create a new window effective on `effectiveFrom`, cloning the config active
   // on that date (else the latest window, else DEFAULT_CONFIG). Returns its id.
@@ -36,6 +40,7 @@ export const useStore = create<AppState>()(
     (set, get) => ({
       windows: [],
       rows: [],
+      rowsVersion: 0,
 
       addWindowFromDate: (effectiveFrom, notes) => {
         const { windows } = get()
@@ -112,10 +117,10 @@ export const useStore = create<AppState>()(
           ...newRows.filter((r) => !existingSet.has(r.datetime)),
         ]
         merged.sort((a, b) => a.datetime.localeCompare(b.datetime))
-        set({ rows: merged })
+        set({ rows: merged, rowsVersion: get().rowsVersion + 1 })
       },
 
-      clearRows: () => set({ rows: [] }),
+      clearRows: () => set({ rows: [], rowsVersion: get().rowsVersion + 1 }),
     }),
     {
       name: "sprinkler-store",

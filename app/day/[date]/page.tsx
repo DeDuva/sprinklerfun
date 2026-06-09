@@ -2,7 +2,7 @@
 
 import { use, useDeferredValue, useMemo } from "react"
 import { useStore } from "@/lib/store"
-import { enrichRowsMultiConfig, activeWindowForDate, currentConfig } from "@/lib/analyze"
+import { deriveData, activeWindowForDate, currentConfig } from "@/lib/analyze"
 import {
   AreaChart,
   Area,
@@ -40,9 +40,11 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
   const { date } = use(params)
   const rows          = useStore((s) => s.rows)
   const windows       = useStore((s) => s.windows)
+  const rowsVersion   = useStore((s) => s.rowsVersion)
 
   const deferredRows    = useDeferredValue(rows)
   const deferredWindows = useDeferredValue(windows)
+  const deferredVersion = useDeferredValue(rowsVersion)
 
   // Billing comes from the config window active on this day.
   const dayConfig = useMemo(
@@ -53,7 +55,7 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
   const { chartData, stationIds, stationTotals, totalGallons } = useMemo(() => {
     if (deferredRows.length === 0) return { chartData: [], stationIds: [], stationTotals: {}, totalGallons: 0 }
 
-    const enriched = enrichRowsMultiConfig(deferredRows, deferredWindows)
+    const { enriched } = deriveData(deferredRows, deferredWindows, deferredVersion)
     const dayRows = enriched.filter((r) => r.date === date)
 
     const stationSet = new Set<string>()
@@ -83,7 +85,7 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
     const totalGallons = dayRows.reduce((s, r) => s + r.gallons, 0)
 
     return { chartData, stationIds, stationTotals, totalGallons }
-  }, [deferredRows, deferredWindows, date])
+  }, [deferredRows, deferredWindows, deferredVersion, date])
 
   const fmt = new Date(date + "T12:00:00").toLocaleDateString(undefined, {
     weekday: "long",
