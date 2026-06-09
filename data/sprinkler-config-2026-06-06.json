@@ -1,0 +1,2862 @@
+{
+  "version": 1,
+  "exportedAt": "2026-06-06T18:33:50.732Z",
+  "config": {
+    "timer1": {
+      "stations": [
+        {
+          "id": "T1-01",
+          "name": "T1-01",
+          "baselineGpm": 3.3
+        },
+        {
+          "id": "T1-02",
+          "name": "T1-02",
+          "baselineGpm": 6
+        },
+        {
+          "id": "T1-03",
+          "name": "T1-03"
+        },
+        {
+          "id": "T1-04",
+          "name": "T1-04"
+        },
+        {
+          "id": "T1-05",
+          "name": "T1-05"
+        },
+        {
+          "id": "T1-06",
+          "name": "T1-06",
+          "baselineGpm": 6
+        },
+        {
+          "id": "T1-07",
+          "name": "T1-07",
+          "baselineGpm": 4
+        },
+        {
+          "id": "T1-08",
+          "name": "T1-08"
+        },
+        {
+          "id": "T1-09",
+          "name": "T1-09",
+          "baselineGpm": 6.5
+        },
+        {
+          "id": "T1-10",
+          "name": "T1-10",
+          "baselineGpm": 2.4
+        },
+        {
+          "id": "T1-11",
+          "name": "T1-11",
+          "baselineGpm": 2
+        },
+        {
+          "id": "T1-12",
+          "name": "T1-12",
+          "baselineGpm": 7.7
+        }
+      ],
+      "programs": {
+        "A": {
+          "enabled": true,
+          "start": "03:45:00",
+          "days": [
+            0,
+            2,
+            4
+          ],
+          "stations": {
+            "T1-01": {
+              "durationMin": 10,
+              "enabled": true
+            },
+            "T1-02": {
+              "durationMin": 15,
+              "enabled": true
+            },
+            "T1-03": {
+              "durationMin": 15,
+              "enabled": true
+            },
+            "T1-04": {
+              "durationMin": 15,
+              "enabled": true
+            },
+            "T1-05": {
+              "durationMin": 15,
+              "enabled": true
+            },
+            "T1-06": {
+              "durationMin": 15,
+              "enabled": true
+            },
+            "T1-07": {
+              "durationMin": 15,
+              "enabled": true
+            },
+            "T1-08": {
+              "durationMin": 15,
+              "enabled": true
+            },
+            "T1-09": {
+              "durationMin": 10,
+              "enabled": true
+            },
+            "T1-10": {
+              "durationMin": 15,
+              "enabled": true
+            },
+            "T1-11": {
+              "durationMin": 15,
+              "enabled": true
+            },
+            "T1-12": {
+              "durationMin": 6,
+              "enabled": true
+            }
+          }
+        },
+        "B": {
+          "enabled": false,
+          "start": "03:45:00:00",
+          "days": [],
+          "stations": {}
+        },
+        "C": {
+          "enabled": false,
+          "start": "03:45:00:00",
+          "days": [],
+          "stations": {}
+        }
+      }
+    },
+    "timer2": {
+      "stations": [
+        {
+          "id": "T2-01",
+          "name": "T2-01"
+        },
+        {
+          "id": "T2-02",
+          "name": "T2-02"
+        },
+        {
+          "id": "T2-03",
+          "name": "T2-03",
+          "baselineGpm": 5.1
+        },
+        {
+          "id": "T2-04",
+          "name": "T2-04",
+          "baselineGpm": 5.96
+        },
+        {
+          "id": "T2-05",
+          "name": "T2-05"
+        },
+        {
+          "id": "T2-06",
+          "name": "T2-06"
+        },
+        {
+          "id": "T2-07",
+          "name": "T2-07",
+          "baselineGpm": 10
+        },
+        {
+          "id": "T2-08",
+          "name": "T2-08",
+          "baselineGpm": 7.1
+        },
+        {
+          "id": "T2-09",
+          "name": "T2-09",
+          "baselineGpm": 14.5
+        },
+        {
+          "id": "T2-10",
+          "name": "T2-10"
+        },
+        {
+          "id": "T2-11",
+          "name": "T2-11"
+        },
+        {
+          "id": "T2-12",
+          "name": "T2-12",
+          "baselineGpm": 15.5
+        },
+        {
+          "id": "T2-13",
+          "name": "T2-13"
+        },
+        {
+          "id": "T2-14",
+          "name": "T2-14"
+        },
+        {
+          "id": "T2-15",
+          "name": "T2-15"
+        },
+        {
+          "id": "T2-16",
+          "name": "T2-16"
+        },
+        {
+          "id": "T2-17",
+          "name": "T2-17"
+        },
+        {
+          "id": "T2-18",
+          "name": "T2-18"
+        },
+        {
+          "id": "T2-19",
+          "name": "T2-19",
+          "baselineGpm": 12.4
+        },
+        {
+          "id": "T2-20",
+          "name": "T2-20",
+          "baselineGpm": 10
+        },
+        {
+          "id": "T2-21",
+          "name": "T2-21",
+          "baselineGpm": 15.7
+        },
+        {
+          "id": "T2-22",
+          "name": "T2-22",
+          "baselineGpm": 9
+        },
+        {
+          "id": "T2-23",
+          "name": "T2-23",
+          "baselineGpm": 12.3
+        },
+        {
+          "id": "T2-24",
+          "name": "T2-24",
+          "baselineGpm": 10.6
+        },
+        {
+          "id": "T2-25",
+          "name": "T2-25"
+        }
+      ],
+      "programs": {
+        "A": {
+          "enabled": true,
+          "start": "06:30:00",
+          "days": [
+            0,
+            2,
+            4
+          ],
+          "stations": {
+            "T2-01": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-02": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-03": {
+              "durationMin": 6,
+              "enabled": true
+            },
+            "T2-04": {
+              "durationMin": 15,
+              "enabled": true
+            },
+            "T2-05": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-06": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-07": {
+              "durationMin": 5,
+              "enabled": true
+            },
+            "T2-08": {
+              "durationMin": 5,
+              "enabled": true
+            },
+            "T2-09": {
+              "durationMin": 5,
+              "enabled": true
+            },
+            "T2-10": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-11": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-12": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-13": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-14": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-15": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-16": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-17": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-18": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-19": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-20": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-21": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-22": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-23": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-24": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-25": {
+              "durationMin": 3,
+              "enabled": true
+            }
+          }
+        },
+        "B": {
+          "enabled": true,
+          "start": "02:30:00",
+          "days": [
+            0,
+            2,
+            4,
+            5
+          ],
+          "stations": {
+            "T2-01": {
+              "durationMin": 0,
+              "enabled": false
+            },
+            "T2-12": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-19": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-20": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-21": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-22": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-23": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-24": {
+              "durationMin": 3,
+              "enabled": true
+            },
+            "T2-25": {
+              "durationMin": 3,
+              "enabled": true
+            }
+          }
+        },
+        "C": {
+          "enabled": false,
+          "start": "06:30:00",
+          "days": [],
+          "stations": {}
+        }
+      }
+    },
+    "sprinklerOnThreshold": 500,
+    "gallonsPerUnit": 748,
+    "costPerUnit": 10.47
+  },
+  "configHistory": [
+    {
+      "id": "1780770826268",
+      "savedAt": "2026-06-06T18:33:46.268Z",
+      "notes": "correct start times",
+      "config": {
+        "timer1": {
+          "stations": [
+            {
+              "id": "T1-01",
+              "name": "T1-01",
+              "baselineGpm": 3.3
+            },
+            {
+              "id": "T1-02",
+              "name": "T1-02",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-03",
+              "name": "T1-03"
+            },
+            {
+              "id": "T1-04",
+              "name": "T1-04"
+            },
+            {
+              "id": "T1-05",
+              "name": "T1-05"
+            },
+            {
+              "id": "T1-06",
+              "name": "T1-06",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-07",
+              "name": "T1-07",
+              "baselineGpm": 4
+            },
+            {
+              "id": "T1-08",
+              "name": "T1-08"
+            },
+            {
+              "id": "T1-09",
+              "name": "T1-09",
+              "baselineGpm": 6.5
+            },
+            {
+              "id": "T1-10",
+              "name": "T1-10",
+              "baselineGpm": 2.4
+            },
+            {
+              "id": "T1-11",
+              "name": "T1-11",
+              "baselineGpm": 2
+            },
+            {
+              "id": "T1-12",
+              "name": "T1-12",
+              "baselineGpm": 7.7
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "03:45:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T1-01": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-02": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-03": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-05": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-06": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-07": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-08": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-09": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-10": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-11": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-12": {
+                  "durationMin": 6,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            },
+            "C": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "timer2": {
+          "stations": [
+            {
+              "id": "T2-01",
+              "name": "T2-01"
+            },
+            {
+              "id": "T2-02",
+              "name": "T2-02"
+            },
+            {
+              "id": "T2-03",
+              "name": "T2-03",
+              "baselineGpm": 5.1
+            },
+            {
+              "id": "T2-04",
+              "name": "T2-04",
+              "baselineGpm": 5.96
+            },
+            {
+              "id": "T2-05",
+              "name": "T2-05"
+            },
+            {
+              "id": "T2-06",
+              "name": "T2-06"
+            },
+            {
+              "id": "T2-07",
+              "name": "T2-07",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-08",
+              "name": "T2-08",
+              "baselineGpm": 7.1
+            },
+            {
+              "id": "T2-09",
+              "name": "T2-09",
+              "baselineGpm": 14.5
+            },
+            {
+              "id": "T2-10",
+              "name": "T2-10"
+            },
+            {
+              "id": "T2-11",
+              "name": "T2-11"
+            },
+            {
+              "id": "T2-12",
+              "name": "T2-12",
+              "baselineGpm": 15.5
+            },
+            {
+              "id": "T2-13",
+              "name": "T2-13"
+            },
+            {
+              "id": "T2-14",
+              "name": "T2-14"
+            },
+            {
+              "id": "T2-15",
+              "name": "T2-15"
+            },
+            {
+              "id": "T2-16",
+              "name": "T2-16"
+            },
+            {
+              "id": "T2-17",
+              "name": "T2-17"
+            },
+            {
+              "id": "T2-18",
+              "name": "T2-18"
+            },
+            {
+              "id": "T2-19",
+              "name": "T2-19",
+              "baselineGpm": 12.4
+            },
+            {
+              "id": "T2-20",
+              "name": "T2-20",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-21",
+              "name": "T2-21",
+              "baselineGpm": 15.7
+            },
+            {
+              "id": "T2-22",
+              "name": "T2-22",
+              "baselineGpm": 9
+            },
+            {
+              "id": "T2-23",
+              "name": "T2-23",
+              "baselineGpm": 12.3
+            },
+            {
+              "id": "T2-24",
+              "name": "T2-24",
+              "baselineGpm": 10.6
+            },
+            {
+              "id": "T2-25",
+              "name": "T2-25"
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "06:30:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T2-01": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-02": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-03": {
+                  "durationMin": 6,
+                  "enabled": true
+                },
+                "T2-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T2-05": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-06": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-07": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-08": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-09": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-10": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-11": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-12": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-13": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-14": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-15": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-16": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-17": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-18": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-19": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-20": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-21": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-22": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-23": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-24": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-25": {
+                  "durationMin": 3,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": true,
+              "start": "02:30:00",
+              "days": [
+                0,
+                2,
+                4,
+                5
+              ],
+              "stations": {
+                "T2-01": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-12": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-19": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-20": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-21": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-22": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-23": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-24": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-25": {
+                  "durationMin": 3,
+                  "enabled": true
+                }
+              }
+            },
+            "C": {
+              "enabled": false,
+              "start": "06:30:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "sprinklerOnThreshold": 500,
+        "gallonsPerUnit": 748,
+        "costPerUnit": 10.47
+      }
+    },
+    {
+      "id": "1780770212427",
+      "savedAt": "2026-06-06T18:23:32.427Z",
+      "notes": "Update T1 Start time",
+      "config": {
+        "timer1": {
+          "stations": [
+            {
+              "id": "T1-01",
+              "name": "T1-01",
+              "baselineGpm": 3.3
+            },
+            {
+              "id": "T1-02",
+              "name": "T1-02",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-03",
+              "name": "T1-03"
+            },
+            {
+              "id": "T1-04",
+              "name": "T1-04"
+            },
+            {
+              "id": "T1-05",
+              "name": "T1-05"
+            },
+            {
+              "id": "T1-06",
+              "name": "T1-06",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-07",
+              "name": "T1-07",
+              "baselineGpm": 4
+            },
+            {
+              "id": "T1-08",
+              "name": "T1-08"
+            },
+            {
+              "id": "T1-09",
+              "name": "T1-09",
+              "baselineGpm": 6.5
+            },
+            {
+              "id": "T1-10",
+              "name": "T1-10",
+              "baselineGpm": 2.4
+            },
+            {
+              "id": "T1-11",
+              "name": "T1-11",
+              "baselineGpm": 2
+            },
+            {
+              "id": "T1-12",
+              "name": "T1-12",
+              "baselineGpm": 7.7
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "04:30:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T1-01": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-02": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-03": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-05": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-06": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-07": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-08": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-09": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-10": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-11": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-12": {
+                  "durationMin": 6,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            },
+            "C": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "timer2": {
+          "stations": [
+            {
+              "id": "T2-01",
+              "name": "T2-01"
+            },
+            {
+              "id": "T2-02",
+              "name": "T2-02"
+            },
+            {
+              "id": "T2-03",
+              "name": "T2-03",
+              "baselineGpm": 5.1
+            },
+            {
+              "id": "T2-04",
+              "name": "T2-04",
+              "baselineGpm": 5.96
+            },
+            {
+              "id": "T2-05",
+              "name": "T2-05"
+            },
+            {
+              "id": "T2-06",
+              "name": "T2-06"
+            },
+            {
+              "id": "T2-07",
+              "name": "T2-07",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-08",
+              "name": "T2-08",
+              "baselineGpm": 7.1
+            },
+            {
+              "id": "T2-09",
+              "name": "T2-09",
+              "baselineGpm": 14.5
+            },
+            {
+              "id": "T2-10",
+              "name": "T2-10"
+            },
+            {
+              "id": "T2-11",
+              "name": "T2-11"
+            },
+            {
+              "id": "T2-12",
+              "name": "T2-12",
+              "baselineGpm": 15.5
+            },
+            {
+              "id": "T2-13",
+              "name": "T2-13"
+            },
+            {
+              "id": "T2-14",
+              "name": "T2-14"
+            },
+            {
+              "id": "T2-15",
+              "name": "T2-15"
+            },
+            {
+              "id": "T2-16",
+              "name": "T2-16"
+            },
+            {
+              "id": "T2-17",
+              "name": "T2-17"
+            },
+            {
+              "id": "T2-18",
+              "name": "T2-18"
+            },
+            {
+              "id": "T2-19",
+              "name": "T2-19",
+              "baselineGpm": 12.4
+            },
+            {
+              "id": "T2-20",
+              "name": "T2-20",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-21",
+              "name": "T2-21",
+              "baselineGpm": 15.7
+            },
+            {
+              "id": "T2-22",
+              "name": "T2-22",
+              "baselineGpm": 9
+            },
+            {
+              "id": "T2-23",
+              "name": "T2-23",
+              "baselineGpm": 12.3
+            },
+            {
+              "id": "T2-24",
+              "name": "T2-24",
+              "baselineGpm": 10.6
+            },
+            {
+              "id": "T2-25",
+              "name": "T2-25"
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "06:30:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T2-01": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-02": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-03": {
+                  "durationMin": 6,
+                  "enabled": true
+                },
+                "T2-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T2-05": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-06": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-07": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-08": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-09": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-10": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-11": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-12": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-13": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-14": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-15": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-16": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-17": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-18": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-19": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-20": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-21": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-22": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-23": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-24": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-25": {
+                  "durationMin": 3,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": true,
+              "start": "02:30:00",
+              "days": [
+                0,
+                2,
+                4,
+                5
+              ],
+              "stations": {
+                "T2-01": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-12": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-19": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-20": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-21": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-22": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-23": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-24": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-25": {
+                  "durationMin": 3,
+                  "enabled": true
+                }
+              }
+            },
+            "C": {
+              "enabled": false,
+              "start": "06:30:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "sprinklerOnThreshold": 500,
+        "gallonsPerUnit": 748,
+        "costPerUnit": 10.47
+      }
+    },
+    {
+      "id": "1780770131342",
+      "savedAt": "2026-06-06T18:22:11.342Z",
+      "notes": "Add T2 Program B",
+      "config": {
+        "timer1": {
+          "stations": [
+            {
+              "id": "T1-01",
+              "name": "T1-01",
+              "baselineGpm": 3.3
+            },
+            {
+              "id": "T1-02",
+              "name": "T1-02",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-03",
+              "name": "T1-03"
+            },
+            {
+              "id": "T1-04",
+              "name": "T1-04"
+            },
+            {
+              "id": "T1-05",
+              "name": "T1-05"
+            },
+            {
+              "id": "T1-06",
+              "name": "T1-06",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-07",
+              "name": "T1-07",
+              "baselineGpm": 4
+            },
+            {
+              "id": "T1-08",
+              "name": "T1-08"
+            },
+            {
+              "id": "T1-09",
+              "name": "T1-09",
+              "baselineGpm": 6.5
+            },
+            {
+              "id": "T1-10",
+              "name": "T1-10",
+              "baselineGpm": 2.4
+            },
+            {
+              "id": "T1-11",
+              "name": "T1-11",
+              "baselineGpm": 2
+            },
+            {
+              "id": "T1-12",
+              "name": "T1-12",
+              "baselineGpm": 7.7
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "03:45:00:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T1-01": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-02": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-03": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-05": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-06": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-07": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-08": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-09": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-10": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-11": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-12": {
+                  "durationMin": 6,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            },
+            "C": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "timer2": {
+          "stations": [
+            {
+              "id": "T2-01",
+              "name": "T2-01"
+            },
+            {
+              "id": "T2-02",
+              "name": "T2-02"
+            },
+            {
+              "id": "T2-03",
+              "name": "T2-03",
+              "baselineGpm": 5.1
+            },
+            {
+              "id": "T2-04",
+              "name": "T2-04",
+              "baselineGpm": 5.96
+            },
+            {
+              "id": "T2-05",
+              "name": "T2-05"
+            },
+            {
+              "id": "T2-06",
+              "name": "T2-06"
+            },
+            {
+              "id": "T2-07",
+              "name": "T2-07",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-08",
+              "name": "T2-08",
+              "baselineGpm": 7.1
+            },
+            {
+              "id": "T2-09",
+              "name": "T2-09",
+              "baselineGpm": 14.5
+            },
+            {
+              "id": "T2-10",
+              "name": "T2-10"
+            },
+            {
+              "id": "T2-11",
+              "name": "T2-11"
+            },
+            {
+              "id": "T2-12",
+              "name": "T2-12",
+              "baselineGpm": 15.5
+            },
+            {
+              "id": "T2-13",
+              "name": "T2-13"
+            },
+            {
+              "id": "T2-14",
+              "name": "T2-14"
+            },
+            {
+              "id": "T2-15",
+              "name": "T2-15"
+            },
+            {
+              "id": "T2-16",
+              "name": "T2-16"
+            },
+            {
+              "id": "T2-17",
+              "name": "T2-17"
+            },
+            {
+              "id": "T2-18",
+              "name": "T2-18"
+            },
+            {
+              "id": "T2-19",
+              "name": "T2-19",
+              "baselineGpm": 12.4
+            },
+            {
+              "id": "T2-20",
+              "name": "T2-20",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-21",
+              "name": "T2-21",
+              "baselineGpm": 15.7
+            },
+            {
+              "id": "T2-22",
+              "name": "T2-22",
+              "baselineGpm": 9
+            },
+            {
+              "id": "T2-23",
+              "name": "T2-23",
+              "baselineGpm": 12.3
+            },
+            {
+              "id": "T2-24",
+              "name": "T2-24",
+              "baselineGpm": 10.6
+            },
+            {
+              "id": "T2-25",
+              "name": "T2-25"
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "06:30:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T2-01": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-02": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-03": {
+                  "durationMin": 6,
+                  "enabled": true
+                },
+                "T2-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T2-05": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-06": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-07": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-08": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-09": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-10": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-11": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-12": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-13": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-14": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-15": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-16": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-17": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-18": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-19": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-20": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-21": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-22": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-23": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-24": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-25": {
+                  "durationMin": 3,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": true,
+              "start": "02:30:00",
+              "days": [
+                0,
+                2,
+                4,
+                5
+              ],
+              "stations": {
+                "T2-01": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-12": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-19": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-20": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-21": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-22": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-23": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-24": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-25": {
+                  "durationMin": 3,
+                  "enabled": true
+                }
+              }
+            },
+            "C": {
+              "enabled": false,
+              "start": "06:30:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "sprinklerOnThreshold": 500,
+        "gallonsPerUnit": 748,
+        "costPerUnit": 10.47
+      }
+    },
+    {
+      "id": "1780770033050",
+      "savedAt": "2026-06-06T18:20:33.050Z",
+      "notes": "Add program B",
+      "config": {
+        "timer1": {
+          "stations": [
+            {
+              "id": "T1-01",
+              "name": "T1-01",
+              "baselineGpm": 3.3
+            },
+            {
+              "id": "T1-02",
+              "name": "T1-02",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-03",
+              "name": "T1-03"
+            },
+            {
+              "id": "T1-04",
+              "name": "T1-04"
+            },
+            {
+              "id": "T1-05",
+              "name": "T1-05"
+            },
+            {
+              "id": "T1-06",
+              "name": "T1-06",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-07",
+              "name": "T1-07",
+              "baselineGpm": 4
+            },
+            {
+              "id": "T1-08",
+              "name": "T1-08"
+            },
+            {
+              "id": "T1-09",
+              "name": "T1-09",
+              "baselineGpm": 6.5
+            },
+            {
+              "id": "T1-10",
+              "name": "T1-10",
+              "baselineGpm": 2.4
+            },
+            {
+              "id": "T1-11",
+              "name": "T1-11",
+              "baselineGpm": 2
+            },
+            {
+              "id": "T1-12",
+              "name": "T1-12",
+              "baselineGpm": 7.7
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "03:45:00:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T1-01": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-02": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-03": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-05": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-06": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-07": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-08": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-09": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-10": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-11": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-12": {
+                  "durationMin": 6,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            },
+            "C": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "timer2": {
+          "stations": [
+            {
+              "id": "T2-01",
+              "name": "T2-01"
+            },
+            {
+              "id": "T2-02",
+              "name": "T2-02"
+            },
+            {
+              "id": "T2-03",
+              "name": "T2-03",
+              "baselineGpm": 5.1
+            },
+            {
+              "id": "T2-04",
+              "name": "T2-04",
+              "baselineGpm": 5.96
+            },
+            {
+              "id": "T2-05",
+              "name": "T2-05"
+            },
+            {
+              "id": "T2-06",
+              "name": "T2-06"
+            },
+            {
+              "id": "T2-07",
+              "name": "T2-07",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-08",
+              "name": "T2-08",
+              "baselineGpm": 7.1
+            },
+            {
+              "id": "T2-09",
+              "name": "T2-09",
+              "baselineGpm": 14.5
+            },
+            {
+              "id": "T2-10",
+              "name": "T2-10"
+            },
+            {
+              "id": "T2-11",
+              "name": "T2-11"
+            },
+            {
+              "id": "T2-12",
+              "name": "T2-12",
+              "baselineGpm": 15.5
+            },
+            {
+              "id": "T2-13",
+              "name": "T2-13"
+            },
+            {
+              "id": "T2-14",
+              "name": "T2-14"
+            },
+            {
+              "id": "T2-15",
+              "name": "T2-15"
+            },
+            {
+              "id": "T2-16",
+              "name": "T2-16"
+            },
+            {
+              "id": "T2-17",
+              "name": "T2-17"
+            },
+            {
+              "id": "T2-18",
+              "name": "T2-18"
+            },
+            {
+              "id": "T2-19",
+              "name": "T2-19",
+              "baselineGpm": 12.4
+            },
+            {
+              "id": "T2-20",
+              "name": "T2-20",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-21",
+              "name": "T2-21",
+              "baselineGpm": 15.7
+            },
+            {
+              "id": "T2-22",
+              "name": "T2-22",
+              "baselineGpm": 9
+            },
+            {
+              "id": "T2-23",
+              "name": "T2-23",
+              "baselineGpm": 12.3
+            },
+            {
+              "id": "T2-24",
+              "name": "T2-24",
+              "baselineGpm": 10.6
+            },
+            {
+              "id": "T2-25",
+              "name": "T2-25"
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "06:30:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T2-01": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-02": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-03": {
+                  "durationMin": 6,
+                  "enabled": true
+                },
+                "T2-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T2-05": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-06": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-07": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-08": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-09": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-10": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-11": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-12": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-13": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-14": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-15": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-16": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-17": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-18": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-19": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-20": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-21": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-22": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-23": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-24": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-25": {
+                  "durationMin": 3,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": true,
+              "start": "02:30:00",
+              "days": [
+                0,
+                2,
+                4,
+                5
+              ],
+              "stations": {}
+            },
+            "C": {
+              "enabled": false,
+              "start": "06:30:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "sprinklerOnThreshold": 500,
+        "gallonsPerUnit": 748,
+        "costPerUnit": 10.47
+      }
+    },
+    {
+      "id": "1780529848487",
+      "savedAt": "2026-06-03T23:37:28.487Z",
+      "notes": "foo",
+      "config": {
+        "timer1": {
+          "stations": [
+            {
+              "id": "T1-01",
+              "name": "T1-01",
+              "baselineGpm": 3.3
+            },
+            {
+              "id": "T1-02",
+              "name": "T1-02",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-03",
+              "name": "T1-03"
+            },
+            {
+              "id": "T1-04",
+              "name": "T1-04"
+            },
+            {
+              "id": "T1-05",
+              "name": "T1-05"
+            },
+            {
+              "id": "T1-06",
+              "name": "T1-06",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-07",
+              "name": "T1-07",
+              "baselineGpm": 4
+            },
+            {
+              "id": "T1-08",
+              "name": "T1-08"
+            },
+            {
+              "id": "T1-09",
+              "name": "T1-09",
+              "baselineGpm": 6.5
+            },
+            {
+              "id": "T1-10",
+              "name": "T1-10",
+              "baselineGpm": 2.4
+            },
+            {
+              "id": "T1-11",
+              "name": "T1-11",
+              "baselineGpm": 2
+            },
+            {
+              "id": "T1-12",
+              "name": "T1-12",
+              "baselineGpm": 7.7
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "03:45:00:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T1-01": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-02": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-03": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-05": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-06": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-07": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-08": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-09": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-10": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-11": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-12": {
+                  "durationMin": 6,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            },
+            "C": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "timer2": {
+          "stations": [
+            {
+              "id": "T2-01",
+              "name": "T2-01"
+            },
+            {
+              "id": "T2-02",
+              "name": "T2-02"
+            },
+            {
+              "id": "T2-03",
+              "name": "T2-03",
+              "baselineGpm": 5.1
+            },
+            {
+              "id": "T2-04",
+              "name": "T2-04",
+              "baselineGpm": 5.96
+            },
+            {
+              "id": "T2-05",
+              "name": "T2-05"
+            },
+            {
+              "id": "T2-06",
+              "name": "T2-06"
+            },
+            {
+              "id": "T2-07",
+              "name": "T2-07",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-08",
+              "name": "T2-08",
+              "baselineGpm": 7.1
+            },
+            {
+              "id": "T2-09",
+              "name": "T2-09",
+              "baselineGpm": 14.5
+            },
+            {
+              "id": "T2-10",
+              "name": "T2-10"
+            },
+            {
+              "id": "T2-11",
+              "name": "T2-11"
+            },
+            {
+              "id": "T2-12",
+              "name": "T2-12",
+              "baselineGpm": 15.5
+            },
+            {
+              "id": "T2-13",
+              "name": "T2-13"
+            },
+            {
+              "id": "T2-14",
+              "name": "T2-14"
+            },
+            {
+              "id": "T2-15",
+              "name": "T2-15"
+            },
+            {
+              "id": "T2-16",
+              "name": "T2-16"
+            },
+            {
+              "id": "T2-17",
+              "name": "T2-17"
+            },
+            {
+              "id": "T2-18",
+              "name": "T2-18"
+            },
+            {
+              "id": "T2-19",
+              "name": "T2-19",
+              "baselineGpm": 12.4
+            },
+            {
+              "id": "T2-20",
+              "name": "T2-20",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-21",
+              "name": "T2-21",
+              "baselineGpm": 15.7
+            },
+            {
+              "id": "T2-22",
+              "name": "T2-22",
+              "baselineGpm": 9
+            },
+            {
+              "id": "T2-23",
+              "name": "T2-23",
+              "baselineGpm": 12.3
+            },
+            {
+              "id": "T2-24",
+              "name": "T2-24",
+              "baselineGpm": 10.6
+            },
+            {
+              "id": "T2-25",
+              "name": "T2-25"
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "06:30:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T2-01": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-02": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-03": {
+                  "durationMin": 6,
+                  "enabled": true
+                },
+                "T2-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T2-05": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-06": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-07": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-08": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-09": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-10": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-11": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-12": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-13": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-14": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-15": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-16": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-17": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-18": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-19": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-20": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-21": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-22": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-23": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-24": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-25": {
+                  "durationMin": 3,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": false,
+              "start": "06:30:00",
+              "days": [],
+              "stations": {}
+            },
+            "C": {
+              "enabled": false,
+              "start": "06:30:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "sprinklerOnThreshold": 500,
+        "gallonsPerUnit": 748,
+        "costPerUnit": 10.47
+      }
+    },
+    {
+      "id": "1780522658198",
+      "savedAt": "2026-06-03T21:37:38.198Z",
+      "notes": "Initial config from 5/31/26 audit",
+      "config": {
+        "timer1": {
+          "stations": [
+            {
+              "id": "T1-01",
+              "name": "T1-01",
+              "baselineGpm": 3.3
+            },
+            {
+              "id": "T1-02",
+              "name": "T1-02",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-03",
+              "name": "T1-03"
+            },
+            {
+              "id": "T1-04",
+              "name": "T1-04"
+            },
+            {
+              "id": "T1-05",
+              "name": "T1-05"
+            },
+            {
+              "id": "T1-06",
+              "name": "T1-06",
+              "baselineGpm": 6
+            },
+            {
+              "id": "T1-07",
+              "name": "T1-07",
+              "baselineGpm": 4
+            },
+            {
+              "id": "T1-08",
+              "name": "T1-08"
+            },
+            {
+              "id": "T1-09",
+              "name": "T1-09",
+              "baselineGpm": 6.5
+            },
+            {
+              "id": "T1-10",
+              "name": "T1-10",
+              "baselineGpm": 2.4
+            },
+            {
+              "id": "T1-11",
+              "name": "T1-11",
+              "baselineGpm": 2
+            },
+            {
+              "id": "T1-12",
+              "name": "T1-12",
+              "baselineGpm": 7.7
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "03:45:00:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T1-01": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-02": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-03": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-05": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-06": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-07": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-08": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-09": {
+                  "durationMin": 10,
+                  "enabled": true
+                },
+                "T1-10": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-11": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T1-12": {
+                  "durationMin": 6,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            },
+            "C": {
+              "enabled": false,
+              "start": "03:45:00:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "timer2": {
+          "stations": [
+            {
+              "id": "T2-01",
+              "name": "T2-01"
+            },
+            {
+              "id": "T2-02",
+              "name": "T2-02"
+            },
+            {
+              "id": "T2-03",
+              "name": "T2-03",
+              "baselineGpm": 5.1
+            },
+            {
+              "id": "T2-04",
+              "name": "T2-04",
+              "baselineGpm": 5.96
+            },
+            {
+              "id": "T2-05",
+              "name": "T2-05"
+            },
+            {
+              "id": "T2-06",
+              "name": "T2-06"
+            },
+            {
+              "id": "T2-07",
+              "name": "T2-07",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-08",
+              "name": "T2-08",
+              "baselineGpm": 7.1
+            },
+            {
+              "id": "T2-09",
+              "name": "T2-09",
+              "baselineGpm": 14.5
+            },
+            {
+              "id": "T2-10",
+              "name": "T2-10"
+            },
+            {
+              "id": "T2-11",
+              "name": "T2-11"
+            },
+            {
+              "id": "T2-12",
+              "name": "T2-12",
+              "baselineGpm": 15.5
+            },
+            {
+              "id": "T2-13",
+              "name": "T2-13"
+            },
+            {
+              "id": "T2-14",
+              "name": "T2-14"
+            },
+            {
+              "id": "T2-15",
+              "name": "T2-15"
+            },
+            {
+              "id": "T2-16",
+              "name": "T2-16"
+            },
+            {
+              "id": "T2-17",
+              "name": "T2-17"
+            },
+            {
+              "id": "T2-18",
+              "name": "T2-18"
+            },
+            {
+              "id": "T2-19",
+              "name": "T2-19",
+              "baselineGpm": 12.4
+            },
+            {
+              "id": "T2-20",
+              "name": "T2-20",
+              "baselineGpm": 10
+            },
+            {
+              "id": "T2-21",
+              "name": "T2-21",
+              "baselineGpm": 15.7
+            },
+            {
+              "id": "T2-22",
+              "name": "T2-22",
+              "baselineGpm": 9
+            },
+            {
+              "id": "T2-23",
+              "name": "T2-23",
+              "baselineGpm": 12.3
+            },
+            {
+              "id": "T2-24",
+              "name": "T2-24",
+              "baselineGpm": 10.6
+            },
+            {
+              "id": "T2-25",
+              "name": "T2-25"
+            }
+          ],
+          "programs": {
+            "A": {
+              "enabled": true,
+              "start": "06:30:00",
+              "days": [
+                0,
+                2,
+                4
+              ],
+              "stations": {
+                "T2-01": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-02": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-03": {
+                  "durationMin": 6,
+                  "enabled": true
+                },
+                "T2-04": {
+                  "durationMin": 15,
+                  "enabled": true
+                },
+                "T2-05": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-06": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-07": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-08": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-09": {
+                  "durationMin": 5,
+                  "enabled": true
+                },
+                "T2-10": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-11": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-12": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-13": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-14": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-15": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-16": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-17": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-18": {
+                  "durationMin": 0,
+                  "enabled": false
+                },
+                "T2-19": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-20": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-21": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-22": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-23": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-24": {
+                  "durationMin": 3,
+                  "enabled": true
+                },
+                "T2-25": {
+                  "durationMin": 3,
+                  "enabled": true
+                }
+              }
+            },
+            "B": {
+              "enabled": false,
+              "start": "06:30:00",
+              "days": [],
+              "stations": {}
+            },
+            "C": {
+              "enabled": false,
+              "start": "06:30:00",
+              "days": [],
+              "stations": {}
+            }
+          }
+        },
+        "sprinklerOnThreshold": 500,
+        "gallonsPerUnit": 748,
+        "costPerUnit": 10.47
+      }
+    }
+  ]
+}
