@@ -5,8 +5,7 @@ import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { useStore } from "@/lib/store"
 import {
-  enrichRowsMultiConfig,
-  buildDailyRows,
+  deriveData,
   buildStationStats,
   computeSummary,
   computeStationWarnings,
@@ -37,9 +36,11 @@ export default function DashboardPage() {
   const router        = useRouter()
   const rows          = useStore((s) => s.rows)
   const windows       = useStore((s) => s.windows)
+  const rowsVersion   = useStore((s) => s.rowsVersion)
 
   const deferredRows    = useDeferredValue(rows)
   const deferredWindows = useDeferredValue(windows)
+  const deferredVersion = useDeferredValue(rowsVersion)
 
   // "Current" config (today's window) — for billing, names, and warning baselines.
   const deferredConfig  = useMemo(() => currentConfig(deferredWindows), [deferredWindows])
@@ -57,8 +58,7 @@ export default function DashboardPage() {
   const derived = useMemo(() => {
     if (deferredRows.length === 0) return null
 
-    const enriched = enrichRowsMultiConfig(deferredRows, deferredWindows)
-    const allDaily  = buildDailyRows(enriched)
+    const { enriched, daily: allDaily } = deriveData(deferredRows, deferredWindows, deferredVersion)
 
     const warnings = computeStationWarnings(enriched, deferredConfig, 21)
 
@@ -77,7 +77,7 @@ export default function DashboardPage() {
       : (last ?? null)
 
     return { enriched, allDaily, warnings, hasBaselines, dateRange, sprinklerDates, defaultFlowDay }
-  }, [deferredRows, deferredWindows, deferredConfig])
+  }, [deferredRows, deferredWindows, deferredVersion, deferredConfig])
 
   // ---- Monthly summary (cheap filter — reruns only when month changes) ---
   const monthlySummary = useMemo(() => {

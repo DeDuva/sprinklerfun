@@ -227,6 +227,53 @@ export function enrichRowsMultiConfig(
 }
 
 // ---------------------------------------------------------------------------
+// Memoized derivation
+// ---------------------------------------------------------------------------
+
+/**
+ * Enrichment is the dominant cost on every page and produces identical output
+ * for identical inputs. Rows and windows change only on CSV upload or config
+ * edit, so we memoize the derived output against a cheap fingerprint and reuse
+ * it across renders and page navigations until the underlying data changes.
+ *
+ * The cache holds a single entry — the latest dataset — which is all the app
+ * ever needs, and keeps memory flat (no growth on repeated navigation).
+ */
+export interface DerivedData {
+  enriched: EnrichedRow[]
+  daily: DailyRow[]
+}
+
+/**
+ * Cheap, allocation-light cache key. `rowsVersion` is bumped by the store
+ * whenever `rows` is replaced, so we never have to scan the (potentially large)
+ * per-minute row array. Windows carry `updatedAt`, which bumps on every edit.
+ */
+function deriveFingerprint(rowsVersion: number, windows: ConfigWindow[]): string {
+  let w = ""
+  for (const x of windows) w += `${x.id}@${x.updatedAt}:${x.effectiveFrom};`
+  return `${rowsVersion}|${w}`
+}
+
+let cacheKey: string | null = null
+let cacheValue: DerivedData | null = null
+
+export function deriveData(
+  rows: FlumeRow[],
+  windows: ConfigWindow[],
+  rowsVersion: number
+): DerivedData {
+  const key = deriveFingerprint(rowsVersion, windows)
+  if (key === cacheKey && cacheValue) return cacheValue
+
+  const enriched = enrichRowsMultiConfig(rows, windows)
+  const daily = buildDailyRows(enriched)
+  cacheValue = { enriched, daily }
+  cacheKey = key
+  return cacheValue
+}
+
+// ---------------------------------------------------------------------------
 // Window selection / ranges / diffing — shared by the config page, dashboard,
 // and chart so the "which config was active when" logic lives in one place.
 // ---------------------------------------------------------------------------
