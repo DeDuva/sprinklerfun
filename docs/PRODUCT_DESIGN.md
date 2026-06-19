@@ -109,11 +109,29 @@ The primary landing page. Top-to-bottom layout:
    - **Horizontal bar chart** — one bar per active station; bars >20% above baseline turn red; orange tick marks the baseline.
    - **Hover tooltip** — shows avg gpm, baseline gpm (with % delta above/below), and the date of the config version that was active on the selected day.
 
-### Analysis (/analysis)
-Deep-dive into station performance across all loaded data:
-- Sortable table: station name, total gallons, avg gpm, std gpm, % of sprinkler total, estimated cost
-- Horizontal bar chart with error bars (avg ± std)
-- Data is analyzed using the time-appropriate config version for each date range
+### Analysis (/analysis) — Timing & Flow Calibration
+
+The Analysis tab answers a focused operational question: **is each station starting when the config says it should, and flowing at the rate the config expects?** — and lets the user reconcile config to reality in one place.
+
+**1. Actual vs. Configured chart (hero)** — pick a sprinkler day (← / → step through sprinkler days). For that day it plots:
+- **Actual flow** — a blue per-minute gpm area built straight from the meter.
+- **Configured baseline** — an orange step line at each station's `baselineGpm` across its configured window. Where the blue sits above/below the orange = flow-rate drift; where the actual rise/fall is left/right of a window edge = timing drift.
+- **Zoom** — a brush below the chart selects any time range; clicking a station chip zooms to that station's window and overlays its configured-start (solid) and detected-actual-start (dashed) markers plus a translucent band. **Reset zoom** clears both.
+
+**2. Reconciliation table** — one row per configured station run on the day (a station in two programs shows twice). Columns: **start** (cfg → actual, with drift), **duration** (cfg → actual, with drift), **gpm** (baseline → measured, with % delta). A `≈` marks low-confidence rows. Per-row actions edit the **config window active on that day**:
+- **↳ baseline** — set the station's `baselineGpm` to the measured actual.
+- **↳ start** — shift the station's *program* start time by the detected drift (per-station starts aren't independently configurable — they're `programStart + Σ upstream durations`).
+- **↳ duration** — set the station's per-program `durationMin` to the measured run length.
+- **⚠ flag** — flag the station for maintenance (with an optional note).
+
+**3. Calibrate config from this day** — a bulk action: shift each program's start by its first station's drift, then set every detected station's duration and baseline to the measured actuals, all in the active window (after a confirm).
+
+**4. Fleet Overview** — the cross-day aggregate retained from the previous Analysis tab: per-station total gallons, avg/std gpm, % of sprinkler total, estimated cost, plus an avg-gpm bar chart with error bars. Analyzed using the time-appropriate config window for each date range.
+
+**Measurement note — adjacent-station bleed:** stations run back-to-back, so the meter's first and last minute of any station's run partially sample the neighbouring station. The measured "actual gpm" therefore **excludes the first and last minute** of each detected run (the trimmed mean). Runs of 3 minutes or fewer have no clean interior to trim and are marked low-confidence.
+
+### Maintenance flags
+A station can be flagged for maintenance from the Analysis reconciliation table. Flags are stored top-level (keyed by station id), independent of the config-window timeline — they describe the **current physical state of the hardware**, not a config version. Active flags surface in the dashboard **Station Alerts** panel (amber) alongside the baseline-deviation warnings (red), and are informational (they do not suppress warnings). Cleared from the Analysis tab.
 
 ### Day Detail (/day/[date])
 Minute-by-minute view for a single sprinkler day, using the config version active on that date:
@@ -182,6 +200,13 @@ The page is organized around a **timeline of config windows**.
 2. **Tune config for this day** jumps to the window active then. Adjust start time / baseline / durations and **Save** — the edit stays in place, the window boundary doesn't move
 3. Realize the real change happened on a different date? Edit the window's **Effective from** (or create a new window at the right date) — adjacent boundaries follow automatically
 4. Use **Changed vs. previous window** to confirm exactly what differs between configs
+
+### Calibrate Timing & Flow from a Real Day
+1. Open **Analysis**, step to a representative sprinkler day
+2. Read the chart: does actual flow (blue) line up with the configured windows (orange) in time and height?
+3. Scan the reconciliation table for rows with large start/duration drift or a big gpm % delta
+4. Fix targeted issues in place — **↳ start** to correct a drifted program, **↳ baseline** after a re-measure, **↳ duration** to match the real run — or **Calibrate config from this day** to snap everything to the day's actuals
+5. If a zone is broken rather than mis-configured (e.g. flow far below baseline), **⚠ flag** it for maintenance; it shows on the dashboard until cleared
 
 ### Anomaly Investigation
 1. Anomaly marker (⚠) on chart — not coinciding with a config-change marker

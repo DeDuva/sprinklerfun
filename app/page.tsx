@@ -37,6 +37,7 @@ export default function DashboardPage() {
   const rows          = useStore((s) => s.rows)
   const windows       = useStore((s) => s.windows)
   const rowsVersion   = useStore((s) => s.rowsVersion)
+  const maintenance   = useStore((s) => s.maintenance)
 
   const deferredRows    = useDeferredValue(rows)
   const deferredWindows = useDeferredValue(windows)
@@ -130,6 +131,22 @@ export default function DashboardPage() {
   const canGoPrev  = derived ? prevMonth >= firstMonth : false
   const canGoNext  = derived ? nextMonth <= currentMonth : false
 
+  // Maintenance flags → dashboard entries (resolve names from current config).
+  const maintenanceEntries = useMemo(() => {
+    const ids = Object.keys(maintenance)
+    if (ids.length === 0) return []
+    const nameById: Record<string, string> = {}
+    for (const s of [...deferredConfig.timer1.stations, ...deferredConfig.timer2.stations]) {
+      nameById[s.id] = s.name
+    }
+    return ids.map((id) => ({
+      stationId: id,
+      name: nameById[id] ?? id,
+      note: maintenance[id].note,
+      flaggedAt: maintenance[id].flaggedAt,
+    }))
+  }, [maintenance, deferredConfig])
+
   const fmtDate = (d: string) =>
     new Date(d + "T12:00:00").toLocaleDateString(undefined, {
       month: "short", day: "numeric", year: "numeric",
@@ -171,7 +188,7 @@ export default function DashboardPage() {
           Station Alerts
         </h2>
         {derived ? (
-          <WarningsPanel warnings={derived.warnings} hasBaselines={derived.hasBaselines} />
+          <WarningsPanel warnings={derived.warnings} hasBaselines={derived.hasBaselines} maintenance={maintenanceEntries} />
         ) : (
           <div className="h-10 rounded-lg bg-gray-100 animate-pulse" />
         )}

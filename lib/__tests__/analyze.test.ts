@@ -12,8 +12,11 @@ import {
   windowDateRange,
   diffConfigs,
   addDays,
+  buildDaySchedule,
+  buildDayMinuteSeries,
+  reconcileDay,
 } from "../analyze"
-import type { AppConfig, ConfigWindow, FlumeRow } from "../types"
+import type { AppConfig, ConfigWindow, ExpectedSegment, FlumeRow, MinutePoint } from "../types"
 import { DEFAULT_CONFIG, normalizeTime, toWindows } from "../types"
 
 // ---------------------------------------------------------------------------
@@ -110,6 +113,219 @@ function sprinklerDayRows(date: string): FlumeRow[] {
     return r
   })
 }
+
+/** makeConfig with baselines wired so reconcile tests can compute deltas. */
+function makeConfigWithBaselines(): AppConfig {
+  const cfg = makeConfig()
+  cfg.timer1.stations = [
+    { id: "T1-01", name: "Front Lawn", baselineGpm: 2 },
+    { id: "T1-02", name: "Back Garden", baselineGpm: 3 },
+  ]
+  cfg.timer2.stations = [{ id: "T2-01", name: "Side Yard", baselineGpm: 4 }]
+  return cfg
+}
+
+/**
+ * Build a per-minute MinutePoint series over [from, to] with `bg` background gpm,
+ * overlaying each segment's gpm on minutes (start, end] (matching enrichRows'
+ * `start < minute ≤ end` convention).
+ */
+function minuteSeries(
+  segments: Array<{ start: number; end: number; gpm: number }>,
+  opts: { from?: number; to?: number; bg?: number } = {}
+): MinutePoint[] {
+  const from = opts.from ?? 0
+  const to = opts.to ?? 1439
+  const bg = opts.bg ?? 0.1
+  const pts: MinutePoint[] = []
+  for (let m = from; m <= to; m++) {
+    let g = bg
+    for (const s of segments) if (m > s.start && m <= s.end) g = s.gpm
+    pts.push({ timeMin: m, gpm: g })
+  }
+  return pts
+}
+
+/** Hand-built ExpectedSegment for reconcile tests in isolation. */
+function seg(o: {
+  stationId: string
+  startMin: number
+  durationMin: number
+  baselineGpm?: number | null
+  programId?: "A" | "B" | "C"
+  timer?: "timer1" | "timer2"
+}): ExpectedSegment {
+  return {
+    stationId: o.stationId,
+    name: o.stationId,
+    timer: o.timer ?? "timer1",
+    programId: o.programId ?? "A",
+    startMin: o.startMin,
+    endMin: o.startMin + o.durationMin,
+    durationMin: o.durationMin,
+    baselineGpm: o.baselineGpm ?? null,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// buildDaySchedule
+// ---------------------------------------------------------------------------
+
+describe("buildDaySchedule", () => {
+  it("reconstructs back-to-back station windows from program start + durations", () => {
+    const schedule = buildDaySchedule(makeConfigWithBaselines(), 0) // Monday
+    expect(schedule.map((s) => [s.stationId, s.startMin, s.endMin, s.baselineGpm])).toEqual([
+      ["T1-01", 360, 370, 2],
+      ["T1-02", 370, 375, 3],
+      ["T2-01", 480, 488, 4],
+    ])
+  })
+
+  it("returns nothing for a day with no active programs", () => {
+    expect(buildDaySchedule(makeConfig(), 1)).toEqual([]) // Tuesday not in [0,2,4]
+  })
+
+  it("omits disabled / zero-duration stations", () => {
+    const cfg = makeConfig()
+    cfg.timer1.programs.A.stations["T1-01"] = { durationMin: 10, enabled: false }
+    const schedule = buildDaySchedule(cfg, 0)
+    expect(schedule.some((s) => s.stationId === "T1-01")).toBe(false)
+    // T1-02 now starts at the program start (cursor still advances over disabled T1-01)
+    expect(schedule.find((s) => s.stationId === "T1-02")?.startMin).toBe(370)
+  })
+
+  it("maps a null baseline when none is set", () => {
+    const schedule = buildDaySchedule(makeConfig(), 0)
+    expect(schedule[0].baselineGpm).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildDayMinuteSeries
+// ---------------------------------------------------------------------------
+
+describe("buildDayMinuteSeries", () => {
+  it("yields one point per minute with gpm = that minute's gallons", () => {
+    const enriched = enrichRows(sprinklerDayRows("2024-01-01"), makeConfig())
+    const day = enriched.filter((r) => r.date === "2024-01-01")
+    const series = buildDayMinuteSeries(day)
+    expect(series.length).toBe(1440)
+    // minute 365 is inside T1-01 (06:01–06:10) → 2 gpm
+    expect(series.find((p) => p.timeMin === 365)?.gpm).toBeCloseTo(2, 5)
+    // sorted ascending
+    for (let i = 1; i < series.length; i++) expect(series[i].timeMin).toBeGreaterThan(series[i - 1].timeMin)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// reconcileDay
+// ---------------------------------------------------------------------------
+
+describe("reconcileDay", () => {
+  it("matches a clean run: zero drift, measured gpm equals baseline", () => {
+    const cfg = makeConfigWithBaselines()
+    const schedule = buildDaySchedule(cfg, 0)
+    const series = minuteSeries([
+      { start: 360, end: 370, gpm: 2 }, // T1-01
+      { start: 370, end: 375, gpm: 3 }, // T1-02
+      { start: 480, end: 488, gpm: 4 }, // T2-01
+    ])
+    const recon = reconcileDay(series, schedule)
+    const byId = Object.fromEntries(recon.map((r) => [r.stationId, r]))
+
+    expect(byId["T1-01"].startDriftMin).toBe(0)
+    expect(byId["T1-01"].actualGpm).toBeCloseTo(2, 5)
+    expect(byId["T1-01"].gpmDeltaPct).toBeCloseTo(0, 5)
+    expect(byId["T1-01"].confidence).toBe("high")
+    expect(byId["T1-02"].actualGpm).toBeCloseTo(3, 5)
+    expect(byId["T1-02"].confidence).toBe("high")
+    expect(byId["T2-01"].actualGpm).toBeCloseTo(4, 5)
+    expect(byId["T2-01"].durationDriftMin).toBe(0)
+  })
+
+  it("detects a late program start as positive start drift", () => {
+    const cfg = makeConfigWithBaselines()
+    const schedule = buildDaySchedule(cfg, 0)
+    // Shift the whole T1 run +3 minutes
+    const series = minuteSeries([
+      { start: 363, end: 373, gpm: 2 }, // T1-01 (was 360–370)
+      { start: 373, end: 378, gpm: 3 }, // T1-02
+      { start: 480, end: 488, gpm: 4 }, // T2-01 on time
+    ])
+    const recon = reconcileDay(series, schedule)
+    const byId = Object.fromEntries(recon.map((r) => [r.stationId, r]))
+    expect(byId["T1-01"].startDriftMin).toBe(3)
+    expect(byId["T1-01"].actualGpm).toBeCloseTo(2, 5)
+    expect(byId["T2-01"].startDriftMin).toBe(0)
+  })
+
+  it("reports flow rate above baseline as a positive gpm delta", () => {
+    const cfg = makeConfigWithBaselines()
+    const schedule = buildDaySchedule(cfg, 0)
+    const series = minuteSeries([
+      { start: 360, end: 370, gpm: 2 },
+      { start: 370, end: 375, gpm: 3 },
+      { start: 480, end: 488, gpm: 5 }, // T2-01 actual 5 vs baseline 4 → +25%
+    ])
+    const recon = reconcileDay(series, schedule)
+    const t2 = recon.find((r) => r.stationId === "T2-01")!
+    expect(t2.actualGpm).toBeCloseTo(5, 5)
+    expect(t2.gpmDeltaPct).toBeCloseTo(0.25, 5)
+  })
+
+  it("flags a run ≤3 minutes as low confidence", () => {
+    const schedule = [seg({ stationId: "T1-01", startMin: 360, durationMin: 2, baselineGpm: 2 })]
+    const series = minuteSeries([{ start: 360, end: 362, gpm: 2 }])
+    const recon = reconcileDay(series, schedule)
+    expect(recon[0].confidence).toBe("low")
+    expect(recon[0].confidenceReason).toMatch(/3 min/)
+    expect(recon[0].actualGpm).toBeCloseTo(2, 5)
+  })
+
+  it("returns null actuals when no flow is detected", () => {
+    const schedule = [seg({ stationId: "T1-01", startMin: 360, durationMin: 10, baselineGpm: 2 })]
+    const series = minuteSeries([], { from: 340, to: 400, bg: 0.1 }) // all background
+    const recon = reconcileDay(series, schedule)
+    expect(recon[0].actualGpm).toBeNull()
+    expect(recon[0].actualStartMin).toBeNull()
+    expect(recon[0].confidence).toBe("low")
+    expect(recon[0].confidenceReason).toMatch(/No flow/)
+  })
+
+  it("marks a boundary low-confidence when adjacent baselines are indistinguishable", () => {
+    const schedule = [
+      seg({ stationId: "T1-01", startMin: 360, durationMin: 10, baselineGpm: 2 }),
+      seg({ stationId: "T1-02", startMin: 370, durationMin: 5, baselineGpm: 2 }),
+    ]
+    // Both run at the same 2 gpm — no detectable step between them.
+    const series = minuteSeries([{ start: 360, end: 375, gpm: 2 }])
+    const recon = reconcileDay(series, schedule)
+    expect(recon.every((r) => r.confidence === "low")).toBe(true)
+    expect(recon.some((r) => /Adjacent baselines/.test(r.confidenceReason ?? ""))).toBe(true)
+    // still produces actual gpm for both
+    expect(recon[0].actualGpm).toBeCloseTo(2, 5)
+    expect(recon[1].actualGpm).toBeCloseTo(2, 5)
+  })
+
+  it("refines the boundary between two stations of different flow", () => {
+    const schedule = [
+      seg({ stationId: "T1-01", startMin: 360, durationMin: 10, baselineGpm: 2 }),
+      seg({ stationId: "T1-02", startMin: 370, durationMin: 10, baselineGpm: 5 }),
+    ]
+    // Actual boundary is 2 min late (T1-01 ran to 372), step from 2→5 gpm.
+    const series = minuteSeries([
+      { start: 360, end: 372, gpm: 2 },
+      { start: 372, end: 380, gpm: 5 },
+    ])
+    const recon = reconcileDay(series, schedule)
+    const t1 = recon.find((r) => r.stationId === "T1-01")!
+    const t2 = recon.find((r) => r.stationId === "T1-02")!
+    expect(t1.actualEndMin).toBe(372)
+    expect(t1.durationDriftMin).toBe(2)
+    expect(t2.actualStartMin).toBe(372)
+    expect(t2.actualGpm).toBeCloseTo(5, 5)
+  })
+})
 
 // ---------------------------------------------------------------------------
 // enrichRows — station assignment

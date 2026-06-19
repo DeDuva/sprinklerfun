@@ -7,6 +7,14 @@ export interface Station {
   baselineGpm?: number // measured during seasonal audit
 }
 
+// A station flagged as needing physical attention. Stored top-level in the store
+// (keyed by station id), not inside a ConfigWindow snapshot — maintenance is a
+// property of the physical hardware "right now", independent of config history.
+export interface MaintenanceFlag {
+  flaggedAt: string // ISO timestamp
+  note?: string
+}
+
 // ---------------------------------------------------------------------------
 // Program — one scheduling program (A, B, or C) within a timer
 // ---------------------------------------------------------------------------
@@ -103,6 +111,55 @@ export interface StationStats {
   stdGpm: number
   costEstimate: number
   pctOfSprinkler: number
+}
+
+// ---------------------------------------------------------------------------
+// Timing & flow calibration (Analysis tab)
+// ---------------------------------------------------------------------------
+
+// One configured station run for a given day, reconstructed from the active
+// config: program start + cumulative durations in run order. `timer`/`programId`
+// identify which knobs an edit would touch.
+export interface ExpectedSegment {
+  stationId: string
+  name: string
+  timer: "timer1" | "timer2"
+  programId: ProgramId
+  startMin: number       // configured start, minutes since midnight
+  endMin: number         // configured end (start + durationMin)
+  durationMin: number
+  baselineGpm: number | null
+}
+
+// One minute of actual metered flow. gpm == gallons in that minute (1-min bins).
+export interface MinutePoint {
+  timeMin: number
+  gpm: number
+}
+
+// An expected segment reconciled against the actual per-minute flow for a day.
+// Actual fields are null when no run was detected (program off / dry day).
+export interface SegmentReconciliation {
+  stationId: string
+  name: string
+  timer: "timer1" | "timer2"
+  programId: ProgramId
+  // configured
+  cfgStartMin: number
+  cfgEndMin: number
+  cfgDurationMin: number
+  baselineGpm: number | null
+  // actual (detected)
+  actualStartMin: number | null
+  actualEndMin: number | null
+  actualDurationMin: number | null
+  actualGpm: number | null        // trimmed mean (first & last minute dropped)
+  // deltas
+  startDriftMin: number | null    // actualStart - cfgStart
+  durationDriftMin: number | null // actualDuration - cfgDuration
+  gpmDeltaPct: number | null      // (actualGpm - baseline) / baseline
+  confidence: "high" | "low"
+  confidenceReason?: string
 }
 
 // One entry per ISO week (YYYY-Www), for the weekly consumption chart

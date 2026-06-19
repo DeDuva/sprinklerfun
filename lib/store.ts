@@ -1,6 +1,6 @@
 import { create } from "zustand"
 import { persist, createJSONStorage } from "zustand/middleware"
-import type { AppConfig, ConfigWindow, FlumeRow, TimerConfig } from "./types"
+import type { AppConfig, ConfigWindow, FlumeRow, MaintenanceFlag, TimerConfig } from "./types"
 import { DEFAULT_CONFIG, newId, sortWindows, toWindows } from "./types"
 import { activeWindowForDate } from "./analyze"
 
@@ -13,6 +13,11 @@ interface AppState {
   // key for the expensive enrichment so derived data is reused across renders
   // and page navigations until the data actually changes.
   rowsVersion: number
+
+  // Stations flagged for physical maintenance, keyed by station id. Top-level
+  // (not inside a ConfigWindow) because it describes the current hardware state,
+  // independent of config history; surfaced on the dashboard and analysis tab.
+  maintenance: Record<string, MaintenanceFlag>
 
   // Create a new window effective on `effectiveFrom`, cloning the config active
   // on that date (else the latest window, else DEFAULT_CONFIG). Returns its id.
@@ -29,6 +34,9 @@ interface AppState {
   // Apply this window's station baselines to every later window (re-measure case).
   copyBaselinesForward: (id: string) => void
 
+  // Flag or clear a station for maintenance. Pass null to clear.
+  setStationMaintenance: (stationId: string, flag: MaintenanceFlag | null) => void
+
   appendRows: (newRows: FlumeRow[]) => void
   clearRows: () => void
 }
@@ -41,6 +49,7 @@ export const useStore = create<AppState>()(
       windows: [],
       rows: [],
       rowsVersion: 0,
+      maintenance: {},
 
       addWindowFromDate: (effectiveFrom, notes) => {
         const { windows } = get()
@@ -107,6 +116,13 @@ export const useStore = create<AppState>()(
             : w
         )
         set({ windows })
+      },
+
+      setStationMaintenance: (stationId, flag) => {
+        const next = { ...get().maintenance }
+        if (flag) next[stationId] = flag
+        else delete next[stationId]
+        set({ maintenance: next })
       },
 
       appendRows: (newRows) => {
