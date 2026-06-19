@@ -159,7 +159,7 @@ export default function DashboardPage() {
         <div className="rounded-lg border-2 border-dashed border-gray-200 p-16 text-center">
           <p className="text-gray-500 text-lg font-medium">No data yet</p>
           <p className="text-gray-400 text-sm mt-1">
-            Click <strong>Upload CSV</strong> in the top nav to load your Flume export.
+            Go to <strong>Config</strong> to upload your Flume CSV export.
           </p>
         </div>
       </div>

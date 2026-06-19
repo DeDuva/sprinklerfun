@@ -191,7 +191,7 @@ export default function AnalysisPage() {
   const nextDay = day ? sprinklerDates.find((d) => d > day) ?? null : null
 
   if (rows.length === 0) {
-    return <div className="text-center py-24 text-gray-400">No data — upload a CSV to get started</div>
+    return <div className="text-center py-24 text-gray-400">No data — go to Config to upload a CSV</div>
   }
 
   const configLabel = dayCalc?.activeWin
