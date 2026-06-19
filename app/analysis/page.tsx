@@ -30,13 +30,33 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Button } from "@/components/ui/button"
 import FlowTimelineChart from "@/components/FlowTimelineChart"
-import ReconciliationTable from "@/components/ReconciliationTable"
+import ReconciliationTable, { type StageKind } from "@/components/ReconciliationTable"
+import ReviewChangesModal from "@/components/ReviewChangesModal"
 import type { AppConfig, SegmentReconciliation, StationStats } from "@/lib/types"
 
 type SortKey = keyof StationStats
 
+// A proposed (not-yet-saved) edit to the active day's config window.
+interface StagedChange {
+  key: string
+  area: string
+  field: string
+  fromText: string
+  toText: string
+  note?: string
+  apply: (cfg: AppConfig) => void
+}
+
 const deepClone = <T,>(v: T): T => JSON.parse(JSON.stringify(v))
+
+const fmtTimeHM = (min: number | null) => {
+  if (min == null) return "—"
+  const h = Math.floor(min / 60) % 24
+  const m = ((min % 60) + 60) % 60
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
+}
 
 const minToTime = (min: number) => {
   const clamped = Math.max(0, Math.min(1439, Math.round(min)))
@@ -132,46 +152,106 @@ export default function AnalysisPage() {
     .sort((a, b) => b.avgGpm - a.avgGpm)
     .map((s) => ({ name: s.name, gpm: +s.avgGpm.toFixed(3), err: +s.stdGpm.toFixed(3) }))
 
-  // ---- Config-edit handlers (patch the active day's window) --------------
+  // ---- Staged config changes (propose → review → save) -------------------
+  // Nothing is written to the config until the user reviews and saves. Staging
+  // is scoped to one day's window; reset it during render when the day/window
+  // changes (the React-sanctioned "reset state on prop change" pattern — no effect).
   const winId = dayCalc?.activeWin?.id ?? null
-  const patchConfig = (mutate: (cfg: AppConfig) => void) => {
-    if (!dayCalc?.activeWin) {
-      toast.error("No config window active for this day — create one in Config first.")
-      return
-    }
-    const next = deepClone(dayCalc.activeWin.config)
-    mutate(next)
-    updateWindow(dayCalc.activeWin.id, { config: next })
-  }
+  const stageCtx = `${day ?? ""}|${winId ?? ""}`
+  const [stage, setStage] = useState<{ ctx: string; map: Map<string, StagedChange>; review: boolean }>(
+    () => ({ ctx: stageCtx, map: new Map(), review: false })
+  )
+  if (stage.ctx !== stageCtx) setStage({ ctx: stageCtx, map: new Map(), review: false })
+  const staged = stage.map
+  const reviewOpen = stage.review
+  const setReviewOpen = (v: boolean) => setStage((s) => ({ ...s, review: v }))
+  const mutateStaged = (fn: (m: Map<string, StagedChange>) => Map<string, StagedChange>) =>
+    setStage((s) => ({ ...s, map: fn(s.map) }))
+  const discardStaged = () => setStage((s) => ({ ...s, map: new Map(), review: false }))
+
   const findStation = (cfg: AppConfig, timer: "timer1" | "timer2", id: string) =>
     cfg[timer].stations.find((s) => s.id === id)
 
-  const applyBaseline = (r: SegmentReconciliation) => {
-    if (r.actualGpm == null) return
-    const val = +r.actualGpm.toFixed(2)
-    patchConfig((cfg) => {
-      const st = findStation(cfg, r.timer, r.stationId)
-      if (st) st.baselineGpm = val
-    })
-    toast.success(`${r.name} baseline → ${val} gpm`)
+  const keyFor = (r: SegmentReconciliation, kind: StageKind) =>
+    kind === "start"
+      ? `${r.timer}:${r.programId}:start`            // one start change per program
+      : `${r.timer}:${r.programId}:${r.stationId}:${kind}`
+
+  const buildChange = (r: SegmentReconciliation, kind: StageKind): StagedChange => {
+    const area = `${r.timer === "timer1" ? "T1" : "T2"} · Program ${r.programId}`
+    if (kind === "baseline") {
+      const to = +r.actualGpm!.toFixed(2)
+      return {
+        key: keyFor(r, kind), area, field: `${r.name} baseline gpm`,
+        fromText: r.baselineGpm != null ? r.baselineGpm.toFixed(2) : "—", toText: to.toFixed(2),
+        apply: (cfg) => { const st = findStation(cfg, r.timer, r.stationId); if (st) st.baselineGpm = to },
+      }
+    }
+    if (kind === "duration") {
+      return {
+        key: keyFor(r, kind), area, field: `${r.name} duration`,
+        fromText: `${r.cfgDurationMin}m`, toText: `${r.actualDurationMin}m`,
+        apply: (cfg) => { const ps = cfg[r.timer].programs[r.programId].stations[r.stationId]; if (ps) ps.durationMin = r.actualDurationMin! },
+      }
+    }
+    // start — shifts the whole program by the detected drift
+    const drift = r.startDriftMin!
+    return {
+      key: keyFor(r, kind), area, field: `Program ${r.programId} start`,
+      fromText: fmtTimeHM(r.cfgStartMin), toText: fmtTimeHM(r.actualStartMin),
+      note: `shifts program ${drift >= 0 ? "+" : ""}${drift}m`,
+      apply: (cfg) => { const p = cfg[r.timer].programs[r.programId]; p.start = minToTime(parseTime(p.start) + drift) },
+    }
   }
-  const applyStart = (r: SegmentReconciliation) => {
-    if (r.startDriftMin == null) return
-    patchConfig((cfg) => {
-      const prog = cfg[r.timer].programs[r.programId]
-      prog.start = minToTime(parseTime(prog.start) + r.startDriftMin!)
+
+  const isStaged = (r: SegmentReconciliation, kind: StageKind) => staged.has(keyFor(r, kind))
+  const toggleStage = (r: SegmentReconciliation, kind: StageKind) => {
+    if (!winId) { toast.error("No config window active for this day — create one in Config first."); return }
+    mutateStaged((prev) => {
+      const next = new Map(prev)
+      const k = keyFor(r, kind)
+      if (next.has(k)) next.delete(k)
+      else next.set(k, buildChange(r, kind))
+      return next
     })
-    toast.success(`${r.timer === "timer1" ? "T1" : "T2"} · Program ${r.programId} start shifted ${r.startDriftMin >= 0 ? "+" : ""}${r.startDriftMin}m`)
   }
-  const applyDuration = (r: SegmentReconciliation) => {
-    if (r.actualDurationMin == null) return
-    patchConfig((cfg) => {
-      const prog = cfg[r.timer].programs[r.programId]
-      const ps = prog.stations[r.stationId]
-      if (ps) ps.durationMin = r.actualDurationMin!
-    })
-    toast.success(`${r.name} duration → ${r.actualDurationMin}m`)
+
+  const stageAll = () => {
+    if (!winId || !dayCalc) { toast.error("No config window active for this day — create one in Config first."); return }
+    const next = new Map<string, StagedChange>()
+    // First station (lowest cfg start) per program drives that program's start shift.
+    const firstByProgram = new Map<string, SegmentReconciliation>()
+    for (const r of dayCalc.recon) {
+      if (r.actualStartMin == null) continue
+      const k = `${r.timer}:${r.programId}`
+      const cur = firstByProgram.get(k)
+      if (!cur || r.cfgStartMin < cur.cfgStartMin) firstByProgram.set(k, r)
+    }
+    for (const r of dayCalc.recon) {
+      if (r.actualGpm != null && (r.baselineGpm == null || +r.actualGpm.toFixed(2) !== +r.baselineGpm.toFixed(2))) {
+        const c = buildChange(r, "baseline"); next.set(c.key, c)
+      }
+      if (r.actualDurationMin != null && r.actualDurationMin !== r.cfgDurationMin) {
+        const c = buildChange(r, "duration"); next.set(c.key, c)
+      }
+    }
+    for (const r of firstByProgram.values()) {
+      if (r.startDriftMin != null && r.startDriftMin !== 0) { const c = buildChange(r, "start"); next.set(c.key, c) }
+    }
+    if (next.size === 0) { toast("Nothing to change — actuals already match config."); return }
+    setStage((s) => ({ ...s, map: next, review: true }))
   }
+
+  const saveStaged = () => {
+    if (!dayCalc?.activeWin || staged.size === 0) return
+    const next = deepClone(dayCalc.activeWin.config)
+    for (const c of staged.values()) c.apply(next)
+    updateWindow(dayCalc.activeWin.id, { config: next })
+    const n = staged.size
+    discardStaged()
+    toast.success(`Saved ${n} config change${n !== 1 ? "s" : ""} to the ${configLabel ?? "active"} window`)
+  }
+
   const toggleMaintenance = (r: SegmentReconciliation) => {
     if (maintenance[r.stationId]) {
       setStationMaintenance(r.stationId, null)
@@ -181,45 +261,6 @@ export default function AnalysisPage() {
       setStationMaintenance(r.stationId, { flaggedAt: new Date().toISOString(), note: note || undefined })
       toast.success(`${r.name} flagged for maintenance`)
     }
-  }
-
-  const calibrateAll = () => {
-    if (!dayCalc?.activeWin) {
-      toast.error("No config window active for this day — create one in Config first.")
-      return
-    }
-    const usable = dayCalc.recon.filter((r) => r.actualStartMin != null)
-    if (usable.length === 0) {
-      toast.error("No detected runs to calibrate from.")
-      return
-    }
-    if (!window.confirm(
-      `Calibrate ${usable.length} station(s) from ${fmtDay(day!)}? This sets program start times, durations, and baselines to the measured actuals in the config window active on this day.`
-    )) return
-
-    // First station (lowest cfg start) per program drives that program's start shift.
-    const firstByProgram = new Map<string, SegmentReconciliation>()
-    for (const r of usable) {
-      const key = `${r.timer}:${r.programId}`
-      const cur = firstByProgram.get(key)
-      if (!cur || r.cfgStartMin < cur.cfgStartMin) firstByProgram.set(key, r)
-    }
-    patchConfig((cfg) => {
-      for (const [key, r] of firstByProgram) {
-        if (r.startDriftMin == null) continue
-        const [timer, pid] = key.split(":") as ["timer1" | "timer2", "A" | "B" | "C"]
-        const prog = cfg[timer].programs[pid]
-        prog.start = minToTime(parseTime(prog.start) + r.startDriftMin)
-      }
-      for (const r of usable) {
-        const prog = cfg[r.timer].programs[r.programId]
-        const ps = prog.stations[r.stationId]
-        if (ps && r.actualDurationMin != null) ps.durationMin = r.actualDurationMin
-        const st = findStation(cfg, r.timer, r.stationId)
-        if (st && r.actualGpm != null) st.baselineGpm = +r.actualGpm.toFixed(2)
-      }
-    })
-    toast.success(`Calibrated ${usable.length} station(s) from ${fmtDay(day!)}`)
   }
 
   // ---- Day navigation -----------------------------------------------------
@@ -289,15 +330,20 @@ export default function AnalysisPage() {
                 ≈ = low confidence · click a row to highlight on the chart
               </span>
             </CardTitle>
-            <button
-              onClick={calibrateAll}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={stageAll}
               disabled={!winId}
-              className="text-xs px-2.5 py-1 rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
-              title="Apply program starts, durations, and baselines from this day to the active config window"
+              title="Stage every detected start/duration/baseline change from this day for review"
             >
-              ⤓ Calibrate config from this day
-            </button>
+              ⤓ Stage all changes from this day
+            </Button>
           </div>
+          <p className="text-xs text-gray-400 mt-1">
+            Buttons below <span className="font-medium text-gray-500">propose</span> config edits — they’re staged for review and{" "}
+            <span className="font-medium text-gray-500">nothing is saved</span> until you review &amp; save.
+          </p>
         </CardHeader>
         <CardContent>
           {dayCalc ? (
@@ -306,13 +352,25 @@ export default function AnalysisPage() {
               maintenance={maintenance}
               selectedStation={selectedStation}
               onSelectStation={setSelectedStation}
-              onApplyBaseline={applyBaseline}
-              onApplyStart={applyStart}
-              onApplyDuration={applyDuration}
+              isStaged={isStaged}
+              onToggleStage={toggleStage}
               onToggleMaintenance={toggleMaintenance}
             />
           ) : (
             <div className="h-40 rounded bg-gray-100 animate-pulse" />
+          )}
+
+          {staged.size > 0 && (
+            <div className="sticky bottom-3 mt-4 flex items-center justify-between gap-3 flex-wrap rounded-lg border border-blue-300 bg-blue-50 px-4 py-2.5 shadow-sm">
+              <span className="text-sm text-blue-800">
+                <span className="font-semibold">{staged.size}</span> proposed config change{staged.size !== 1 ? "s" : ""}
+                <span className="text-blue-600"> · not saved yet</span>
+              </span>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" size="sm" onClick={discardStaged}>Discard</Button>
+                <Button size="sm" onClick={() => setReviewOpen(true)}>Review &amp; Save…</Button>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>
@@ -364,6 +422,17 @@ export default function AnalysisPage() {
           </Table>
         </CardContent>
       </Card>
+
+      <ReviewChangesModal
+        open={reviewOpen}
+        windowDateLabel={configLabel}
+        items={[...staged.values()].map((c) => ({
+          key: c.key, area: c.area, field: c.field, fromText: c.fromText, toText: c.toText, note: c.note,
+        }))}
+        onRemove={(key) => mutateStaged((prev) => { const next = new Map(prev); next.delete(key); return next })}
+        onSave={saveStaged}
+        onCancel={() => setReviewOpen(false)}
+      />
     </div>
   )
 }

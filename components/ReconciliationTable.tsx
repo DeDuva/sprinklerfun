@@ -11,14 +11,15 @@ import {
 } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
 
+export type StageKind = "baseline" | "start" | "duration"
+
 interface Props {
   recon: SegmentReconciliation[]
   maintenance: Record<string, MaintenanceFlag>
   selectedStation: string | null
   onSelectStation: (id: string | null) => void
-  onApplyBaseline: (r: SegmentReconciliation) => void
-  onApplyStart: (r: SegmentReconciliation) => void
-  onApplyDuration: (r: SegmentReconciliation) => void
+  isStaged: (r: SegmentReconciliation, kind: StageKind) => boolean
+  onToggleStage: (r: SegmentReconciliation, kind: StageKind) => void
   onToggleMaintenance: (r: SegmentReconciliation) => void
 }
 
@@ -38,18 +39,69 @@ function DriftBadge({ value, unit = "m" }: { value: number | null; unit?: string
   return <span className={cn("font-medium", cls)}>{signed(value, unit)}</span>
 }
 
+// A button that stages (proposes) a single config change. Toggles on re-click.
+function StageButton({
+  staged,
+  disabled,
+  label,
+  onClick,
+}: {
+  staged: boolean
+  disabled: boolean
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={
+        disabled
+          ? "No change to propose (already matches, or no run detected)"
+          : staged
+          ? "Staged — click to remove from the proposal"
+          : "Propose this config change (review before it's saved)"
+      }
+      aria-pressed={staged}
+      className={cn(
+        "text-xs px-2 py-0.5 rounded border transition-colors inline-flex items-center gap-1",
+        disabled
+          ? "border-gray-100 text-gray-300 cursor-not-allowed"
+          : staged
+          ? "border-blue-500 bg-blue-600 text-white hover:bg-blue-700"
+          : "border-gray-300 text-gray-700 hover:border-blue-400 hover:text-blue-600"
+      )}
+    >
+      <span className="text-[10px]">{staged ? "✓" : "+"}</span>
+      {label}
+    </button>
+  )
+}
+
 export default function ReconciliationTable({
   recon,
   maintenance,
   selectedStation,
   onSelectStation,
-  onApplyBaseline,
-  onApplyStart,
-  onApplyDuration,
+  isStaged,
+  onToggleStage,
   onToggleMaintenance,
 }: Props) {
   if (recon.length === 0) {
     return <div className="text-sm text-gray-400 py-6 text-center">No configured stations ran on this day.</div>
+  }
+
+  // The program start is a single shared knob, so the "start" proposal is offered
+  // only on each program's first station (downstream timing is fixed via duration).
+  const firstOfProgram = new Set<string>()
+  {
+    const byProg = new Map<string, SegmentReconciliation>()
+    for (const r of recon) {
+      const k = `${r.timer}:${r.programId}`
+      const cur = byProg.get(k)
+      if (!cur || r.cfgStartMin < cur.cfgStartMin) byProg.set(k, r)
+    }
+    for (const r of byProg.values()) firstOfProgram.add(`${r.timer}:${r.programId}:${r.stationId}`)
   }
 
   return (
@@ -61,14 +113,19 @@ export default function ReconciliationTable({
             <TableHead>Start (cfg → act)</TableHead>
             <TableHead>Duration (cfg → act)</TableHead>
             <TableHead>gpm (base → act)</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead>
+              Propose config change
+              <span className="block text-[10px] font-normal text-gray-400 normal-case">
+                staged, not saved — review below
+              </span>
+            </TableHead>
+            <TableHead className="text-right">Maint.</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {recon.map((r) => {
             const flagged = !!maintenance[r.stationId]
             const isSel = selectedStation === r.stationId
-            const hasActual = r.actualGpm != null || r.actualStartMin != null
             const deltaPct = r.gpmDeltaPct
             const deltaCls =
               deltaPct == null
@@ -78,6 +135,15 @@ export default function ReconciliationTable({
                 : deltaPct < -0.05
                 ? "text-blue-500"
                 : "text-green-600"
+
+            // "Would change" guards — disable staging buttons that are no-ops.
+            const baselineTarget = r.actualGpm != null ? +r.actualGpm.toFixed(2) : null
+            const baselineWouldChange =
+              baselineTarget != null && (r.baselineGpm == null || baselineTarget !== +r.baselineGpm.toFixed(2))
+            const startWouldChange = r.startDriftMin != null && r.startDriftMin !== 0
+            const durationWouldChange =
+              r.actualDurationMin != null && r.actualDurationMin !== r.cfgDurationMin
+
             return (
               <TableRow
                 key={`${r.timer}:${r.programId}:${r.stationId}`}
@@ -124,45 +190,44 @@ export default function ReconciliationTable({
                   )}
                 </TableCell>
 
-                <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                  <div className="inline-flex flex-wrap gap-1 justify-end">
-                    <ActionBtn
-                      disabled={r.actualGpm == null}
-                      title="Set this station's baseline gpm to the measured actual (active day's config window)"
-                      onClick={() => onApplyBaseline(r)}
-                    >
-                      ↳ baseline
-                    </ActionBtn>
-                    <ActionBtn
-                      disabled={r.actualStartMin == null}
-                      title="Set this program's start time so this station lines up with its actual start"
-                      onClick={() => onApplyStart(r)}
-                    >
-                      ↳ start
-                    </ActionBtn>
-                    <ActionBtn
-                      disabled={r.actualDurationMin == null}
-                      title="Set this station's duration to the measured actual run length"
-                      onClick={() => onApplyDuration(r)}
-                    >
-                      ↳ duration
-                    </ActionBtn>
-                    <button
-                      onClick={() => onToggleMaintenance(r)}
-                      title={flagged ? "Clear maintenance flag" : "Flag this station for maintenance"}
-                      className={cn(
-                        "text-xs px-1.5 py-0.5 rounded border transition-colors",
-                        flagged
-                          ? "border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
-                          : "border-gray-200 text-gray-500 hover:border-gray-400"
-                      )}
-                    >
-                      {flagged ? "⚠ flagged" : "⚠ flag"}
-                    </button>
+                <TableCell onClick={(e) => e.stopPropagation()}>
+                  <div className="inline-flex flex-wrap gap-1">
+                    <StageButton
+                      staged={isStaged(r, "baseline")}
+                      disabled={!baselineWouldChange}
+                      label={`baseline → ${baselineTarget != null ? baselineTarget.toFixed(2) : "—"}`}
+                      onClick={() => onToggleStage(r, "baseline")}
+                    />
+                    {firstOfProgram.has(`${r.timer}:${r.programId}:${r.stationId}`) && (
+                      <StageButton
+                        staged={isStaged(r, "start")}
+                        disabled={!startWouldChange}
+                        label={`start → ${fmtTime(r.actualStartMin)}`}
+                        onClick={() => onToggleStage(r, "start")}
+                      />
+                    )}
+                    <StageButton
+                      staged={isStaged(r, "duration")}
+                      disabled={!durationWouldChange}
+                      label={`duration → ${r.actualDurationMin != null ? `${r.actualDurationMin}m` : "—"}`}
+                      onClick={() => onToggleStage(r, "duration")}
+                    />
                   </div>
-                  {!hasActual && (
-                    <p className="text-[10px] text-gray-400 mt-0.5">no run detected</p>
-                  )}
+                </TableCell>
+
+                <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    onClick={() => onToggleMaintenance(r)}
+                    title={flagged ? "Clear maintenance flag" : "Flag this station for maintenance"}
+                    className={cn(
+                      "text-xs px-1.5 py-0.5 rounded border transition-colors whitespace-nowrap",
+                      flagged
+                        ? "border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
+                        : "border-gray-200 text-gray-500 hover:border-gray-400"
+                    )}
+                  >
+                    {flagged ? "⚠ flagged" : "⚠ flag"}
+                  </button>
                 </TableCell>
               </TableRow>
             )
@@ -170,28 +235,5 @@ export default function ReconciliationTable({
         </TableBody>
       </Table>
     </div>
-  )
-}
-
-function ActionBtn({
-  children,
-  onClick,
-  disabled,
-  title,
-}: {
-  children: React.ReactNode
-  onClick: () => void
-  disabled?: boolean
-  title?: string
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className="text-xs px-1.5 py-0.5 rounded border border-gray-200 text-gray-600 hover:border-blue-400 hover:text-blue-600 transition-colors disabled:opacity-30 disabled:hover:border-gray-200 disabled:hover:text-gray-600"
-    >
-      {children}
-    </button>
   )
 }

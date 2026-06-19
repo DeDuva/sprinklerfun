@@ -36,7 +36,8 @@ sprinkler-app/
 │   ├── ConsumptionChart.tsx    # Unified time-series chart
 │   ├── StationFlowChart.tsx    # Horizontal bar chart for a single day with nav, day tiles, and enriched tooltip
 │   ├── FlowTimelineChart.tsx   # Analysis: per-minute actual vs configured-baseline overlay + brush/station zoom
-│   ├── ReconciliationTable.tsx # Analysis: per-station cfg→actual table with config-edit + maintenance actions
+│   ├── ReconciliationTable.tsx # Analysis: per-station cfg→actual table; buttons STAGE config edits (don't write)
+│   ├── ReviewChangesModal.tsx  # Analysis: review staged config changes (old→new, removable) before saving
 │   └── WarningsPanel.tsx       # Baseline-deviation warnings + maintenance-flag surfacing
 ├── lib/
 │   ├── types.ts                # All shared TypeScript interfaces, DEFAULT_CONFIG, migrateConfig
@@ -414,8 +415,16 @@ interface Props {
 ### `FlowTimelineChart` (Analysis hero)
 A Recharts `ComposedChart` over minute-of-day for one selected day: a blue `Area` of actual gpm plus an orange `stepAfter` `Line` of the configured baseline (`connectNulls={false}`, so it draws only over configured windows). Viewable range is the union of configured + detected spans, padded 15 min. A `<Brush>` controls zoom (its `startIndex/endIndex` are state); station chips set those indices to a station's window and, when a station is selected, the chart overlays a `ReferenceArea` band plus configured-start (solid) and detected-start (dashed) `ReferenceLine`s. Chips dedupe by station id (a station can appear in multiple programs). Selection state is lifted to the page so the reconciliation table row highlights in sync.
 
-### `ReconciliationTable` (Analysis)
-Renders `SegmentReconciliation[]` with cfg→actual start / duration / gpm columns, drift badges, a `≈` low-confidence marker, and a maintenance badge. Row click toggles the chart's selected station. Action buttons are disabled when the relevant actual is missing; the page wires them to `updateWindow` (baseline / start / duration) and `setStationMaintenance` (flag, with an optional `window.prompt` note). Edits are blocked with a toast when no config window is active for the day.
+### `ReconciliationTable` (Analysis) — staged edits
+Renders `SegmentReconciliation[]` with cfg→actual start / duration / gpm columns, drift badges, a `≈` low-confidence marker, and a separate maintenance column. Row click toggles the chart's selected station.
+
+The "Propose config change" buttons **do not write** — they call `onToggleStage(r, kind)` to add/remove a proposed edit from the page's staged set (button labels carry the concrete target value; staged buttons render filled with a ✓). Buttons are disabled when the change would be a no-op (value already matches, or no run detected). The **start** proposal is a program-level knob, so it is rendered only on each program's first station (lowest `cfgStartMin`). Maintenance (`onToggleMaintenance`) writes immediately via `setStationMaintenance` (reversible toggle, optional `window.prompt` note).
+
+### Staged-changes model (Analysis page)
+The page holds staged edits in a single state object `{ ctx, map, review }` where `ctx = "${day}|${winId}"`; when `ctx` changes the state is reset **during render** (the React "reset on prop change" pattern — no effect). Each staged entry is `{ key, area, field, fromText, toText, note?, apply(cfg) }`; the `start` key is per-program (`timer:program:start`, last write wins) while baseline/duration are per-station. `ReviewChangesModal` lists the staged entries grouped by area as `old → new` (removable). **Save** deep-clones the active window's config, runs every staged `apply`, and calls `updateWindow` **once**; then clears the staged set. Nothing is persisted until Save.
+
+### `ReviewChangesModal`
+A lightweight overlay (same pattern as `UploadModal`) listing staged `StagedItem[]` grouped by area, each with a `remove` action, plus **Save to config** / **Cancel**. Purely presentational — all state lives in the Analysis page.
 
 ---
 
