@@ -257,7 +257,7 @@ export default function AnalysisPage() {
               size="sm"
               onClick={stageAll}
               disabled={!winId}
-              title="Stage every detected start/duration/baseline change from this day for review"
+              title="Stage every detected duration/baseline change from this day for review"
             >
               ⤓ Stage all changes from this day
             </Button>
