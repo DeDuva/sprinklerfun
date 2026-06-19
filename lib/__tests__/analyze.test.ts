@@ -190,8 +190,8 @@ describe("buildDaySchedule", () => {
     cfg.timer1.programs.A.stations["T1-01"] = { durationMin: 10, enabled: false }
     const schedule = buildDaySchedule(cfg, 0)
     expect(schedule.some((s) => s.stationId === "T1-01")).toBe(false)
-    // T1-02 now starts at the program start (cursor still advances over disabled T1-01)
-    expect(schedule.find((s) => s.stationId === "T1-02")?.startMin).toBe(370)
+    // T1-02 slides up to the program start — timer skips disabled stations
+    expect(schedule.find((s) => s.stationId === "T1-02")?.startMin).toBe(360)
   })
 
   it("maps a null baseline when none is set", () => {
