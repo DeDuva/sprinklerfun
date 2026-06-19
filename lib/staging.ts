@@ -150,7 +150,6 @@ export function programStartStations(recon: SegmentReconciliation[]): Set<string
  */
 export function proposeAllChanges(recon: SegmentReconciliation[]): StagedChange[] {
   const out = new Map<string, StagedChange>()
-  const startStations = programStartStations(recon)
 
   for (const r of recon) {
     if (wouldChange(r, "baseline")) {
@@ -159,12 +158,6 @@ export function proposeAllChanges(recon: SegmentReconciliation[]): StagedChange[
     }
     if (wouldChange(r, "duration")) {
       const c = buildStagedChange(r, "duration")
-      out.set(c.key, c)
-    }
-  }
-  for (const r of recon) {
-    if (startStations.has(`${r.timer}:${r.programId}:${r.stationId}`) && wouldChange(r, "start")) {
-      const c = buildStagedChange(r, "start")
       out.set(c.key, c)
     }
   }

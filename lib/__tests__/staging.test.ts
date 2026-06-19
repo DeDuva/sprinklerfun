@@ -186,11 +186,11 @@ describe("programStartStations", () => {
 // ---------------------------------------------------------------------------
 
 describe("proposeAllChanges", () => {
-  it("proposes only changed fields, and one start per program (first station)", () => {
+  it("proposes only changed baseline and duration fields (no start)", () => {
     const rows = [
       // first station: start drifted +2, baseline changed, duration unchanged
       recon({ stationId: "T1-01", cfgStartMin: 360, actualStartMin: 362, startDriftMin: 2, baselineGpm: 2, actualGpm: 1.7, cfgDurationMin: 10, actualDurationMin: 10 }),
-      // second station: also drifted, but its start must NOT produce a second proposal
+      // second station: duration changed
       recon({ stationId: "T1-02", cfgStartMin: 370, actualStartMin: 372, startDriftMin: 2, baselineGpm: 3, actualGpm: 3, cfgDurationMin: 5, actualDurationMin: 7 }),
     ]
     const proposed = proposeAllChanges(rows)
@@ -198,10 +198,8 @@ describe("proposeAllChanges", () => {
     expect(keys).toEqual([
       "timer1:A:T1-01:baseline", // T1-01 baseline 2 → 1.7
       "timer1:A:T1-02:duration", // T1-02 duration 5 → 7
-      "timer1:A:start",          // single program start (from T1-01)
     ].sort())
-    // exactly one start change
-    expect(proposed.filter((c) => c.key.endsWith(":start")).length).toBe(1)
+    expect(proposed.filter((c) => c.key.endsWith(":start")).length).toBe(0)
   })
 
   it("returns nothing when actuals already match config", () => {
@@ -245,7 +243,8 @@ describe("applyStagedChanges", () => {
       recon({ stationId: "T1-01", cfgStartMin: 360, actualStartMin: 364, startDriftMin: 4, baselineGpm: 2, actualGpm: 2.6, cfgDurationMin: 10, actualDurationMin: 12 }),
     ]
     const next = applyStagedChanges(cfg, proposeAllChanges(rows))
-    expect(next.timer1.programs.A.start).toBe("06:04:00")
+    // start is NOT proposed — only baseline and duration
+    expect(next.timer1.programs.A.start).toBe("06:00:00")
     expect(next.timer1.stations.find((s) => s.id === "T1-01")!.baselineGpm).toBe(2.6)
     expect(next.timer1.programs.A.stations["T1-01"].durationMin).toBe(12)
   })
