@@ -19,6 +19,8 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
+import Papa from "papaparse"
+import type { FlumeRow } from "@/lib/types"
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 const PROGRAM_IDS: ProgramId[] = ["A", "B", "C"]
@@ -555,6 +557,122 @@ function WindowDiff({ prev, next }: { prev: ConfigWindow | null; next: AppConfig
 
 // ---- Export / Import ------------------------------------------------------
 
+function parseRows(data: Record<string, string>[]): FlumeRow[] {
+  const rows: FlumeRow[] = []
+  for (const row of data) {
+    const dt = row["datetime"] ?? row["Datetime"] ?? row["DateTime"]
+    const g = parseFloat(row["gallons"] ?? row["Gallons"] ?? "0")
+    if (dt && !isNaN(g)) rows.push({ datetime: dt.trim(), gallons: g })
+  }
+  return rows
+}
+
+function UploadCsvCard() {
+  const appendRows = useStore((s) => s.appendRows)
+  const rows = useStore((s) => s.rows)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [urlInput, setUrlInput] = useState("")
+  const [loadingUrl, setLoadingUrl] = useState(false)
+  const [dragging, setDragging] = useState(false)
+
+  function finish(parsed: FlumeRow[], label: string) {
+    if (parsed.length === 0) {
+      toast.error("No valid rows found. Expected columns: datetime, gallons")
+      return
+    }
+    appendRows(parsed)
+    toast.success(`Loaded ${parsed.length.toLocaleString()} rows from ${label}`)
+  }
+
+  function processFile(file: File) {
+    Papa.parse<Record<string, string>>(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => finish(parseRows(results.data), file.name),
+      error: () => toast.error("Failed to parse CSV"),
+    })
+  }
+
+  async function loadFromUrl() {
+    if (!urlInput.trim()) return
+    setLoadingUrl(true)
+    const rawUrl = urlInput
+      .replace("https://github.com/", "https://raw.githubusercontent.com/")
+      .replace("/blob/", "/")
+    try {
+      const res = await fetch(rawUrl)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const text = await res.text()
+      Papa.parse<Record<string, string>>(text, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => finish(parseRows(results.data), rawUrl.split("/").pop() ?? "URL"),
+        error: () => toast.error("Failed to parse CSV"),
+      })
+      setUrlInput("")
+    } catch (e) {
+      toast.error(`Could not fetch URL: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      setLoadingUrl(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">
+          Upload CSV Data
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            {rows.length.toLocaleString()} rows loaded
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div
+          className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
+            dragging ? "border-blue-500 bg-blue-50" : "border-gray-300 hover:border-gray-400"
+          }`}
+          onClick={() => fileRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault()
+            setDragging(false)
+            if (e.dataTransfer.files?.[0]) processFile(e.dataTransfer.files[0])
+          }}
+        >
+          <p className="text-gray-600 font-medium">Drop CSV here or click to browse</p>
+          <p className="text-xs text-gray-400 mt-1">New rows are merged with existing data. Duplicates are skipped.</p>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0])}
+          />
+        </div>
+
+        <div>
+          <p className="text-sm font-medium mb-1">Load from URL</p>
+          <p className="text-xs text-gray-400 mb-1.5">GitHub blob URLs are converted to raw automatically.</p>
+          <div className="flex gap-2">
+            <Input
+              placeholder="https://github.com/user/repo/blob/main/data.csv"
+              value={urlInput}
+              onChange={(e) => setUrlInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && loadFromUrl()}
+              className="text-sm h-8"
+            />
+            <Button size="sm" className="h-8 shrink-0" onClick={loadFromUrl} disabled={loadingUrl || !urlInput.trim()}>
+              {loadingUrl ? "Loading…" : "Load"}
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 function ExportImportCard() {
   const windows = useStore((s) => s.windows)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -761,6 +879,7 @@ function ConfigPageInner() {
             </Button>
           </CardContent>
         </Card>
+        <UploadCsvCard />
         <ExportImportCard />
       </div>
     )
@@ -939,6 +1058,8 @@ function ConfigPageInner() {
           </Card>
         </>
       )}
+
+      <UploadCsvCard />
 
       <ExportImportCard />
 

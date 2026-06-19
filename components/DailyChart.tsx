@@ -65,7 +65,7 @@ export default function DailyChart({ dailyRows }: Props) {
   if (dailyRows.length === 0) {
     return (
       <div className="flex items-center justify-center h-64 text-gray-400">
-        No data — upload a CSV to get started
+        No data — go to Config to upload a CSV
       </div>
     )
   }
