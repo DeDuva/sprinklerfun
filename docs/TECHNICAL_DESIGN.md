@@ -35,13 +35,18 @@ sprinkler-app/
 │   ├── SummaryCards.tsx
 │   ├── ConsumptionChart.tsx    # Unified time-series chart
 │   ├── StationFlowChart.tsx    # Horizontal bar chart for a single day with nav, day tiles, and enriched tooltip
-│   └── WarningsPanel.tsx
+│   ├── FlowTimelineChart.tsx   # Analysis: per-minute actual vs configured-baseline overlay + brush/station zoom
+│   ├── ReconciliationTable.tsx # Analysis: per-station cfg→actual table; buttons STAGE config edits (don't write)
+│   ├── ReviewChangesModal.tsx  # Analysis: review staged config changes (old→new, removable) before saving
+│   └── WarningsPanel.tsx       # Baseline-deviation warnings + maintenance-flag surfacing
 ├── lib/
 │   ├── types.ts                # All shared TypeScript interfaces, DEFAULT_CONFIG, migrateConfig
 │   ├── analyze.ts              # Pure analysis functions (no React)
+│   ├── staging.ts              # Pure staged-config-edit logic for the Analysis tab
 │   ├── store.ts                # Zustand store with migration on rehydrate
 │   └── __tests__/
-│       └── analyze.test.ts     # Vitest unit tests
+│       ├── analyze.test.ts     # Vitest unit tests
+│       └── staging.test.ts     # Staged-edit logic tests
 ├── vitest.config.ts
 └── vercel.json
 ```
@@ -100,6 +105,42 @@ interface AppConfig {
 
 Note: `sprinklerDays` (formerly a top-level array) has been removed. Each program now carries its own `days` array.
 
+### MaintenanceFlag (physical-state flag, not a config snapshot)
+```ts
+interface MaintenanceFlag {
+  flaggedAt: string   // ISO timestamp
+  note?: string
+}
+```
+Stored in the store as `maintenance: Record<stationId, MaintenanceFlag>` — top-level, **not** inside a `ConfigWindow`, because it describes the current hardware state independent of config history.
+
+### Calibration types (Analysis tab)
+```ts
+// Configured station run for a day, reconstructed from program start + durations.
+interface ExpectedSegment {
+  stationId: string
+  name: string
+  timer: "timer1" | "timer2"
+  programId: ProgramId
+  startMin: number; endMin: number; durationMin: number
+  baselineGpm: number | null
+}
+
+// One minute of actual metered flow (gallons-in-the-minute == gpm).
+interface MinutePoint { timeMin: number; gpm: number }
+
+// An ExpectedSegment reconciled against the actual per-minute flow.
+interface SegmentReconciliation {
+  stationId: string; name: string
+  timer: "timer1" | "timer2"; programId: ProgramId
+  cfgStartMin: number; cfgEndMin: number; cfgDurationMin: number; baselineGpm: number | null
+  actualStartMin: number | null; actualEndMin: number | null
+  actualDurationMin: number | null; actualGpm: number | null   // trimmed mean
+  startDriftMin: number | null; durationDriftMin: number | null; gpmDeltaPct: number | null
+  confidence: "high" | "low"; confidenceReason?: string
+}
+```
+
 ---
 
 ## Data Flow
@@ -120,7 +161,12 @@ EnrichedRow[]    (each minute: station id, timer "timer1"/"timer2"/"house", isSp
     │
     ├──▶ buildStationStats()  → StationStats[]
     │
-    └──▶ computeStationWarnings()  → StationWarning[]
+    ├──▶ computeStationWarnings()  → StationWarning[]
+    │
+    └──▶ (Analysis tab, per selected day)
+             buildDaySchedule(dayConfig, dow)            → ExpectedSegment[]
+             buildDayMinuteSeries(enriched for the day)  → MinutePoint[]
+             reconcileDay(series, schedule)              → SegmentReconciliation[]
 ```
 
 All functions are **pure** (no side effects, no React). They live in `lib/analyze.ts`.
@@ -154,13 +200,10 @@ Windows are **contiguous**: window i covers `[effectiveFrom_i, effectiveFrom_{i+
 
 For each date:
 1. Compute the day-of-week (0=Mon … 6=Sun).
-2. For each timer (T1, T2), iterate over programs A, B, C. A program is **active** for this date if `program.enabled && program.days.includes(dow)`.
-3. For each active program, build ordered station windows:
-   - `cursor = parseTimeToMinutes(program.start)`
-   - For each station in `timer.stations` order: `end = cursor + programStation.durationMin`. If `enabled && durationMin > 0`, push `{ stationId, timer, startMin: cursor, endMin: end }`.
-4. Compute the detection window as `[min(all startMins), max(all endMins)]`.
-5. Sum gallons within that window. If > `sprinklerOnThreshold` → `isSprinklerDay = true`.
-6. Tag each row: walk windows in order; if `startMin < rowMin ≤ endMin`, assign that station/timer. Otherwise: `house`.
+2. Build the day's ordered station windows via **`buildDaySchedule(config, dow)`** (extracted so the Analysis tab reuses the exact same reconstruction): for each timer, for each program A/B/C active that day (`enabled && days.includes(dow)`), walk `timer.stations` from `cursor = parseTimeToMinutes(program.start)`, emitting `{ stationId, name, timer, programId, startMin, endMin, durationMin, baselineGpm }` for each enabled, positive-duration station and advancing the cursor. Segments are returned in iteration order (timer1 A/B/C, then timer2) — the order enrichment relies on for first-match assignment.
+3. Compute the detection window as `[min(all startMins), max(all endMins)]`.
+4. Sum gallons within that window. If > `sprinklerOnThreshold` → `isSprinklerDay = true`.
+5. Tag each row: walk windows in order; if `startMin < rowMin ≤ endMin`, assign that station/timer. Otherwise: `house`.
 
 **Key properties:**
 - Multiple programs from the same timer can be active on the same day (if their `days` overlap). Their windows are merged into a single ordered window list.
@@ -192,6 +235,21 @@ Config windows whose `effectiveFrom` falls within the visible date range are map
 - Fire if consecutive days ≥ 2 **and** recent overall avg > baseline by >20%
 - Constants: `WARN_THRESHOLD = 0.20`, `WARN_MIN_DAYS = 2`
 
+### 6. Timing & Flow Reconciliation (`reconcileDay`)
+
+Reconciles a day's `ExpectedSegment[]` (from `buildDaySchedule`) against its actual `MinutePoint[]` (from `buildDayMinuteSeries`). Stations run back-to-back within a program, so a program's flow is one continuous run whose level steps between stations. Everything is tracked in **boundary space** — boundary `b` sits between minute `b` and `b+1`, and a station occupies on-minutes `(bPrev, bThis]`, matching enrichment's `startMin < rowMin ≤ endMin` convention so drifts compare directly to config.
+
+Per program (grouped by `timer:programId`):
+1. **On-threshold** — `onThresholdGpm` option, else `max(0.5, 0.4 × min baseline in the program)`, else `0.5`.
+2. **Run detection** — scan `[progStart − driftSearch, progEnd + driftSearch]` (default `driftSearch = 10`) for contiguous "on" stretches (flow ≥ threshold); pick the one with the greatest overlap with the configured span (else the longest). Its first on-minute − 1 = the run's start boundary; its last on-minute = the end boundary. `progDrift = runStartBoundary − progStart`.
+3. **Interior boundary refinement** — for each station boundary, search ±4 min around its drift-shifted configured position for the minute with the largest flow step (max `|mean(left window) − mean(right window)|`, window = 3 min, clamped monotonic inside the run). If the best step `< minStepGpm` (default `0.5`) the adjacent levels are indistinguishable: fall back to the shifted configured boundary and mark the boundary **low-confidence**.
+4. **Sustained gpm** — mean over each station's interval **excluding its first and last minute** (adjacent-station bleed). Runs ≤ 3 min have no clean interior → full mean, **low-confidence**.
+5. Emit per station: `actualStart/End/Duration`, trimmed `actualGpm`, `startDriftMin`, `durationDriftMin`, `gpmDeltaPct`, and a `confidence` (`low` if a run was missing, ≤3 min, or sat on an ambiguous boundary).
+
+A program with no detected run yields all-null actuals (low-confidence). Two enabled programs on the same timer/day produce two independent runs for the same station — reconciled separately (the reconciliation table shows both; the chart's station chips dedupe by id).
+
+The Analysis tab's per-row / bulk actions translate a `SegmentReconciliation` into a config edit on the **window active on the selected day** (`activeWindowForDate`) via `updateWindow`: baseline → `station.baselineGpm`; start → shift `program.start` by `startDriftMin` (per-station starts derive from program start + upstream durations); duration → `programStation.durationMin`. "Calibrate from this day" applies all three across every detected station at once.
+
 ---
 
 ## State Management
@@ -202,18 +260,20 @@ Config windows whose `effectiveFrom` falls within the visible date range are map
   windows: ConfigWindow[]       // sorted ascending by effectiveFrom; the active
                                 // window for today is the "current" config
   rows: FlumeRow[]              // all CSV rows, sorted by datetime
+  maintenance: Record<string, MaintenanceFlag>  // station id → flag (top-level)
 
   addWindowFromDate(date, notes)  // clone the config active on `date` → new window
   updateWindow(id, patch)         // edit config/notes/effectiveFrom in place (no new
                                   // window; changing effectiveFrom moves only this boundary)
   deleteWindow(id)                // remove a window (last one cannot be deleted)
   copyBaselinesForward(id)        // apply this window's baselines to all later windows
+  setStationMaintenance(id, flag) // set (or clear, with null) a station's maintenance flag
   appendRows(newRows)             // merge + deduplicate by datetime key, re-sort
   clearRows()
 }
 ```
 
-Persisted under `"sprinkler-store"` (persist `version: 2`) in localStorage.
+Persisted under `"sprinkler-store"` (persist `version: 2`) in localStorage. `maintenance` defaults to `{}`; persist's shallow merge fills it in for stores saved before it existed, so no version bump is required. The Analysis tab's config-edit actions reuse `updateWindow` (deep-cloning the active window's config and patching the targeted field); only maintenance flags need the dedicated `setStationMaintenance` action.
 
 ### SSR Safety
 - Storage adapter no-ops when `typeof window === "undefined"`
@@ -303,6 +363,21 @@ Column matching: `datetime | Datetime | DateTime`, `gallons | Gallons`. Invalid 
 
 | Test | What it verifies |
 |---|---|
+| `buildDaySchedule` — reconstruction | Back-to-back windows from start + durations; baseline lookup; disabled/zero-duration omitted; inactive day → empty |
+| `buildDayMinuteSeries` | One point per minute, gpm = that minute's gallons, sorted |
+| `reconcileDay` — clean run | Zero drift; trimmed gpm equals baseline; high confidence |
+| `reconcileDay` — late start | Program start shift → positive `startDriftMin` |
+| `reconcileDay` — off baseline | Above-baseline flow → positive `gpmDeltaPct` |
+| `reconcileDay` — short run | Run ≤3 min → low confidence |
+| `reconcileDay` — no flow | No detected run → null actuals, low confidence |
+| `reconcileDay` — ambiguous boundary | Equal adjacent baselines → low confidence, still measures gpm |
+| `reconcileDay` — boundary refinement | Late inter-station boundary detected from the flow step |
+| `staging` — stageKey | Per-station baseline/duration keys; shared per-program start key |
+| `staging` — wouldChange | No-op detection for baseline (2dp) / duration / start drift |
+| `staging` — buildStagedChange | `apply` mutates baseline / duration / shifts program start (±) |
+| `staging` — programStartStations | First station per program, order-independent |
+| `staging` — proposeAllChanges | Only changed fields; one start per program; skips no-run rows |
+| `staging` — applyStagedChanges | Composes all changes; input config left untouched |
 | Station assignment on sprinkler day (Program A) | Correct station id assigned for each time window |
 | House assignment outside station window | Minutes between stations → "house" |
 | House assignment on non-scheduled day | Day not in program.days → no windows → not a sprinkler day |
@@ -345,6 +420,28 @@ interface Props {
 - Baseline GPM (orange) + % delta (green / red / blue)
 - "Config from [date]" footer row (hidden when no history exists)
 
+### `FlowTimelineChart` (Analysis hero)
+A Recharts `ComposedChart` over minute-of-day for one selected day: a blue `Area` of actual gpm plus an orange `stepAfter` `Line` of the configured baseline (`connectNulls={false}`, so it draws only over configured windows). Viewable range is the union of configured + detected spans, padded 15 min. A `<Brush>` controls zoom (its `startIndex/endIndex` are state); station chips set those indices to a station's window and, when a station is selected, the chart overlays a `ReferenceArea` band plus configured-start (solid) and detected-start (dashed) `ReferenceLine`s. Chips dedupe by station id (a station can appear in multiple programs). Selection state is lifted to the page so the reconciliation table row highlights in sync.
+
+### `ReconciliationTable` (Analysis) — staged edits
+Renders `SegmentReconciliation[]` with cfg→actual start / duration / gpm columns, drift badges, a `≈` low-confidence marker, and a separate maintenance column. Row click toggles the chart's selected station.
+
+The "Propose config change" buttons **do not write** — they call `onToggleStage(r, kind)` to add/remove a proposed edit from the page's staged set (button labels carry the concrete target value; staged buttons render filled with a ✓). Buttons are disabled when the change would be a no-op (value already matches, or no run detected). The **start** proposal is a program-level knob, so it is rendered only on each program's first station (lowest `cfgStartMin`). Maintenance (`onToggleMaintenance`) writes immediately via `setStationMaintenance` (reversible toggle, optional `window.prompt` note).
+
+### Staged-changes model (`lib/staging.ts` + Analysis page)
+The decision logic is a **pure module** (`lib/staging.ts`, no React, unit-tested):
+- `stageKey(r, kind)` — stable key; `start` is per-program (`timer:program:start`, last write wins), baseline/duration per-station.
+- `wouldChange(r, kind)` — is this edit a no-op? (used to disable buttons and filter "stage all").
+- `buildStagedChange(r, kind)` — a `{ key, area, field, fromText, toText, note?, apply(cfg) }`; `apply` mutates a config (baseline → station, duration → program-station, start → shift `program.start` by drift).
+- `programStartStations(recon)` — first station per program (where the start proposal is offered).
+- `proposeAllChanges(recon)` — all meaningful changes (one start per program) for "stage all".
+- `applyStagedChanges(config, changes)` — deep-clones and applies; input untouched.
+
+The page is the thin UI shell: it holds staged edits in a single state object `{ ctx, map, review }` where `ctx = "${day}|${winId}"`, and resets it **during render** when `ctx` changes (the React "reset on prop change" pattern — no effect). `ReviewChangesModal` lists the staged entries grouped by area as `old → new` (removable). **Save** calls `applyStagedChanges` then `updateWindow` **once**, and clears the set. Nothing is persisted until Save.
+
+### `ReviewChangesModal`
+A lightweight overlay (same pattern as `UploadModal`) listing staged `StagedItem[]` grouped by area, each with a `remove` action, plus **Save to config** / **Cancel**. Purely presentational — all state lives in the Analysis page.
+
 ---
 
 ## Routing
@@ -352,7 +449,7 @@ interface Props {
 | Route | Type | Notes |
 |---|---|---|
 | `/` | Static client component | Dashboard |
-| `/analysis` | Static client component | Station analysis |
+| `/analysis` | Static client component | Timing & flow calibration |
 | `/config` | Static client component | Config editor |
 | `/day/[date]` | Dynamic client component | `date` = `YYYY-MM-DD` |
 

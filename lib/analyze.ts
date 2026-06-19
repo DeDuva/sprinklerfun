@@ -5,9 +5,11 @@ import type {
   ConfigWindow,
   DailyRow,
   EnrichedRow,
+  ExpectedSegment,
   FlumeRow,
-  ProgramConfig,
+  MinutePoint,
   ProgramId,
+  SegmentReconciliation,
   StationStats,
   TimeBucket,
   TimerConfig,
@@ -73,6 +75,61 @@ function localDateAndMin(datetime: string): { date: string; rowMin: number } {
   return { date, rowMin }
 }
 
+/**
+ * Reconstruct the configured station schedule for a single day-of-week.
+ *
+ * Walks every enabled program on both timers whose `days` include `dow`, and for
+ * each lays out its stations back-to-back from the program start: station i runs
+ * for `[cursor, cursor + durationMin]`, then the cursor advances. Only enabled
+ * stations with a positive duration produce a segment.
+ *
+ * Segments are returned in iteration order — timer1 programs A/B/C, then timer2 —
+ * which is the order `enrichRows` relies on for first-match station assignment.
+ * `dow` is 0=Mon … 6=Sun.
+ */
+export function buildDaySchedule(config: AppConfig, dow: number): ExpectedSegment[] {
+  const segments: ExpectedSegment[] = []
+
+  for (const [timerKey, timer] of [
+    ["timer1", config.timer1],
+    ["timer2", config.timer2],
+  ] as const) {
+    const baselineById = new Map<string, number | null>()
+    for (const s of timer.stations) {
+      baselineById.set(s.id, s.baselineGpm != null && s.baselineGpm > 0 ? s.baselineGpm : null)
+    }
+    const nameById = new Map(timer.stations.map((s) => [s.id, s.name]))
+
+    for (const pid of ["A", "B", "C"] as ProgramId[]) {
+      const prog = timer.programs[pid]
+      if (!prog || !prog.enabled || !prog.days.includes(dow)) continue
+
+      let cursor = parseTimeToMinutes(prog.start)
+      for (const station of timer.stations) {
+        const ps = prog.stations[station.id]
+        const dur = ps?.durationMin ?? 0
+        const ena = ps?.enabled ?? false
+        const end = cursor + dur
+        if (ena && dur > 0) {
+          segments.push({
+            stationId: station.id,
+            name: nameById.get(station.id) ?? station.id,
+            timer: timerKey,
+            programId: pid,
+            startMin: cursor,
+            endMin: end,
+            durationMin: dur,
+            baselineGpm: baselineById.get(station.id) ?? null,
+          })
+        }
+        cursor = end
+      }
+    }
+  }
+
+  return segments
+}
+
 export function enrichRows(rows: FlumeRow[], config: AppConfig): EnrichedRow[] {
   if (rows.length === 0) return []
 
@@ -94,40 +151,13 @@ export function enrichRows(rows: FlumeRow[], config: AppConfig): EnrichedRow[] {
   const results: EnrichedRow[] = []
 
   for (const [date, { rows: dateRows, dow }] of byDate) {
-    // Build ordered station windows for this date by scanning all enabled programs
-    // on both timers whose days array includes today's DOW.
-    const allWindows: Array<{
-      stationId: string
-      timer: string
-      startMin: number
-      endMin: number
-    }> = []
+    // Build ordered station windows for this date from the configured schedule.
+    const allWindows = buildDaySchedule(config, dow)
     let windowMin = Infinity
     let windowMax = -Infinity
-
-    for (const [timerKey, timer] of [
-      ["timer1", config.timer1],
-      ["timer2", config.timer2],
-    ] as const) {
-      for (const prog of Object.values(timer.programs) as ProgramConfig[]) {
-        if (!prog.enabled || !prog.days.includes(dow)) continue
-
-        const progStartMin = parseTimeToMinutes(prog.start)
-        let cursor = progStartMin
-
-        for (const station of timer.stations) {
-          const ps = prog.stations[station.id]
-          const dur = ps?.durationMin ?? 0
-          const ena = ps?.enabled ?? false
-          const end = cursor + dur
-          if (ena && dur > 0) {
-            allWindows.push({ stationId: station.id, timer: timerKey, startMin: cursor, endMin: end })
-            if (cursor < windowMin) windowMin = cursor
-            if (end > windowMax) windowMax = end
-          }
-          cursor = end
-        }
-      }
+    for (const w of allWindows) {
+      if (w.startMin < windowMin) windowMin = w.startMin
+      if (w.endMin > windowMax) windowMax = w.endMin
     }
 
     // Detect sprinkler day: sum gallons within the full span of all windows
@@ -573,6 +603,239 @@ export function buildStationStats(enriched: EnrichedRow[], config: AppConfig): S
   })
 
   return stats.sort((a, b) => b.totalGallons - a.totalGallons)
+}
+
+// ---------------------------------------------------------------------------
+// Timing & flow calibration (Analysis tab)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-minute actual flow for a single day. Each Flume row is a 1-minute bin, so
+ * gallons-in-the-minute == gpm. Rows sharing a minute are summed (defensive).
+ * Returns points sorted by minute.
+ */
+export function buildDayMinuteSeries(dayRows: EnrichedRow[]): MinutePoint[] {
+  const byMin = new Map<number, number>()
+  for (const r of dayRows) byMin.set(r.timeMin, (byMin.get(r.timeMin) ?? 0) + r.gallons)
+  return [...byMin.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([timeMin, gpm]) => ({ timeMin, gpm }))
+}
+
+export interface ReconcileOptions {
+  /** Flow at/above this gpm counts as "on". Default derives from baselines. */
+  onThresholdGpm?: number
+  /** How many minutes around the configured start to search for the actual run. */
+  driftSearchMin?: number
+  /** Minimum gpm step for an interior station boundary to be unambiguous. */
+  minStepGpm?: number
+}
+
+/**
+ * Reconcile a day's configured schedule against its actual per-minute flow.
+ *
+ * Stations run back-to-back within a program, so flow is one continuous run whose
+ * level steps between stations. For each program we:
+ *   1. Detect the actual run — the contiguous "on" stretch (flow ≥ threshold) that
+ *      best overlaps the configured span — giving the program's start drift.
+ *   2. Refine each interior station boundary by searching ±a few minutes around its
+ *      drift-shifted configured position for the minute with the largest flow step.
+ *      When adjacent baselines are too close to separate (step < minStepGpm) the
+ *      boundary falls back to its shifted configured position and is marked low-confidence.
+ *   3. Measure each station's sustained gpm as the mean over its interval EXCLUDING
+ *      the first and last minute (those sample the adjacent station). Runs ≤3 min
+ *      have no clean interior, so they use the full mean and are low-confidence.
+ *
+ * Boundaries are tracked in "boundary space": boundary b sits between minute b and
+ * b+1, and a station occupies on-minutes (bPrev, bThis]. This matches enrichRows'
+ * `startMin < rowMin ≤ endMin` convention, so drifts compare directly to config.
+ */
+export function reconcileDay(
+  series: MinutePoint[],
+  schedule: ExpectedSegment[],
+  opts: ReconcileOptions = {}
+): SegmentReconciliation[] {
+  const driftSearch = opts.driftSearchMin ?? 10
+  const minStep = opts.minStepGpm ?? 0.5
+  const REFINE_WIN = 3 // minutes each side when scoring a boundary step
+
+  const gpmAt = new Map<number, number>()
+  for (const p of series) gpmAt.set(p.timeMin, p.gpm)
+  const at = (m: number) => gpmAt.get(m) ?? 0
+  const meanRange = (from: number, to: number): number | null => {
+    if (to < from) return null
+    let sum = 0
+    let n = 0
+    for (let m = from; m <= to; m++) {
+      sum += at(m)
+      n++
+    }
+    return n > 0 ? sum / n : null
+  }
+
+  // Group by program run (timer + programId); each is one continuous run.
+  const groups = new Map<string, ExpectedSegment[]>()
+  for (const seg of schedule) {
+    const key = `${seg.timer}:${seg.programId}`
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(seg)
+  }
+
+  const out: SegmentReconciliation[] = []
+
+  for (const segs of groups.values()) {
+    const ordered = [...segs].sort((a, b) => a.startMin - b.startMin)
+    const progStart = ordered[0].startMin
+    const progEnd = ordered[ordered.length - 1].endMin
+
+    const baselines = ordered
+      .map((s) => s.baselineGpm)
+      .filter((b): b is number => b != null && b > 0)
+    const onThreshold =
+      opts.onThresholdGpm ?? (baselines.length ? Math.max(0.5, 0.4 * Math.min(...baselines)) : 0.5)
+
+    // Find contiguous on-runs in the search region; pick the one overlapping the
+    // configured span most (else the longest, if nothing overlaps).
+    const lo = progStart - driftSearch
+    const hi = progEnd + driftSearch
+    const runs: Array<{ start: number; end: number }> = []
+    let cur: { start: number; end: number } | null = null
+    for (let m = lo; m <= hi; m++) {
+      if (at(m) >= onThreshold) {
+        if (!cur) cur = { start: m, end: m }
+        else cur.end = m
+      } else if (cur) {
+        runs.push(cur)
+        cur = null
+      }
+    }
+    if (cur) runs.push(cur)
+
+    let best: { start: number; end: number } | null = null
+    let bestOverlap = 0
+    for (const r of runs) {
+      const ov = Math.min(r.end, progEnd) - Math.max(r.start, progStart) + 1
+      if (ov > bestOverlap) {
+        bestOverlap = ov
+        best = r
+      }
+    }
+    if (!best && runs.length) {
+      best = runs.reduce((a, b) => (b.end - b.start > a.end - a.start ? b : a))
+    }
+
+    const baseRecon = (seg: ExpectedSegment): SegmentReconciliation => ({
+      stationId: seg.stationId,
+      name: seg.name,
+      timer: seg.timer,
+      programId: seg.programId,
+      cfgStartMin: seg.startMin,
+      cfgEndMin: seg.endMin,
+      cfgDurationMin: seg.durationMin,
+      baselineGpm: seg.baselineGpm,
+      actualStartMin: null,
+      actualEndMin: null,
+      actualDurationMin: null,
+      actualGpm: null,
+      startDriftMin: null,
+      durationDriftMin: null,
+      gpmDeltaPct: null,
+      confidence: "low",
+      confidenceReason: "No flow detected for this program",
+    })
+
+    if (!best) {
+      for (const seg of ordered) out.push(baseRecon(seg))
+      continue
+    }
+
+    // Program boundaries in boundary space: the run's first on-minute is the
+    // minute AFTER the start boundary; its last on-minute IS the end boundary.
+    const runStartBoundary = best.start - 1
+    const runEndBoundary = best.end
+    const progDrift = runStartBoundary - progStart
+
+    // Build the N+1 station boundaries. boundary[0] = run start, boundary[N] = run end.
+    const N = ordered.length
+    const boundaries: number[] = new Array(N + 1)
+    const boundaryAmbiguous: boolean[] = new Array(N + 1).fill(false)
+    boundaries[0] = runStartBoundary
+    boundaries[N] = runEndBoundary
+
+    for (let i = 1; i < N; i++) {
+      const center = ordered[i].startMin + progDrift // drift-shifted configured boundary
+      // keep boundaries monotonic and strictly inside the run
+      const searchLo = Math.max(boundaries[i - 1] + 1, center - 4)
+      const searchHi = Math.min(runEndBoundary - (N - i), center + 4)
+      let bestB = Math.min(Math.max(center, searchLo), searchHi)
+      let bestStepVal = -1
+      for (let b = searchLo; b <= searchHi; b++) {
+        const left = meanRange(Math.max(b - REFINE_WIN + 1, runStartBoundary + 1), b)
+        const right = meanRange(b + 1, Math.min(b + REFINE_WIN, runEndBoundary))
+        if (left == null || right == null) continue
+        const step = Math.abs(left - right)
+        if (step > bestStepVal) {
+          bestStepVal = step
+          bestB = b
+        }
+      }
+      if (bestStepVal < minStep) {
+        // Ambiguous — adjacent levels too similar to separate. Fall back to shifted config.
+        bestB = Math.min(Math.max(center, searchLo), searchHi)
+        boundaryAmbiguous[i] = true
+      }
+      boundaries[i] = bestB
+    }
+
+    for (let i = 0; i < N; i++) {
+      const seg = ordered[i]
+      const startB = boundaries[i]
+      const endB = boundaries[i + 1]
+      const duration = endB - startB
+      const reasons: string[] = []
+
+      // Trimmed mean: drop first & last on-minute (adjacent-station bleed).
+      let actualGpm: number | null
+      if (duration > 3) {
+        actualGpm = meanRange(startB + 2, endB - 1)
+      } else {
+        actualGpm = meanRange(startB + 1, endB)
+        reasons.push("Run ≤3 min — first/last minute can't be trimmed")
+      }
+      if (boundaryAmbiguous[i] || boundaryAmbiguous[i + 1]) {
+        reasons.push("Adjacent baselines too close to pinpoint boundary")
+      }
+
+      const startDrift = startB - seg.startMin
+      const durationDrift = duration - seg.durationMin
+      const gpmDeltaPct =
+        seg.baselineGpm != null && seg.baselineGpm > 0 && actualGpm != null
+          ? (actualGpm - seg.baselineGpm) / seg.baselineGpm
+          : null
+
+      out.push({
+        stationId: seg.stationId,
+        name: seg.name,
+        timer: seg.timer,
+        programId: seg.programId,
+        cfgStartMin: seg.startMin,
+        cfgEndMin: seg.endMin,
+        cfgDurationMin: seg.durationMin,
+        baselineGpm: seg.baselineGpm,
+        actualStartMin: startB,
+        actualEndMin: endB,
+        actualDurationMin: duration,
+        actualGpm,
+        startDriftMin: startDrift,
+        durationDriftMin: durationDrift,
+        gpmDeltaPct,
+        confidence: reasons.length > 0 ? "low" : "high",
+        confidenceReason: reasons.length > 0 ? reasons.join("; ") : undefined,
+      })
+    }
+  }
+
+  return out
 }
 
 // ---------------------------------------------------------------------------
