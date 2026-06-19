@@ -42,9 +42,11 @@ sprinkler-app/
 ├── lib/
 │   ├── types.ts                # All shared TypeScript interfaces, DEFAULT_CONFIG, migrateConfig
 │   ├── analyze.ts              # Pure analysis functions (no React)
+│   ├── staging.ts              # Pure staged-config-edit logic for the Analysis tab
 │   ├── store.ts                # Zustand store with migration on rehydrate
 │   └── __tests__/
-│       └── analyze.test.ts     # Vitest unit tests
+│       ├── analyze.test.ts     # Vitest unit tests
+│       └── staging.test.ts     # Staged-edit logic tests
 ├── vitest.config.ts
 └── vercel.json
 ```
@@ -370,6 +372,12 @@ Column matching: `datetime | Datetime | DateTime`, `gallons | Gallons`. Invalid 
 | `reconcileDay` — no flow | No detected run → null actuals, low confidence |
 | `reconcileDay` — ambiguous boundary | Equal adjacent baselines → low confidence, still measures gpm |
 | `reconcileDay` — boundary refinement | Late inter-station boundary detected from the flow step |
+| `staging` — stageKey | Per-station baseline/duration keys; shared per-program start key |
+| `staging` — wouldChange | No-op detection for baseline (2dp) / duration / start drift |
+| `staging` — buildStagedChange | `apply` mutates baseline / duration / shifts program start (±) |
+| `staging` — programStartStations | First station per program, order-independent |
+| `staging` — proposeAllChanges | Only changed fields; one start per program; skips no-run rows |
+| `staging` — applyStagedChanges | Composes all changes; input config left untouched |
 | Station assignment on sprinkler day (Program A) | Correct station id assigned for each time window |
 | House assignment outside station window | Minutes between stations → "house" |
 | House assignment on non-scheduled day | Day not in program.days → no windows → not a sprinkler day |
@@ -420,8 +428,16 @@ Renders `SegmentReconciliation[]` with cfg→actual start / duration / gpm colum
 
 The "Propose config change" buttons **do not write** — they call `onToggleStage(r, kind)` to add/remove a proposed edit from the page's staged set (button labels carry the concrete target value; staged buttons render filled with a ✓). Buttons are disabled when the change would be a no-op (value already matches, or no run detected). The **start** proposal is a program-level knob, so it is rendered only on each program's first station (lowest `cfgStartMin`). Maintenance (`onToggleMaintenance`) writes immediately via `setStationMaintenance` (reversible toggle, optional `window.prompt` note).
 
-### Staged-changes model (Analysis page)
-The page holds staged edits in a single state object `{ ctx, map, review }` where `ctx = "${day}|${winId}"`; when `ctx` changes the state is reset **during render** (the React "reset on prop change" pattern — no effect). Each staged entry is `{ key, area, field, fromText, toText, note?, apply(cfg) }`; the `start` key is per-program (`timer:program:start`, last write wins) while baseline/duration are per-station. `ReviewChangesModal` lists the staged entries grouped by area as `old → new` (removable). **Save** deep-clones the active window's config, runs every staged `apply`, and calls `updateWindow` **once**; then clears the staged set. Nothing is persisted until Save.
+### Staged-changes model (`lib/staging.ts` + Analysis page)
+The decision logic is a **pure module** (`lib/staging.ts`, no React, unit-tested):
+- `stageKey(r, kind)` — stable key; `start` is per-program (`timer:program:start`, last write wins), baseline/duration per-station.
+- `wouldChange(r, kind)` — is this edit a no-op? (used to disable buttons and filter "stage all").
+- `buildStagedChange(r, kind)` — a `{ key, area, field, fromText, toText, note?, apply(cfg) }`; `apply` mutates a config (baseline → station, duration → program-station, start → shift `program.start` by drift).
+- `programStartStations(recon)` — first station per program (where the start proposal is offered).
+- `proposeAllChanges(recon)` — all meaningful changes (one start per program) for "stage all".
+- `applyStagedChanges(config, changes)` — deep-clones and applies; input untouched.
+
+The page is the thin UI shell: it holds staged edits in a single state object `{ ctx, map, review }` where `ctx = "${day}|${winId}"`, and resets it **during render** when `ctx` changes (the React "reset on prop change" pattern — no effect). `ReviewChangesModal` lists the staged entries grouped by area as `old → new` (removable). **Save** calls `applyStagedChanges` then `updateWindow` **once**, and clears the set. Nothing is persisted until Save.
 
 ### `ReviewChangesModal`
 A lightweight overlay (same pattern as `UploadModal`) listing staged `StagedItem[]` grouped by area, each with a `remove` action, plus **Save to config** / **Cancel**. Purely presentational — all state lives in the Analysis page.

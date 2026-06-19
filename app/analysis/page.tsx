@@ -32,42 +32,20 @@ import {
 } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
 import FlowTimelineChart from "@/components/FlowTimelineChart"
-import ReconciliationTable, { type StageKind } from "@/components/ReconciliationTable"
+import ReconciliationTable from "@/components/ReconciliationTable"
 import ReviewChangesModal from "@/components/ReviewChangesModal"
-import type { AppConfig, SegmentReconciliation, StationStats } from "@/lib/types"
+import {
+  type StageKind,
+  type StagedChange,
+  stageKey,
+  buildStagedChange,
+  proposeAllChanges,
+  applyStagedChanges,
+} from "@/lib/staging"
+import type { SegmentReconciliation, StationStats } from "@/lib/types"
 
 type SortKey = keyof StationStats
 
-// A proposed (not-yet-saved) edit to the active day's config window.
-interface StagedChange {
-  key: string
-  area: string
-  field: string
-  fromText: string
-  toText: string
-  note?: string
-  apply: (cfg: AppConfig) => void
-}
-
-const deepClone = <T,>(v: T): T => JSON.parse(JSON.stringify(v))
-
-const fmtTimeHM = (min: number | null) => {
-  if (min == null) return "—"
-  const h = Math.floor(min / 60) % 24
-  const m = ((min % 60) + 60) % 60
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
-}
-
-const minToTime = (min: number) => {
-  const clamped = Math.max(0, Math.min(1439, Math.round(min)))
-  const h = Math.floor(clamped / 60)
-  const m = clamped % 60
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`
-}
-const parseTime = (t: string) => {
-  const [h, m] = t.split(":").map(Number)
-  return h * 60 + m
-}
 const fmtDay = (d: string) =>
   new Date(d + "T12:00:00").toLocaleDateString(undefined, {
     weekday: "short", month: "short", day: "numeric", year: "numeric",
@@ -169,83 +147,28 @@ export default function AnalysisPage() {
     setStage((s) => ({ ...s, map: fn(s.map) }))
   const discardStaged = () => setStage((s) => ({ ...s, map: new Map(), review: false }))
 
-  const findStation = (cfg: AppConfig, timer: "timer1" | "timer2", id: string) =>
-    cfg[timer].stations.find((s) => s.id === id)
-
-  const keyFor = (r: SegmentReconciliation, kind: StageKind) =>
-    kind === "start"
-      ? `${r.timer}:${r.programId}:start`            // one start change per program
-      : `${r.timer}:${r.programId}:${r.stationId}:${kind}`
-
-  const buildChange = (r: SegmentReconciliation, kind: StageKind): StagedChange => {
-    const area = `${r.timer === "timer1" ? "T1" : "T2"} · Program ${r.programId}`
-    if (kind === "baseline") {
-      const to = +r.actualGpm!.toFixed(2)
-      return {
-        key: keyFor(r, kind), area, field: `${r.name} baseline gpm`,
-        fromText: r.baselineGpm != null ? r.baselineGpm.toFixed(2) : "—", toText: to.toFixed(2),
-        apply: (cfg) => { const st = findStation(cfg, r.timer, r.stationId); if (st) st.baselineGpm = to },
-      }
-    }
-    if (kind === "duration") {
-      return {
-        key: keyFor(r, kind), area, field: `${r.name} duration`,
-        fromText: `${r.cfgDurationMin}m`, toText: `${r.actualDurationMin}m`,
-        apply: (cfg) => { const ps = cfg[r.timer].programs[r.programId].stations[r.stationId]; if (ps) ps.durationMin = r.actualDurationMin! },
-      }
-    }
-    // start — shifts the whole program by the detected drift
-    const drift = r.startDriftMin!
-    return {
-      key: keyFor(r, kind), area, field: `Program ${r.programId} start`,
-      fromText: fmtTimeHM(r.cfgStartMin), toText: fmtTimeHM(r.actualStartMin),
-      note: `shifts program ${drift >= 0 ? "+" : ""}${drift}m`,
-      apply: (cfg) => { const p = cfg[r.timer].programs[r.programId]; p.start = minToTime(parseTime(p.start) + drift) },
-    }
-  }
-
-  const isStaged = (r: SegmentReconciliation, kind: StageKind) => staged.has(keyFor(r, kind))
+  const isStaged = (r: SegmentReconciliation, kind: StageKind) => staged.has(stageKey(r, kind))
   const toggleStage = (r: SegmentReconciliation, kind: StageKind) => {
     if (!winId) { toast.error("No config window active for this day — create one in Config first."); return }
     mutateStaged((prev) => {
       const next = new Map(prev)
-      const k = keyFor(r, kind)
+      const k = stageKey(r, kind)
       if (next.has(k)) next.delete(k)
-      else next.set(k, buildChange(r, kind))
+      else next.set(k, buildStagedChange(r, kind))
       return next
     })
   }
 
   const stageAll = () => {
     if (!winId || !dayCalc) { toast.error("No config window active for this day — create one in Config first."); return }
-    const next = new Map<string, StagedChange>()
-    // First station (lowest cfg start) per program drives that program's start shift.
-    const firstByProgram = new Map<string, SegmentReconciliation>()
-    for (const r of dayCalc.recon) {
-      if (r.actualStartMin == null) continue
-      const k = `${r.timer}:${r.programId}`
-      const cur = firstByProgram.get(k)
-      if (!cur || r.cfgStartMin < cur.cfgStartMin) firstByProgram.set(k, r)
-    }
-    for (const r of dayCalc.recon) {
-      if (r.actualGpm != null && (r.baselineGpm == null || +r.actualGpm.toFixed(2) !== +r.baselineGpm.toFixed(2))) {
-        const c = buildChange(r, "baseline"); next.set(c.key, c)
-      }
-      if (r.actualDurationMin != null && r.actualDurationMin !== r.cfgDurationMin) {
-        const c = buildChange(r, "duration"); next.set(c.key, c)
-      }
-    }
-    for (const r of firstByProgram.values()) {
-      if (r.startDriftMin != null && r.startDriftMin !== 0) { const c = buildChange(r, "start"); next.set(c.key, c) }
-    }
-    if (next.size === 0) { toast("Nothing to change — actuals already match config."); return }
-    setStage((s) => ({ ...s, map: next, review: true }))
+    const proposed = proposeAllChanges(dayCalc.recon)
+    if (proposed.length === 0) { toast("Nothing to change — actuals already match config."); return }
+    setStage((s) => ({ ...s, map: new Map(proposed.map((c) => [c.key, c])), review: true }))
   }
 
   const saveStaged = () => {
     if (!dayCalc?.activeWin || staged.size === 0) return
-    const next = deepClone(dayCalc.activeWin.config)
-    for (const c of staged.values()) c.apply(next)
+    const next = applyStagedChanges(dayCalc.activeWin.config, staged.values())
     updateWindow(dayCalc.activeWin.id, { config: next })
     const n = staged.size
     discardStaged()

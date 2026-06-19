@@ -1,6 +1,7 @@
 "use client"
 
 import type { MaintenanceFlag, SegmentReconciliation } from "@/lib/types"
+import { type StageKind, wouldChange, programStartStations } from "@/lib/staging"
 import {
   Table,
   TableBody,
@@ -10,8 +11,6 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
-
-export type StageKind = "baseline" | "start" | "duration"
 
 interface Props {
   recon: SegmentReconciliation[]
@@ -93,16 +92,7 @@ export default function ReconciliationTable({
 
   // The program start is a single shared knob, so the "start" proposal is offered
   // only on each program's first station (downstream timing is fixed via duration).
-  const firstOfProgram = new Set<string>()
-  {
-    const byProg = new Map<string, SegmentReconciliation>()
-    for (const r of recon) {
-      const k = `${r.timer}:${r.programId}`
-      const cur = byProg.get(k)
-      if (!cur || r.cfgStartMin < cur.cfgStartMin) byProg.set(k, r)
-    }
-    for (const r of byProg.values()) firstOfProgram.add(`${r.timer}:${r.programId}:${r.stationId}`)
-  }
+  const firstOfProgram = programStartStations(recon)
 
   return (
     <div className="overflow-x-auto">
@@ -138,11 +128,9 @@ export default function ReconciliationTable({
 
             // "Would change" guards — disable staging buttons that are no-ops.
             const baselineTarget = r.actualGpm != null ? +r.actualGpm.toFixed(2) : null
-            const baselineWouldChange =
-              baselineTarget != null && (r.baselineGpm == null || baselineTarget !== +r.baselineGpm.toFixed(2))
-            const startWouldChange = r.startDriftMin != null && r.startDriftMin !== 0
-            const durationWouldChange =
-              r.actualDurationMin != null && r.actualDurationMin !== r.cfgDurationMin
+            const baselineWouldChange = wouldChange(r, "baseline")
+            const startWouldChange = wouldChange(r, "start")
+            const durationWouldChange = wouldChange(r, "duration")
 
             return (
               <TableRow
