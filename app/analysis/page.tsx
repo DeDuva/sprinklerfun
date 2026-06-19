@@ -180,8 +180,7 @@ export default function AnalysisPage() {
       setStationMaintenance(r.stationId, null)
       toast.success(`${r.name} maintenance flag cleared`)
     } else {
-      const note = window.prompt(`Flag ${r.name} for maintenance — optional note:`, "") ?? undefined
-      setStationMaintenance(r.stationId, { flaggedAt: new Date().toISOString(), note: note || undefined })
+      setStationMaintenance(r.stationId, { flaggedAt: new Date().toISOString() })
       toast.success(`${r.name} flagged for maintenance`)
     }
   }

@@ -121,8 +121,8 @@ export function buildDaySchedule(config: AppConfig, dow: number): ExpectedSegmen
             durationMin: dur,
             baselineGpm: baselineById.get(station.id) ?? null,
           })
+          cursor = end
         }
-        cursor = end
       }
     }
   }
