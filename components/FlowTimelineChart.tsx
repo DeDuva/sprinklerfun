@@ -143,12 +143,43 @@ export default function FlowTimelineChart({
     return <div className="flex items-center justify-center h-64 text-gray-400">No flow data for this day</div>
   }
 
-  // Distinct stations (for chips), in schedule order. A station can appear in
-  // multiple programs (e.g. T2 Program A + B), so dedupe by id.
-  const seenChip = new Set<string>()
-  const stationChips = schedule
-    .filter((s) => (seenChip.has(s.stationId) ? false : seenChip.add(s.stationId)))
-    .map((s) => ({ id: s.stationId, name: s.name, color: colorOf[s.stationId] }))
+  // Group stations by timer → program, deduped within each group.
+  const stationGroups = useMemo(() => {
+    const groups: Array<{
+      key: string
+      label: string
+      stations: Array<{ id: string; name: string; color: string }>
+    }> = []
+    const seen = new Map<string, Set<string>>()
+    for (const s of schedule) {
+      const gk = `${s.timer}:${s.programId}`
+      if (!seen.has(gk)) {
+        seen.set(gk, new Set())
+        const timerLabel = s.timer === "timer1" ? "T1" : "T2"
+        groups.push({ key: gk, label: `${timerLabel} · Prog ${s.programId}`, stations: [] })
+      }
+      const ids = seen.get(gk)!
+      if (!ids.has(s.stationId)) {
+        ids.add(s.stationId)
+        groups.find((g) => g.key === gk)!.stations.push({
+          id: s.stationId,
+          name: s.name,
+          color: colorOf[s.stationId],
+        })
+      }
+    }
+    return groups
+  }, [schedule, colorOf])
+
+  // Expand the group that contains the selected station; collapse all by default.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const toggleGroup = (key: string) =>
+    setExpandedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key); else next.add(key)
+      return next
+    })
+
   const reconById = Object.fromEntries(recon.map((r) => [r.stationId, r]))
 
   return (
@@ -169,22 +200,47 @@ export default function FlowTimelineChart({
         )}
       </div>
 
-      <div className="flex flex-wrap gap-1.5">
-        {stationChips.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => handleChip(c.id)}
-            className={cn(
-              "text-xs px-2 py-0.5 rounded-full border transition-colors",
-              selectedStation === c.id
-                ? "border-transparent text-white"
-                : "border-gray-200 text-gray-600 hover:border-gray-400"
-            )}
-            style={selectedStation === c.id ? { backgroundColor: c.color } : undefined}
-          >
-            {c.name}
-          </button>
-        ))}
+      <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+        {stationGroups.map((g) => {
+          const isOpen = expandedGroups.has(g.key)
+          const hasSelected = g.stations.some((s) => s.id === selectedStation)
+          return (
+            <div key={g.key} className="flex flex-wrap items-center gap-1">
+              <button
+                onClick={() => toggleGroup(g.key)}
+                className={cn(
+                  "text-[11px] font-medium px-1.5 py-0.5 rounded border transition-colors select-none",
+                  hasSelected
+                    ? "border-blue-300 bg-blue-50 text-blue-700"
+                    : "border-gray-200 text-gray-500 hover:border-gray-400"
+                )}
+              >
+                {isOpen ? "▾" : "▸"} {g.label}
+                {!isOpen && hasSelected && selectedStation && (
+                  <span className="ml-1 text-blue-600">
+                    ({g.stations.find((s) => s.id === selectedStation)?.name})
+                  </span>
+                )}
+              </button>
+              {isOpen &&
+                g.stations.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => handleChip(c.id)}
+                    className={cn(
+                      "text-xs px-2 py-0.5 rounded-full border transition-colors",
+                      selectedStation === c.id
+                        ? "border-transparent text-white"
+                        : "border-gray-200 text-gray-600 hover:border-gray-400"
+                    )}
+                    style={selectedStation === c.id ? { backgroundColor: c.color } : undefined}
+                  >
+                    {c.name}
+                  </button>
+                ))}
+            </div>
+          )
+        })}
       </div>
 
       <ResponsiveContainer width="100%" height={340}>
