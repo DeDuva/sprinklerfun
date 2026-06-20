@@ -567,6 +567,20 @@ function parseRows(data: Record<string, string>[]): FlumeRow[] {
   return rows
 }
 
+function buildFlumeUrl(rows: FlumeRow[]): string {
+  const tz = "-07:00"
+  let since = "2026-05-01T00:00:00.000"
+  if (rows.length > 0) {
+    const latest = rows.reduce((a, b) => (a.datetime > b.datetime ? a : b)).datetime
+    const d = new Date(latest)
+    d.setMinutes(d.getMinutes() - 1)
+    since = d.toISOString().replace("Z", "").slice(0, 23)
+  }
+  const now = new Date()
+  const until = now.toISOString().replace("Z", "").slice(0, 23)
+  return `https://portal.flumewater.com/dashboard?since=${since}${tz}&until=${until}${tz}&scale=hour`
+}
+
 function UploadCsvCard() {
   const appendRows = useStore((s) => s.appendRows)
   const rows = useStore((s) => s.rows)
@@ -628,6 +642,28 @@ function UploadCsvCard() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-sm">
+            <span className="font-medium text-gray-700">1.</span>{" "}
+            <a
+              href={buildFlumeUrl(rows)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-700 underline underline-offset-2"
+            >
+              Open Flume export →
+            </a>
+            <span className="text-xs text-gray-400 ml-2">
+              {rows.length > 0
+                ? `from ${rows.reduce((a, b) => (a.datetime > b.datetime ? a : b)).datetime.slice(0, 10)}`
+                : "full range"}
+            </span>
+          </div>
+          <span className="text-sm text-gray-400">
+            <span className="font-medium text-gray-700">2.</span> Download CSV, then drop it below
+          </span>
+        </div>
+
         <div
           className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
             dragging ? "border-blue-500 bg-blue-50" : "border-gray-300 hover:border-gray-400"
