@@ -213,9 +213,15 @@ export default function AnalysisPage() {
                 className="px-2 py-0.5 rounded border text-sm text-gray-600 disabled:opacity-30 hover:border-gray-400 transition-colors"
                 title="Previous sprinkler day"
               >←</button>
-              <span className="text-sm font-medium text-gray-700 min-w-[160px] text-center">
-                {day ? fmtDay(day) : "—"}
-              </span>
+              <select
+                value={day ?? ""}
+                onChange={(e) => setSelectedDay(e.target.value || null)}
+                className="text-sm font-medium text-gray-700 min-w-[160px] text-center bg-white border rounded px-2 py-0.5 cursor-pointer hover:border-gray-400 transition-colors"
+              >
+                {sprinklerDates.map((d) => (
+                  <option key={d} value={d}>{fmtDay(d)}</option>
+                ))}
+              </select>
               <button
                 onClick={() => nextDay && setSelectedDay(nextDay)}
                 disabled={!nextDay}
