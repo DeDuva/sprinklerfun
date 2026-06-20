@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import {
   ComposedChart,
   Area,
@@ -107,6 +107,11 @@ export default function FlowTimelineChart({
 
   // Brush-controlled zoom window (indices into `data`).
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null)
+  const prevDataLen = useRef(data.length)
+  if (data.length !== prevDataLen.current) {
+    prevDataLen.current = data.length
+    if (zoom) setZoom(null)
+  }
 
   const zoomToStation = (id: string) => {
     const segs = schedule.filter((s) => s.stationId === id)
@@ -317,8 +322,8 @@ export default function FlowTimelineChart({
             height={22}
             travellerWidth={8}
             stroke="#cbd5e1"
-            startIndex={zoom?.start ?? 0}
-            endIndex={zoom?.end ?? data.length - 1}
+            startIndex={Math.min(zoom?.start ?? 0, data.length - 1)}
+            endIndex={Math.min(zoom?.end ?? data.length - 1, data.length - 1)}
             onChange={(r: { startIndex?: number; endIndex?: number }) => {
               if (r.startIndex != null && r.endIndex != null) setZoom({ start: r.startIndex, end: r.endIndex })
             }}
