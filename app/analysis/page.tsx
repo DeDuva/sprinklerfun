@@ -31,6 +31,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
+import DayPicker from "@/components/DayPicker"
 import FlowTimelineChart from "@/components/FlowTimelineChart"
 import ReconciliationTable from "@/components/ReconciliationTable"
 import ReviewChangesModal from "@/components/ReviewChangesModal"
@@ -213,15 +214,11 @@ export default function AnalysisPage() {
                 className="px-2 py-0.5 rounded border text-sm text-gray-600 disabled:opacity-30 hover:border-gray-400 transition-colors"
                 title="Previous sprinkler day"
               >←</button>
-              <select
-                value={day ?? ""}
-                onChange={(e) => setSelectedDay(e.target.value || null)}
-                className="text-sm font-medium text-gray-700 min-w-[160px] text-center bg-white border rounded px-2 py-0.5 cursor-pointer hover:border-gray-400 transition-colors"
-              >
-                {sprinklerDates.map((d) => (
-                  <option key={d} value={d}>{fmtDay(d)}</option>
-                ))}
-              </select>
+              <DayPicker
+                sprinklerDates={sprinklerDates}
+                selected={day}
+                onSelect={setSelectedDay}
+              />
               <button
                 onClick={() => nextDay && setSelectedDay(nextDay)}
                 disabled={!nextDay}
