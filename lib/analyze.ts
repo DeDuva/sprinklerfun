@@ -317,7 +317,7 @@ export function rollupsToEnriched(
     timeMin: 0,
     gallons: r.gallons,
     station: r.station,
-    timer: timerOf[r.station] ?? (r.station === "house" ? "house" : "house"),
+    timer: timerOf[r.station] ?? "house",
     isSprinklerDay: r.isSprinklerDay,
   }))
 }
