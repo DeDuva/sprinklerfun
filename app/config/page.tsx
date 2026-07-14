@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import Papa from "papaparse"
 import type { FlumeRow } from "@/lib/types"
+import { pushRows } from "@/lib/backend"
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 const PROGRAM_IDS: ProgramId[] = ["A", "B", "C"]
@@ -596,6 +597,32 @@ function UploadCsvCard() {
     }
     appendRows(parsed)
     toast.success(`Loaded ${parsed.length.toLocaleString()} rows from ${label}`)
+    // Phase 1 dual-write: mirror the upload to the Turso backend, best-effort.
+    // localStorage remains the source of truth, so a backend failure is a soft
+    // warning and never blocks the local flow.
+    pushRows(parsed, useStore.getState().windows).then((r) => {
+      if (!r.ok) toast.warning(`Saved locally, but backend sync failed: ${r.error}`)
+    })
+  }
+
+  // One-time migration: push everything already sitting in localStorage (rows +
+  // windows) to the server, so the backend starts from parity with this browser.
+  async function importLocalToServer() {
+    const { rows: allRows, windows } = useStore.getState()
+    if (allRows.length === 0) {
+      toast.error("No local rows to import")
+      return
+    }
+    const t = toast.loading(`Importing ${allRows.length.toLocaleString()} rows to server…`)
+    const r = await pushRows(allRows, windows)
+    toast.dismiss(t)
+    if (r.ok) {
+      toast.success(
+        `Imported to server: ${r.inserted?.toLocaleString()} new rows, ${r.rollupDays} rollup days`
+      )
+    } else {
+      toast.error(`Import failed: ${r.error}`)
+    }
   }
 
   function processFile(file: File) {
@@ -634,12 +661,23 @@ function UploadCsvCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">
-          Upload CSV Data
-          <span className="ml-2 text-xs font-normal text-gray-400">
-            {rows.length.toLocaleString()} rows loaded
-          </span>
-        </CardTitle>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <CardTitle className="text-base">
+            Upload CSV Data
+            <span className="ml-2 text-xs font-normal text-gray-400">
+              {rows.length.toLocaleString()} rows loaded
+            </span>
+          </CardTitle>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={importLocalToServer}
+            disabled={rows.length === 0}
+            title="Copy the rows and config windows already in this browser to the server database"
+          >
+            Import this browser → server
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">

@@ -17,6 +17,10 @@ next-env.d.ts
 
 # Env files
 .env*
+!.env.example
+
+# Local libSQL/SQLite database (dev fallback when TURSO_DATABASE_URL is unset)
+/.data
 
 # Vercel
 .vercel
