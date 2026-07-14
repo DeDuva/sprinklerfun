@@ -94,15 +94,15 @@ export default function DayPicker({ sprinklerDates, selected, onSelect }: Props)
                   className={cn(
                     "text-xs rounded-full w-7 h-7 flex items-center justify-center transition-colors",
                     isSel
-                      ? "bg-blue-600 text-white"
+                      ? "bg-sky-600 text-white"
                       : isSprinkler
-                      ? "text-gray-800 hover:bg-blue-100 font-medium"
+                      ? "text-gray-800 hover:bg-sky-100 font-medium"
                       : "text-gray-300 cursor-default"
                   )}
                 >
                   {cell.day}
                   {isSprinkler && !isSel && (
-                    <span className="absolute mt-5 w-1 h-1 rounded-full bg-blue-400" />
+                    <span className="absolute mt-5 w-1 h-1 rounded-full bg-sky-400" />
                   )}
                 </button>
               )

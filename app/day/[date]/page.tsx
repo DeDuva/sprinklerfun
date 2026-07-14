@@ -25,8 +25,8 @@ import Link from "next/link"
 
 const STATION_COLORS: Record<string, string> = {}
 const PALETTE = [
-  "#3b82f6", "#6366f1", "#8b5cf6", "#ec4899", "#f97316",
-  "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#0ea5e9",
+  "#35A7E4","#4FB05A","#FFC24B","#FF6B5C","#8B6FD9",
+  "#FF9F3E","#2FB8A6","#E85D75","#7BC96F","#5EA8D8",
 ]
 let colorIdx = 0
 function getColor(id: string) {
@@ -102,7 +102,7 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
     return (
       <div className="text-center py-24 text-gray-400">
         No data for {date}.{" "}
-        <Link href="/" className="text-blue-500 underline">
+        <Link href="/" className="text-[#1B6FA8] underline">
           Back to dashboard
         </Link>
       </div>
@@ -115,7 +115,7 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
         <Link href="/" className="text-gray-400 hover:text-gray-600 text-sm">
           ← Dashboard
         </Link>
-        <h1 className="text-2xl font-bold">{fmt}</h1>
+        <h1 className="text-2xl font-semibold text-[#143049]" style={{ fontFamily: "var(--font-fredoka)" }}>{fmt}</h1>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
@@ -125,7 +125,7 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
         </div>
         <div className="bg-white rounded-lg border p-3">
           <p className="text-gray-500">Sprinkler Gallons</p>
-          <p className="text-xl font-bold text-blue-600">
+          <p className="text-xl font-bold text-[#1B6FA8]">
             {Object.entries(stationTotals)
               .filter(([k]) => k !== "house")
               .reduce((s, [, v]) => s + v, 0)
@@ -134,13 +134,13 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
         </div>
         <div className="bg-white rounded-lg border p-3">
           <p className="text-gray-500">House Gallons</p>
-          <p className="text-xl font-bold text-orange-500">
+          <p className="text-xl font-bold text-[#B9822F]">
             {(stationTotals["house"] ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
           </p>
         </div>
         <div className="bg-white rounded-lg border p-3">
           <p className="text-gray-500">Est. Cost (day)</p>
-          <p className="text-xl font-bold text-green-600">
+          <p className="text-xl font-bold text-[#2E7D4F]">
             ${((totalGallons / dayConfig.gallonsPerUnit) * dayConfig.costPerUnit).toFixed(2)}
           </p>
         </div>

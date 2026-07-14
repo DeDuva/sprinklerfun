@@ -17,6 +17,7 @@ import ConsumptionChart from "@/components/ConsumptionChart"
 import StationFlowChart from "@/components/StationFlowChart"
 import WarningsPanel from "@/components/WarningsPanel"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import Flo from "@/components/design/Flo"
 
 function ymKey(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
@@ -155,29 +156,53 @@ export default function DashboardPage() {
   if (rows.length === 0) {
     return (
       <div className="space-y-4">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <div className="rounded-lg border-2 border-dashed border-gray-200 p-16 text-center">
-          <p className="text-gray-500 text-lg font-medium">No data yet</p>
-          <p className="text-gray-400 text-sm mt-1">
-            Go to <strong>Config</strong> to upload your Flume CSV export.
+        <h1 className="text-2xl font-semibold text-[#143049]" style={{ fontFamily: "var(--font-fredoka)" }}>
+          Dashboard
+        </h1>
+        <div className="rounded-2xl border-2 border-dashed border-[#EADFC6] bg-white p-16 text-center flex flex-col items-center gap-3">
+          <Flo mood="watching" size={72} />
+          <p className="text-[#143049] text-lg font-medium">No data yet</p>
+          <p className="text-[#4A6076] text-sm">
+            Go to <Link href="/config" className="text-[#1B6FA8] font-medium underline">Config</Link> to upload your Flume CSV export — I&rsquo;ll take it from there.
           </p>
         </div>
       </div>
     )
   }
 
+  // Flo's plain-English headline for this month.
+  const floMood = derived && derived.warnings.length > 0 ? "alert" : "happy"
+  const floHeadline = monthlySummary
+    ? `Your yard used ${fmt(monthlySummary.summary.totalGallons)} gal in ${monthlySummary.monthFmt}${
+        monthlySummary.summary.totalGallons > 0
+          ? ` — about $${monthlySummary.summary.estimatedCost.toLocaleString(undefined, { maximumFractionDigits: 2 })} so far.`
+          : "."
+      }`
+    : "Crunching the numbers…"
+  const floNote = derived && derived.warnings.length > 0
+    ? `Worth a look: ${derived.warnings.map((w) => w.stationName).join(", ")} running above baseline.`
+    : derived && derived.hasBaselines
+      ? "Everything's tracking within baseline. 🌿"
+      : null
+
   return (
     <div className={`space-y-6 transition-opacity duration-200 ${isStale ? "opacity-60" : ""}`}>
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h1 className="text-2xl font-bold">Dashboard</h1>
-          {derived?.dateRange ? (
-            <p className="text-sm text-gray-500 mt-0.5">
+      {/* Flo's headline */}
+      <div className="rounded-2xl border-2 border-[#143049] bg-gradient-to-b from-white to-[#FFFDF8] p-5 shadow-[4px_4px_0_rgba(20,48,73,0.08)] flex items-center gap-4 flex-wrap">
+        <Flo mood={floMood} size={64} idle />
+        <div className="flex-1 min-w-[220px]">
+          <p className="text-lg sm:text-xl font-semibold text-[#143049] leading-snug" style={{ fontFamily: "var(--font-fredoka)" }}>
+            {floHeadline}
+          </p>
+          {floNote && (
+            <p className={`text-sm mt-0.5 ${derived && derived.warnings.length > 0 ? "text-[#B33B2E]" : "text-[#4A6076]"}`}>
+              {floNote}
+            </p>
+          )}
+          {derived?.dateRange && (
+            <p className="text-xs text-gray-400 mt-1">
               Data: {fmtDate(derived.dateRange.first)} – {fmtDate(derived.dateRange.last)}
             </p>
-          ) : (
-            <p className="text-sm text-gray-500 mt-0.5 animate-pulse">Computing…</p>
           )}
         </div>
       </div>
@@ -276,7 +301,7 @@ export default function DashboardPage() {
             {flowDayStats && (
               <Link
                 href={`/config?date=${flowDayStats.day}`}
-                className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline shrink-0"
+                className="text-xs text-violet-600 hover:text-violet-800 hover:underline shrink-0"
                 title="Edit the config that was active on this day"
               >
                 ⚙ Tune config for this day →
@@ -296,9 +321,9 @@ export default function DashboardPage() {
                     <span className="text-xs font-normal text-gray-400 ml-1">gal</span>
                   </p>
                 </div>
-                <div className="bg-blue-50 rounded-lg px-4 py-3">
+                <div className="bg-sky-50 rounded-lg px-4 py-3">
                   <p className="text-xs text-gray-500 font-medium">Sprinkler</p>
-                  <p className="text-xl font-bold text-blue-600 mt-0.5">
+                  <p className="text-xl font-bold text-sky-600 mt-0.5">
                     {fmt(flowDayStats.daySummary.sprinklerGallons)}
                     <span className="text-xs font-normal text-gray-400 ml-1">gal</span>
                   </p>
@@ -311,16 +336,16 @@ export default function DashboardPage() {
                     </p>
                   )}
                 </div>
-                <div className="bg-orange-50 rounded-lg px-4 py-3">
+                <div className="bg-[#FBF0DC] rounded-lg px-4 py-3">
                   <p className="text-xs text-gray-500 font-medium">House</p>
-                  <p className="text-xl font-bold text-orange-500 mt-0.5">
+                  <p className="text-xl font-bold text-[#B9822F] mt-0.5">
                     {fmt(flowDayStats.daySummary.houseGallons)}
                     <span className="text-xs font-normal text-gray-400 ml-1">gal</span>
                   </p>
                 </div>
-                <div className="bg-green-50 rounded-lg px-4 py-3">
+                <div className="bg-[#EEF8EE] rounded-lg px-4 py-3">
                   <p className="text-xs text-gray-500 font-medium">Est. Cost</p>
-                  <p className="text-xl font-bold text-green-600 mt-0.5">
+                  <p className="text-xl font-bold text-[#2E7D4F] mt-0.5">
                     ${flowDayStats.daySummary.estimatedCost.toLocaleString(undefined, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,

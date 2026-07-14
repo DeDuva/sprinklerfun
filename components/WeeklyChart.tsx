@@ -47,13 +47,13 @@ export default function WeeklyChart({ weeklyRows }: Props) {
         <Legend wrapperStyle={{ fontSize: 11 }} />
         <ReferenceLine
           y={median}
-          stroke="#94a3b8"
+          stroke="#5C7A90"
           strokeDasharray="4 3"
-          label={{ value: `median ${Math.round(median).toLocaleString()}`, position: "insideTopRight", fontSize: 10, fill: "#94a3b8" }}
+          label={{ value: `median ${Math.round(median).toLocaleString()}`, position: "insideTopRight", fontSize: 10, fill: "#5C7A90" }}
         />
-        <Bar dataKey="Sprinkler" stackId="a" fill="#3b82f6" />
-        <Bar dataKey="House" stackId="a" fill="#fb923c" />
-        <Line type="monotone" dataKey="Total" stroke="#1e293b" dot={false} strokeWidth={1.5} />
+        <Bar dataKey="Sprinkler" stackId="a" fill="#35A7E4" />
+        <Bar dataKey="House" stackId="a" fill="#E3A857" />
+        <Line type="monotone" dataKey="Total" stroke="#143049" dot={false} strokeWidth={1.5} />
       </ComposedChart>
     </ResponsiveContainer>
   )
