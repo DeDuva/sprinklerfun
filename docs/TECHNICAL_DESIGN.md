@@ -16,14 +16,17 @@
 | Testing | Vitest | Zero-config, fast, works with TypeScript path aliases |
 | Hosting | Vercel | Zero-config Next.js deploy; Turso env vars for the DB |
 
-**Storage is migrating from browser-only to a Turso backend** (see
+**Storage has migrated from browser-only to a Turso backend** (see
 [Storage & Backend Architecture](#storage--backend-architecture)). The original
 design kept all data and computation in the browser via `localStorage`; at
 per-minute resolution over multiple years the row series exceeded the ~5MB
 `localStorage` quota, so raw rows and derived rollups now live in Turso. The
 analysis functions in `lib/analyze.ts` remain pure and are reused **verbatim**
-on the server to compute rollups — the browser no longer enriches the full
-dataset.
+on the server to compute rollups and stats. **As of Phase 3 the browser never
+loads the full per-minute series**: the dashboard/analysis read the aggregate
+feeds (`/api/rollup`, `/api/stats`) and fetch a single day (`/api/day/[date]`)
+only when a per-minute view needs it. Only `windows` + `maintenance` persist in
+`localStorage`.
 
 ---
 
@@ -38,9 +41,10 @@ sprinkler-app/
 │   ├── config/page.tsx         # Configuration editor + history
 │   ├── day/[date]/page.tsx     # Minute-by-minute day detail
 │   └── api/                    # Route Handlers (Node runtime) — the backend
-│       ├── rows/route.ts       # POST ingest · GET all rows · DELETE clear
+│       ├── rows/route.ts       # POST ingest (+recompute) · GET all rows (debug) · DELETE clear
 │       ├── day/[date]/route.ts # GET one day's raw per-minute rows
-│       └── rollup/route.ts     # GET per-day/per-station aggregates
+│       ├── rollup/route.ts     # GET per-day/per-station aggregates
+│       └── stats/route.ts      # GET precomputed fleet gpm stats + baseline warnings
 ├── components/
 │   ├── Navbar.tsx
 │   ├── StoreProvider.tsx       # Client-only Zustand rehydration + default-config.json load
@@ -58,9 +62,9 @@ sprinkler-app/
 │   ├── staging.ts              # Pure staged-config-edit logic for the Analysis tab
 │   ├── store.ts                # Zustand store with migration on rehydrate
 │   ├── db.ts                   # server-only: libSQL client + idempotent schema bootstrap
-│   ├── backend.ts              # client-only: dual-write bridge to /api/rows
+│   ├── backend.ts              # client-only: fetch rollups/stats/day + push rows / sync windows
 │   ├── server/
-│   │   ├── data.ts             # server data access + recomputeRollups (reuses analyze.ts)
+│   │   ├── data.ts             # server data access + recomputeRollups/recomputeStats (reuses analyze.ts)
 │   │   └── auth.ts             # single-user shared-secret guard for writes
 │   └── __tests__/
 │       ├── analyze.test.ts     # Vitest unit tests
@@ -164,31 +168,37 @@ interface SegmentReconciliation {
 
 ## Data Flow
 
+The same pure `lib/analyze.ts` functions run in two places now. **Server-side**
+(at write time) they compute the persisted aggregates from the full per-minute
+series; **client-side** they run only over reconstructed rollups or a single
+fetched day.
+
 ```
-FlumeRow[]  +  ConfigWindow[]  (stored in localStorage via Zustand)
-    │
-    ▼  enrichRowsMultiConfig(rows, windows)
-       ┌─ for each date range, find the active ConfigWindow (by effectiveFrom)
-       └─ call enrichRows(batchRows, activeConfig) per segment
-EnrichedRow[]    (each minute: station id, timer "timer1"/"timer2"/"house", isSprinklerDay)
-    │
-    ├──▶ aggregateForChart(enriched, bucket, breakdown)
-    │        → ChartBar[]   (daily / weekly / monthly bars with per-breakdown stacks)
-    │
-    ├──▶ buildDailyRows()   → DailyRow[]
-    │        └──▶ computeSummary()
-    │
-    ├──▶ buildStationStats()  → StationStats[]
-    │
-    ├──▶ computeStationWarnings()  → StationWarning[]
-    │
-    └──▶ (Analysis tab, per selected day)
-             buildDaySchedule(dayConfig, dow)            → ExpectedSegment[]
-             buildDayMinuteSeries(enriched for the day)  → MinutePoint[]
-             reconcileDay(series, schedule)              → SegmentReconciliation[]
+SERVER (recompute on every write — POST /api/rows, DELETE, syncWindows)
+  flume_rows (raw minutes)  +  config_windows
+      │  enrichRowsMultiConfig(rows, windows)   → EnrichedRow[]  (full series)
+      ├─▶ buildDailyRows()                       → daily_rollup   (date, station, gallons, isSprinklerDay)
+      ├─▶ buildStationStats(enriched, current)   → station_stats
+      └─▶ computeStationWarnings(enriched, current) → station_warnings
+
+CLIENT (per page load / serverVersion bump)
+  GET /api/rollup  → RollupRow[]
+      ├─▶ rollupsToDailyRows()   → DailyRow[]   ──▶ computeSummary()          (monthly cards)
+      └─▶ rollupsToEnriched(_, stationTimerMap(windows)) → synthetic EnrichedRow[]
+                                                 ──▶ aggregateForChart()      (consumption chart)
+  GET /api/stats   → { stationStats, warnings, rowCount, lastDate }
+      ├─▶ stationStats  ──▶ analysis Fleet Overview
+      └─▶ warnings      ──▶ dashboard Station Alerts
+  GET /api/day/[date] → FlumeRow[]  (one day)
+      └─▶ enrichRows(dayRows, activeWindowConfig)  → EnrichedRow[] (one day)
+              ├─▶ buildStationStats() / buildDailyRows() / computeSummary()   (per-day flow)
+              └─▶ buildDaySchedule() + buildDayMinuteSeries() + reconcileDay() (Analysis calibration)
 ```
 
-All functions are **pure** (no side effects, no React). They live in `lib/analyze.ts`.
+All analysis functions are **pure** (no side effects, no React). They live in
+`lib/analyze.ts`. The rollup-reconstruction helpers (`rollupsToDailyRows`,
+`rollupsToEnriched`, `stationTimerMap`) are pure too and unit-tested to
+reproduce the old client-side outputs bit-for-bit (within float tolerance).
 
 ---
 
@@ -215,7 +225,16 @@ at ingest and stored as rollups.
 | Raw minute rows | `flume_rows (datetime PK, gallons)` | CSV parse | on upload |
 | Config windows | `config_windows (id, effective_from, notes, config JSON, …)` | client edits | on upload / edit |
 | Daily rollups | `daily_rollup (date, station, gallons, is_sprinkler_day)` PK `(date, station)` | server, from enriched rows | on upload / config edit |
+| Station stats | `station_stats (id PK, name, total_gallons, avg/min/max/std_gpm, cost_estimate, pct_of_sprinkler)` | server, `buildStationStats` over full enriched series | on upload / config edit |
+| Station warnings | `station_warnings (station_id PK, station_name, baseline_gpm, recent_avg_gpm, pct_above_baseline, consecutive_days_above)` | server, `computeStationWarnings` over full enriched series | on upload / config edit |
 | Maintenance flags | `maintenance (station_id PK, flagged_at, note)` | client edits | on edit |
+
+The two `station_*` tables (added in Phase 3) hold the per-minute-only
+aggregates the dashboard/analysis need but that daily gallon sums **cannot**
+reconstruct: fleet-wide per-station gpm statistics (avg/std/min/max) and
+baseline-drift warnings. They are recomputed by `recomputeStats()` over the
+whole enriched series (using `currentConfig(windows)`) on every write, and read
+back via `GET /api/stats`.
 
 Schema is bootstrapped idempotently (`CREATE … IF NOT EXISTS`) by
 `ensureSchema()` in `lib/db.ts`, memoized once per process.
@@ -224,14 +243,22 @@ Schema is bootstrapped idempotently (`CREATE … IF NOT EXISTS`) by
 
 - **`POST /api/rows`** — body `{ rows, windows }`. Mirrors the window set,
   `INSERT OR IGNORE`s rows (the `datetime` PK does the dedupe `appendRows` used
-  to do by hand), then recomputes rollups. Returns `{ inserted, rollupDays }`.
-- **`GET /api/rows`** — the full row series, ascending by datetime. Hydrates the
-  in-memory store on load now that rows aren't persisted in localStorage.
-- **`DELETE /api/rows`** — clears all rows + rollups ("Clear all data").
+  to do by hand), then recomputes rollups **and** the station stats/warnings.
+  Returns `{ inserted, rollupDays }`. Also used with `rows: []` to resync the
+  window mirror (+ recompute) after a client-side config edit — see
+  `syncWindows` in `lib/backend.ts`.
+- **`GET /api/rows`** — the full row series, ascending by datetime. **No longer
+  used by the app** (Phase 3 removed the full-series hydration); retained for
+  debugging/export only.
+- **`DELETE /api/rows`** — clears all rows + rollups + station stats/warnings
+  ("Clear all data").
 - **`GET /api/day/[date]`** — one day's raw per-minute rows; detail/flow views
   enrich a single day client-side instead of loading the whole series.
 - **`GET /api/rollup?from=&to=`** — the small aggregate feed for the dashboard
-  chart/summary. Bounds optional.
+  chart/summary + per-window day counts. Bounds optional.
+- **`GET /api/stats`** — the precomputed per-minute-only aggregates:
+  `{ stationStats, warnings, rowCount, lastDate }`. Powers the dashboard station
+  alerts, the analysis Fleet Overview, and status labels. Read-only, uncached.
 
 All pin `runtime = "nodejs"` (the libSQL node client uses native bindings —
 not edge-compatible) and `dynamic = "force-dynamic"` (never cached).
@@ -240,6 +267,14 @@ not edge-compatible) and `dynamic = "force-dynamic"` (never cached).
 range plus the **full** window set (a date's active window may be defined
 earlier), runs `enrichRowsMultiConfig` + `buildDailyRows` — the same pure
 functions the browser used — and upserts one rollup row per `(date, station)`.
+`recomputeStats()` (same module) enriches the **whole** series once and stores
+`buildStationStats` + `computeStationWarnings` output (both keyed on
+`currentConfig(windows)`) into the `station_*` tables. The client reconstructs
+`DailyRow[]` and a synthetic `EnrichedRow[]` from the rollup feed via
+`rollupsToDailyRows` / `rollupsToEnriched` / `stationTimerMap` (in
+`lib/analyze.ts`) — the synthetic rows carry each day's summed gallons and feed
+`aggregateForChart` unchanged (it reads only date/station/timer/gallons, never
+`timeMin`, so pre-summed rows yield identical bucket totals).
 
 ### ⚠️ Timezone constraint (critical)
 
@@ -327,9 +362,8 @@ vercel env add NEXT_PUBLIC_APP_SHARED_SECRET production   # same value as APP_SH
 
 1. **Turso + schema + `/api/rows` + `/api/rollup`, client dual-writes.** ← *implemented (Phase 1).* localStorage was still the source of truth; the client mirrored every upload to the DB (`lib/backend.ts`). This stood up the backend but did **not** relieve the quota error (the localStorage write still ran first).
 2. **Rows become server-authoritative — the quota fix.** ← *implemented (Phase 2).* `persist` is `partialize`d to store only `windows` + `maintenance`, so the per-minute series never touches localStorage (the `QuotaExceededError` is gone at the root). Rows live in Turso and hydrate into memory on load via `GET /api/rows`; uploads `POST` straight to the server; "Clear all data" issues `DELETE /api/rows`; `GET /api/day/[date]` added. The dashboard still *derives* from the in-memory rows this phase.
-3. **Dashboard/analysis read rollups; stop loading the full series in the browser.** The consumption chart + monthly summary read `/api/rollup`; per-day views fetch `GET /api/day/[date]`. Requires new rollups for the per-minute-dependent widgets (per-station gpm stats, baseline warnings) that daily gallon sums can't reconstruct.
-4. Window/maintenance CRUD via API; targeted rollup recompute on window edits (replace the Phase 1 full-range recompute).
-5. Remove the `useDeferredValue` scaffolding and delete dead client code once nothing enriches the full series client-side.
+3. **Dashboard/analysis read rollups; stop loading the full series in the browser.** ← *implemented (Phase 3).* The consumption chart + monthly summary + per-window counts read `/api/rollup` (reconstructing `DailyRow[]` + synthetic `EnrichedRow[]` client-side); per-day flow/detail/reconciliation fetch `GET /api/day/[date]` and enrich that one day. The per-minute-only widgets (fleet gpm stats, baseline warnings) are precomputed server-side into `station_stats` / `station_warnings` and served by `GET /api/stats`. The full-series `GET /api/rows` hydration is gone from `StoreProvider`; `rows`/`rowsVersion` and the `deriveData` cache were removed, and the `useDeferredValue` scaffolding in the three pages was replaced by server-version-keyed fetches. Window edits resync the server mirror (`syncWindows`, debounced in `StoreProvider`) so server-derived reads stay fresh.
+4. Window/maintenance CRUD via API; targeted rollup recompute on window edits (replace the Phase 1/3 full-range recompute; stats currently recompute over the whole series on every write).
 
 ---
 
@@ -419,8 +453,10 @@ The Analysis tab's per-row / bulk actions translate a `SegmentReconciliation` in
 {
   windows: ConfigWindow[]       // sorted ascending by effectiveFrom; the active
                                 // window for today is the "current" config
-  rows: FlumeRow[]              // all CSV rows, sorted by datetime
   maintenance: Record<string, MaintenanceFlag>  // station id → flag (top-level)
+  serverVersion: number         // bumped after any server write → pages refetch
+  rowCount: number              // cosmetic total row count (status labels)
+  lastRowDate: string | null    // latest stored date (incremental Flume export link)
 
   addWindowFromDate(date, notes)  // clone the config active on `date` → new window
   updateWindow(id, patch)         // edit config/notes/effectiveFrom in place (no new
@@ -428,29 +464,34 @@ The Analysis tab's per-row / bulk actions translate a `SegmentReconciliation` in
   deleteWindow(id)                // remove a window (last one cannot be deleted)
   copyBaselinesForward(id)        // apply this window's baselines to all later windows
   setStationMaintenance(id, flag) // set (or clear, with null) a station's maintenance flag
-  appendRows(newRows)             // merge + deduplicate by datetime key, re-sort (in-memory)
-  setRows(rows)                   // replace all rows (hydration from the server)
-  clearRows()
+  bumpServerVersion()             // signal server data changed → pages refetch
+  setRowCount(n) / setLastRowDate(d)
 }
 ```
 
-**Persistence (`version: 3`).** `persist` is `partialize`d to write only
-`{ windows, maintenance }` to localStorage — small, client-owned state. `rows`
-stays in the store **in memory** but is **not persisted**; keeping the per-minute
-series out of localStorage is what fixes the `QuotaExceededError`. Existing users'
-large legacy row blobs are read once on rehydrate and then dropped the first time
-the partialized state is written back. The Analysis tab's config-edit actions
-reuse `updateWindow`; only maintenance flags need `setStationMaintenance`.
+**No `rows` in the store (Phase 3).** The per-minute series is no longer held in
+the browser at all — `rows`, `rowsVersion`, `appendRows`, `setRows`, `clearRows`
+and the `deriveData` memo cache were removed. Pages read the server aggregates
+instead; a single day is fetched on demand.
 
-**Rows are server-authoritative (Phase 2 of the Turso migration).** On load,
-`StoreProvider` calls `GET /api/rows` and `setRows()` the result into memory
-(falling back to a fresh install's `default-data.csv`, which it also seeds to the
-server). Uploads `POST /api/rows` as the durable write (`appendRows` still updates
-the in-memory view for immediate reactivity, but no longer persists locally).
-"Clear all data" issues `DELETE /api/rows`. The pages still enrich the in-memory
-rows via `deriveData`; a later phase moves those reads onto rollup/day endpoints
-so the full series no longer loads in the browser
-entirely (see [Migration rollout](#migration-rollout-incremental-each-phase-shippable)).
+**Persistence (`version: 3`).** `persist` is `partialize`d to write only
+`{ windows, maintenance }` to localStorage — small, client-owned state.
+`serverVersion` / `rowCount` / `lastRowDate` are in-memory only (hydrated from
+`/api/stats` on load). Keeping the per-minute series off the client is what fixed
+the `QuotaExceededError` at the root. The Analysis tab's config-edit actions reuse
+`updateWindow`; only maintenance flags need `setStationMaintenance`.
+
+**Server is authoritative; pages fetch aggregates.** On load, `StoreProvider`
+rehydrates `{ windows, maintenance }`, seeds defaults on a fresh install, and
+fetches `/api/stats` for `rowCount`/`lastDate` (seeding `default-data.csv` to the
+server if it's empty). Each page fetches `/api/rollup` + `/api/stats` (and
+`/api/day/[date]` for per-minute views) in an effect keyed on `serverVersion`.
+Uploads `POST /api/rows`; "Clear all data" issues `DELETE /api/rows`; both bump
+`serverVersion`. **Config windows are client-owned but the server computes
+rollups/stats from its own mirror**, so every window edit must resync — a
+debounced `useStore.subscribe` in `StoreProvider` calls `syncWindows` (POST
+`/api/rows` with `rows: []`) on any `windows` change, then bumps `serverVersion`
+so the derived views refetch.
 
 ### SSR Safety
 - Storage adapter no-ops when `typeof window === "undefined"`
@@ -637,10 +678,12 @@ A lightweight overlay (same pattern as `UploadModal`) listing staged `StagedItem
 | Issue | Notes |
 |---|---|
 | `enrichRows` is O(n) synchronous | OK to ~1M rows; now runs server-side at ingest, off the browser's main thread |
-| ~~localStorage ~5MB limit~~ | **Resolved (Phase 2).** Rows are no longer persisted in localStorage (`partialize` keeps only `windows`+`maintenance`); the per-minute series lives in Turso and hydrates into memory on load. See [Storage & Backend Architecture](#storage--backend-architecture) |
-| Full row series still loads into browser memory | The quota (write) issue is fixed, but pages still fetch all rows and enrich client-side. Phase 3 moves reads onto rollup/day endpoints to avoid loading the whole series |
+| ~~localStorage ~5MB limit~~ | **Resolved (Phase 2).** Rows are no longer persisted in localStorage (`partialize` keeps only `windows`+`maintenance`); the per-minute series lives in Turso. See [Storage & Backend Architecture](#storage--backend-architecture) |
+| ~~Full row series loads into browser memory~~ | **Resolved (Phase 3).** The browser never loads the full series: dashboard/analysis read `/api/rollup` + `/api/stats`, and per-minute views fetch a single day via `/api/day/[date]`. `GET /api/rows` is retained for debugging only |
+| Precomputed stats freeze `currentConfig`/"today" at last write | `station_stats` / `station_warnings` (and the warning 21-day lookback) are computed with `currentConfig(windows)` at recompute time. Since recompute runs on every upload **and** every window edit, they're fresh as of the last write; the only drift is "today" crossing into a future-dated window with no intervening write (rare for this app). A future phase could recompute on a schedule or thread the reference date |
+| Stats recompute over the whole series on every write | `recomputeStats()` re-enriches all rows each write (in addition to `recomputeRollups`), so two full enrichment passes per upload. Fine for a single-home dataset; Phase 4 can make both incremental/targeted |
 | Server rollups depend on process `TZ` | Enrichment is timezone-local; set `APP_TIMEZONE` (applied to `process.env.TZ` in `lib/db.ts`, since Vercel reserves `TZ`). A future refactor may thread tz explicitly |
-| Phase 1 recomputes all rollups per upload | A config-window change can affect any date, so the whole range is recomputed. Phase 4 makes this targeted |
+| Full-range recompute per write | A config-window change can affect any date, so the whole range is recomputed (rollups) / whole series re-enriched (stats). Phase 4 makes this targeted |
 | No row validation beyond column names | Malformed timestamps silently dropped |
 | Config `effectiveFrom` resolution is 1 day | Two windows can't share a date (enforced in the editor); sub-day changes aren't representable |
 | IQR anomaly detection is naive | No seasonal adjustment; many weeks of data needed before IQR is meaningful |

@@ -1,17 +1,18 @@
 "use client"
 
-import { useDeferredValue, useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { useStore } from "@/lib/store"
 import {
-  deriveData,
-  buildStationStats,
+  enrichRows,
   buildDaySchedule,
   buildDayMinuteSeries,
   reconcileDay,
+  rollupsToDailyRows,
   activeWindowForDate,
   currentConfig,
 } from "@/lib/analyze"
+import { fetchRollups, fetchStats, fetchDayRows } from "@/lib/backend"
 import {
   BarChart,
   Bar,
@@ -43,14 +44,9 @@ import {
   proposeAllChanges,
   applyStagedChanges,
 } from "@/lib/staging"
-import type { SegmentReconciliation, StationStats } from "@/lib/types"
+import type { FlumeRow, RollupRow, SegmentReconciliation, StationStats } from "@/lib/types"
 
 type SortKey = keyof StationStats
-
-const fmtDay = (d: string) =>
-  new Date(d + "T12:00:00").toLocaleDateString(undefined, {
-    weekday: "short", month: "short", day: "numeric", year: "numeric",
-  })
 
 function SortHeader({
   k, label, sortKey, sortDir, onSort,
@@ -69,50 +65,76 @@ function SortHeader({
 }
 
 export default function AnalysisPage() {
-  const rows         = useStore((s) => s.rows)
   const windows      = useStore((s) => s.windows)
-  const rowsVersion  = useStore((s) => s.rowsVersion)
+  const serverVersion = useStore((s) => s.serverVersion)
   const maintenance  = useStore((s) => s.maintenance)
   const updateWindow = useStore((s) => s.updateWindow)
   const setStationMaintenance = useStore((s) => s.setStationMaintenance)
 
-  const deferredRows    = useDeferredValue(rows)
-  const deferredWindows = useDeferredValue(windows)
-  const deferredVersion = useDeferredValue(rowsVersion)
-
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [selectedStation, setSelectedStation] = useState<string | null>(null)
 
-  // ---- Expensive enrichment (deferred, memoized) -------------------------
+  // ---- Server-derived data ------------------------------------------------
+  // Sprinkler-day list comes from the rollup feed; the cross-day fleet gpm
+  // stats come precomputed from /api/stats (they need the full per-minute
+  // series, which the browser no longer holds).
+  const [rollups, setRollups] = useState<RollupRow[] | null>(null)
+  const [fleetStats, setFleetStats] = useState<StationStats[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([fetchRollups(), fetchStats()])
+      .then(([r, s]) => {
+        if (cancelled) return
+        setRollups(r)
+        setFleetStats(s.stationStats)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setRollups([])
+        setFleetStats([])
+      })
+    return () => { cancelled = true }
+  }, [serverVersion])
+
   const derived = useMemo(() => {
-    if (deferredRows.length === 0) return null
-    const { enriched } = deriveData(deferredRows, deferredWindows, deferredVersion)
-    const allDates = [...new Set(enriched.map((r) => r.date))].sort()
-    const sprinklerDates = [...new Set(enriched.filter((r) => r.isSprinklerDay).map((r) => r.date))].sort()
-    return { enriched, allDates, sprinklerDates }
-  }, [deferredRows, deferredWindows, deferredVersion])
+    if (!rollups || rollups.length === 0) return null
+    const daily = rollupsToDailyRows(rollups)
+    const allDates = daily.map((d) => d.date)
+    const sprinklerDates = daily.filter((d) => d.isSprinklerDay).map((d) => d.date)
+    return { allDates, sprinklerDates }
+  }, [rollups])
 
   const day = selectedDay ?? derived?.sprinklerDates[derived.sprinklerDates.length - 1] ?? null
 
-  // ---- Per-day calibration (cheap — reruns on day change) ----------------
+  // ---- Per-day calibration (single-day fetch + client-side enrich) --------
+  const [dayData, setDayData] = useState<{ day: string; rows: FlumeRow[] } | null>(null)
+  useEffect(() => {
+    if (!day) return
+    let cancelled = false
+    fetchDayRows(day)
+      .then((rows) => { if (!cancelled) setDayData({ day, rows }) })
+      .catch(() => { if (!cancelled) setDayData({ day, rows: [] }) })
+    return () => { cancelled = true }
+  }, [day, serverVersion])
+
   const dayCalc = useMemo(() => {
-    if (!derived || !day) return null
-    const activeWin = activeWindowForDate(deferredWindows, day)
-    const dayConfig = activeWin?.config ?? currentConfig(deferredWindows)
-    const dow = (new Date(day + "T12:00:00").getDay() + 6) % 7
+    // Ignore a stale fetch for a different day (e.g. mid day-switch).
+    if (!dayData || dayData.day !== day) return null
+    const { day: d, rows } = dayData
+    const activeWin = activeWindowForDate(windows, d)
+    const dayConfig = activeWin?.config ?? currentConfig(windows)
+    const dow = (new Date(d + "T12:00:00").getDay() + 6) % 7
     const schedule = buildDaySchedule(dayConfig, dow)
-    const series = buildDayMinuteSeries(derived.enriched.filter((r) => r.date === day))
+    const enriched = enrichRows(rows, dayConfig)
+    const series = buildDayMinuteSeries(enriched.filter((r) => r.date === d))
     const recon = reconcileDay(series, schedule)
     return { activeWin, dayConfig, schedule, series, recon }
-  }, [derived, day, deferredWindows])
+  }, [dayData, day, windows])
 
-  // ---- Fleet overview (all data) -----------------------------------------
+  // ---- Fleet overview (precomputed, all data) ----------------------------
   const [sortKey, setSortKey] = useState<SortKey>("totalGallons")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
-  const fleetStats = useMemo(() => {
-    if (!derived) return []
-    return buildStationStats(derived.enriched, currentConfig(deferredWindows))
-  }, [derived, deferredWindows])
 
   const sorted = useMemo(
     () =>
@@ -132,9 +154,6 @@ export default function AnalysisPage() {
     .map((s) => ({ name: s.name, gpm: +s.avgGpm.toFixed(3), err: +s.stdGpm.toFixed(3) }))
 
   // ---- Staged config changes (propose → review → save) -------------------
-  // Nothing is written to the config until the user reviews and saves. Staging
-  // is scoped to one day's window; reset it during render when the day/window
-  // changes (the React-sanctioned "reset state on prop change" pattern — no effect).
   const winId = dayCalc?.activeWin?.id ?? null
   const stageCtx = `${day ?? ""}|${winId ?? ""}`
   const [stage, setStage] = useState<{ ctx: string; map: Map<string, StagedChange>; review: boolean }>(
@@ -191,7 +210,7 @@ export default function AnalysisPage() {
   const prevDay = day ? [...sprinklerDates].filter((d) => d < day).pop() ?? null : null
   const nextDay = day ? sprinklerDates.find((d) => d > day) ?? null : null
 
-  if (rows.length === 0) {
+  if (rollups !== null && rollups.length === 0) {
     return <div className="text-center py-24 text-gray-400">No data — go to Config to upload a CSV</div>
   }
 
@@ -300,7 +319,7 @@ export default function AnalysisPage() {
         </CardContent>
       </Card>
 
-      {/* Fleet overview — cross-day aggregate (existing analysis) */}
+      {/* Fleet overview — cross-day aggregate (precomputed server-side) */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">

@@ -15,8 +15,11 @@ import {
   buildDaySchedule,
   buildDayMinuteSeries,
   reconcileDay,
+  rollupsToDailyRows,
+  rollupsToEnriched,
+  stationTimerMap,
 } from "../analyze"
-import type { AppConfig, ConfigWindow, ExpectedSegment, FlumeRow, MinutePoint } from "../types"
+import type { AppConfig, ConfigWindow, EnrichedRow, ExpectedSegment, FlumeRow, MinutePoint, RollupRow } from "../types"
 import { DEFAULT_CONFIG, normalizeTime, toWindows } from "../types"
 
 // ---------------------------------------------------------------------------
@@ -820,6 +823,87 @@ describe("aggregateForChart", () => {
 
     const normalBars = bars.filter((b) => b.dateStart !== "2024-01-14")
     expect(normalBars.every((b) => !b.isAnomaly)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Rollup reconstruction (Phase 3): DailyRow[] and synthetic EnrichedRow[]
+// rebuilt from persisted rollup rows must reproduce the client's old outputs.
+// ---------------------------------------------------------------------------
+
+/** Serialize enriched → DailyRow → the flat RollupRow[] the server persists. */
+function toRollupRows(enriched: EnrichedRow[]): RollupRow[] {
+  const daily = buildDailyRows(enriched)
+  const out: RollupRow[] = []
+  for (const d of daily) {
+    for (const [station, gallons] of Object.entries(d.byStation)) {
+      out.push({ date: d.date, station, gallons, isSprinklerDay: d.isSprinklerDay })
+    }
+  }
+  return out
+}
+
+describe("rollup reconstruction", () => {
+  const config = makeConfig()
+
+  it("rollupsToDailyRows inverts buildDailyRows (within float tolerance)", () => {
+    const enriched = enrichRows(
+      [...sprinklerDayRows("2024-01-01"), ...dayRows("2024-01-02", 0.1)],
+      config
+    )
+    const expected = buildDailyRows(enriched)
+    const got = rollupsToDailyRows(toRollupRows(enriched))
+    expect(got.length).toBe(expected.length)
+    got.forEach((d, i) => {
+      expect(d.date).toBe(expected[i].date)
+      expect(d.isSprinklerDay).toBe(expected[i].isSprinklerDay)
+      expect(d.totalGallons).toBeCloseTo(expected[i].totalGallons, 6)
+      // byStation keys + values match (float-tolerant on the sums)
+      expect(Object.keys(d.byStation).sort()).toEqual(Object.keys(expected[i].byStation).sort())
+      for (const k of Object.keys(d.byStation)) {
+        expect(d.byStation[k]).toBeCloseTo(expected[i].byStation[k], 6)
+      }
+    })
+  })
+
+  it("stationTimerMap maps each station to its timer (house → house)", () => {
+    const windows = [win("2024-01-01", config)]
+    const map = stationTimerMap(windows)
+    expect(map["T1-01"]).toBe("timer1")
+    expect(map["T1-02"]).toBe("timer1")
+    expect(map["T2-01"]).toBe("timer2")
+    expect(map["house"]).toBe("house")
+  })
+
+  it("synthetic enriched from rollups yields identical chart bars (all breakdowns)", () => {
+    const rows = [
+      ...sprinklerDayRows("2024-01-01"),
+      ...sprinklerDayRows("2024-01-03"),
+      ...dayRows("2024-01-05", 0.2),
+    ]
+    const enriched = enrichRows(rows, config)
+    const timerOf = stationTimerMap([win("2024-01-01", config)])
+    const synthetic = rollupsToEnriched(toRollupRows(enriched), timerOf)
+
+    for (const breakdown of ["simple", "timer", "station"] as const) {
+      for (const bucket of ["day", "week", "month"] as const) {
+        const real = aggregateForChart(enriched, bucket, breakdown)
+        const fromRollup = aggregateForChart(synthetic, bucket, breakdown)
+        expect(fromRollup.length).toBe(real.length)
+        real.forEach((bar, i) => {
+          const got = fromRollup[i]
+          // Non-numeric structure is bit-identical; numeric sums match within
+          // float tolerance (synthetic sums pre-aggregated daily gallons).
+          expect(got.label).toBe(bar.label)
+          expect(got.dateStart).toBe(bar.dateStart)
+          expect(got.dateEnd).toBe(bar.dateEnd)
+          expect(got.isAnomaly).toBe(bar.isAnomaly)
+          for (const [k, v] of Object.entries(bar)) {
+            if (typeof v === "number") expect(got[k] as number).toBeCloseTo(v, 6)
+          }
+        })
+      }
+    }
   })
 })
 

@@ -1,6 +1,6 @@
 import { create } from "zustand"
 import { persist, createJSONStorage } from "zustand/middleware"
-import type { AppConfig, ConfigWindow, FlumeRow, MaintenanceFlag, TimerConfig } from "./types"
+import type { AppConfig, ConfigWindow, MaintenanceFlag, TimerConfig } from "./types"
 import { DEFAULT_CONFIG, newId, sortWindows, toWindows } from "./types"
 import { activeWindowForDate } from "./analyze"
 
@@ -8,11 +8,21 @@ interface AppState {
   // Config windows, sorted ascending by effectiveFrom. Window i is active for
   // [effectiveFrom_i, effectiveFrom_{i+1}); the earliest also covers earlier data.
   windows: ConfigWindow[]
-  rows: FlumeRow[]
-  // Bumped whenever `rows` is replaced (upload / clear). Used as a cheap cache
-  // key for the expensive enrichment so derived data is reused across renders
-  // and page navigations until the data actually changes.
-  rowsVersion: number
+
+  // Bumped whenever the server's data changes (upload, window edit, clear). The
+  // pages key their rollup/stats/day fetches off this so a client-side write
+  // (which resyncs the server) triggers a refetch of the server-derived views.
+  // Phase 3: the per-minute row series is no longer held in the browser — the
+  // dashboard/analysis read rollups + precomputed stats from the server, and
+  // per-day views fetch a single day on demand.
+  serverVersion: number
+
+  // Cosmetic count of raw rows stored on the server (for status labels). Kept
+  // out of persistence; hydrated from /api/stats and updated after writes.
+  rowCount: number
+
+  // Latest stored row date ("YYYY-MM-DD"), for the incremental Flume export link.
+  lastRowDate: string | null
 
   // Stations flagged for physical maintenance, keyed by station id. Top-level
   // (not inside a ConfigWindow) because it describes the current hardware state,
@@ -37,11 +47,10 @@ interface AppState {
   // Flag or clear a station for maintenance. Pass null to clear.
   setStationMaintenance: (stationId: string, flag: MaintenanceFlag | null) => void
 
-  appendRows: (newRows: FlumeRow[]) => void
-  // Replace the entire in-memory row set (used to hydrate from the server, since
-  // rows are no longer persisted in localStorage).
-  setRows: (rows: FlumeRow[]) => void
-  clearRows: () => void
+  // Signal that the server's data changed → pages refetch their derived views.
+  bumpServerVersion: () => void
+  setRowCount: (n: number) => void
+  setLastRowDate: (d: string | null) => void
 }
 
 const deepClone = <T,>(v: T): T => JSON.parse(JSON.stringify(v))
@@ -50,8 +59,9 @@ export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
       windows: [],
-      rows: [],
-      rowsVersion: 0,
+      serverVersion: 0,
+      rowCount: 0,
+      lastRowDate: null,
       maintenance: {},
 
       addWindowFromDate: (effectiveFrom, notes) => {
@@ -128,20 +138,11 @@ export const useStore = create<AppState>()(
         set({ maintenance: next })
       },
 
-      appendRows: (newRows) => {
-        const existing = get().rows
-        const existingSet = new Set(existing.map((r) => r.datetime))
-        const merged = [
-          ...existing,
-          ...newRows.filter((r) => !existingSet.has(r.datetime)),
-        ]
-        merged.sort((a, b) => a.datetime.localeCompare(b.datetime))
-        set({ rows: merged, rowsVersion: get().rowsVersion + 1 })
-      },
+      bumpServerVersion: () => set({ serverVersion: get().serverVersion + 1 }),
 
-      setRows: (rows) => set({ rows, rowsVersion: get().rowsVersion + 1 }),
+      setRowCount: (n) => set({ rowCount: n }),
 
-      clearRows: () => set({ rows: [], rowsVersion: get().rowsVersion + 1 }),
+      setLastRowDate: (d) => set({ lastRowDate: d }),
     }),
     {
       name: "sprinkler-store",

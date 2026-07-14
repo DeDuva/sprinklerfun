@@ -26,7 +26,6 @@ function parseRows(data: Record<string, string>[]): FlumeRow[] {
 }
 
 export default function UploadModal({ open, onClose }: Props) {
-  const appendRows = useStore((s) => s.appendRows)
   const [dragging, setDragging] = useState(false)
   const [url, setUrl] = useState("")
   const [loadingUrl, setLoadingUrl] = useState(false)
@@ -38,16 +37,23 @@ export default function UploadModal({ open, onClose }: Props) {
         toast.error("No valid rows found. Expected columns: datetime, gallons")
         return
       }
-      appendRows(rows) // in-memory view (not persisted locally)
-      toast.success(`Loaded ${rows.length.toLocaleString()} rows from ${label}`)
       onClose()
-      // Persist durably to the server (the real save now that rows aren't in
-      // localStorage).
-      pushRows(rows, useStore.getState().windows).then((r) => {
-        if (!r.ok) toast.warning(`Loaded, but saving to the server failed: ${r.error}`)
+      // Persist durably to the server — it ingests the rows and recomputes
+      // rollups + stats. Bump serverVersion so the pages refetch their views.
+      const state = useStore.getState()
+      pushRows(rows, state.windows).then((r) => {
+        if (!r.ok) {
+          toast.error(`Saving to the server failed: ${r.error}`)
+          return
+        }
+        state.setRowCount(state.rowCount + (r.inserted ?? 0))
+        const maxDate = rows.reduce((a, b) => (a > b.datetime ? a : b.datetime), "").slice(0, 10)
+        if (maxDate && (!state.lastRowDate || maxDate > state.lastRowDate)) state.setLastRowDate(maxDate)
+        state.bumpServerVersion()
+        toast.success(`Saved ${(r.inserted ?? 0).toLocaleString()} new rows from ${label}`)
       })
     },
-    [appendRows, onClose]
+    [onClose]
   )
 
   const processFile = useCallback(

@@ -94,6 +94,28 @@ export function ensureSchema(): Promise<void> {
            flagged_at TEXT NOT NULL,
            note       TEXT
          )`,
+        // Per-minute-only aggregates that daily gallon sums can't reconstruct
+        // (fleet-wide gpm stats + baseline warnings). Recomputed over the full
+        // enriched series whenever rows or windows change; read via /api/stats.
+        `CREATE TABLE IF NOT EXISTS station_stats (
+           id               TEXT PRIMARY KEY,
+           name             TEXT NOT NULL,
+           total_gallons    REAL NOT NULL,
+           avg_gpm          REAL NOT NULL,
+           min_gpm          REAL NOT NULL,
+           max_gpm          REAL NOT NULL,
+           std_gpm          REAL NOT NULL,
+           cost_estimate    REAL NOT NULL,
+           pct_of_sprinkler REAL NOT NULL
+         )`,
+        `CREATE TABLE IF NOT EXISTS station_warnings (
+           station_id             TEXT PRIMARY KEY,
+           station_name           TEXT NOT NULL,
+           baseline_gpm           REAL NOT NULL,
+           recent_avg_gpm         REAL NOT NULL,
+           pct_above_baseline     REAL NOT NULL,
+           consecutive_days_above INTEGER NOT NULL
+         )`,
       ],
       "write"
     )
