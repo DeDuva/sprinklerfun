@@ -5,6 +5,8 @@ import {
   replaceWindows,
   recomputeRollups,
   rowDateBounds,
+  readAllRows,
+  clearAllData,
 } from "@/lib/server/data"
 import type { ConfigWindow, FlumeRow } from "@/lib/types"
 
@@ -64,7 +66,33 @@ export async function POST(req: NextRequest) {
 
     return Response.json({ ok: true, received: rows.length, inserted, rollupDays: days })
   } catch (err) {
-    console.error("[api/rows] failed:", err)
+    console.error("[api/rows] POST failed:", err)
+    return Response.json({ error: "server error" }, { status: 500 })
+  }
+}
+
+// GET /api/rows — all raw rows, ascending by datetime. Hydrates the in-memory
+// store on load (rows are no longer persisted in localStorage).
+export async function GET() {
+  try {
+    const rows = await readAllRows()
+    return Response.json({ rows })
+  } catch (err) {
+    console.error("[api/rows] GET failed:", err)
+    return Response.json({ error: "server error" }, { status: 500 })
+  }
+}
+
+// DELETE /api/rows — clear all rows + rollups (the "Clear all CSV data" action).
+export async function DELETE(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return Response.json({ error: "unauthorized" }, { status: 401 })
+  }
+  try {
+    await clearAllData()
+    return Response.json({ ok: true })
+  } catch (err) {
+    console.error("[api/rows] DELETE failed:", err)
     return Response.json({ error: "server error" }, { status: 500 })
   }
 }

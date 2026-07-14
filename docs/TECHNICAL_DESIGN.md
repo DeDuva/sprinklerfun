@@ -38,8 +38,9 @@ sprinkler-app/
 │   ├── config/page.tsx         # Configuration editor + history
 │   ├── day/[date]/page.tsx     # Minute-by-minute day detail
 │   └── api/                    # Route Handlers (Node runtime) — the backend
-│       ├── rows/route.ts       # POST: ingest rows + windows, recompute rollups
-│       └── rollup/route.ts     # GET:  per-day/per-station aggregates
+│       ├── rows/route.ts       # POST ingest · GET all rows · DELETE clear
+│       ├── day/[date]/route.ts # GET one day's raw per-minute rows
+│       └── rollup/route.ts     # GET per-day/per-station aggregates
 ├── components/
 │   ├── Navbar.tsx
 │   ├── StoreProvider.tsx       # Client-only Zustand rehydration + default-config.json load
@@ -224,10 +225,15 @@ Schema is bootstrapped idempotently (`CREATE … IF NOT EXISTS`) by
 - **`POST /api/rows`** — body `{ rows, windows }`. Mirrors the window set,
   `INSERT OR IGNORE`s rows (the `datetime` PK does the dedupe `appendRows` used
   to do by hand), then recomputes rollups. Returns `{ inserted, rollupDays }`.
-- **`GET /api/rollup?from=&to=`** — the small aggregate feed the dashboard/charts
-  read. Bounds optional.
+- **`GET /api/rows`** — the full row series, ascending by datetime. Hydrates the
+  in-memory store on load now that rows aren't persisted in localStorage.
+- **`DELETE /api/rows`** — clears all rows + rollups ("Clear all data").
+- **`GET /api/day/[date]`** — one day's raw per-minute rows; detail/flow views
+  enrich a single day client-side instead of loading the whole series.
+- **`GET /api/rollup?from=&to=`** — the small aggregate feed for the dashboard
+  chart/summary. Bounds optional.
 
-Both pin `runtime = "nodejs"` (the libSQL node client uses native bindings —
+All pin `runtime = "nodejs"` (the libSQL node client uses native bindings —
 not edge-compatible) and `dynamic = "force-dynamic"` (never cached).
 
 `recomputeRollups(from, to)` in `lib/server/data.ts` fetches raw rows for the
@@ -319,11 +325,11 @@ vercel env add NEXT_PUBLIC_APP_SHARED_SECRET production   # same value as APP_SH
 
 ### Migration rollout (incremental, each phase shippable)
 
-1. **Turso + schema + `/api/rows` + `/api/rollup`, client dual-writes.** ← *implemented (Phase 1).* localStorage remains the source of truth; the client mirrors every upload to the DB (`lib/backend.ts`), plus a one-time "Import this browser → server" action on the config page. After this phase the quota error is gone on the server path.
-2. Dashboard + analysis read rollups from the API; delete their client-side full-dataset enrichment.
-3. Day view reads `GET /api/day/:date`; remove `rows` from the store entirely.
+1. **Turso + schema + `/api/rows` + `/api/rollup`, client dual-writes.** ← *implemented (Phase 1).* localStorage was still the source of truth; the client mirrored every upload to the DB (`lib/backend.ts`). This stood up the backend but did **not** relieve the quota error (the localStorage write still ran first).
+2. **Rows become server-authoritative — the quota fix.** ← *implemented (Phase 2).* `persist` is `partialize`d to store only `windows` + `maintenance`, so the per-minute series never touches localStorage (the `QuotaExceededError` is gone at the root). Rows live in Turso and hydrate into memory on load via `GET /api/rows`; uploads `POST` straight to the server; "Clear all data" issues `DELETE /api/rows`; `GET /api/day/[date]` added. The dashboard still *derives* from the in-memory rows this phase.
+3. **Dashboard/analysis read rollups; stop loading the full series in the browser.** The consumption chart + monthly summary read `/api/rollup`; per-day views fetch `GET /api/day/[date]`. Requires new rollups for the per-minute-dependent widgets (per-station gpm stats, baseline warnings) that daily gallon sums can't reconstruct.
 4. Window/maintenance CRUD via API; targeted rollup recompute on window edits (replace the Phase 1 full-range recompute).
-5. Drop `persist` of `rows`, remove the `useDeferredValue` scaffolding, delete dead client code.
+5. Remove the `useDeferredValue` scaffolding and delete dead client code once nothing enriches the full series client-side.
 
 ---
 
@@ -422,20 +428,28 @@ The Analysis tab's per-row / bulk actions translate a `SegmentReconciliation` in
   deleteWindow(id)                // remove a window (last one cannot be deleted)
   copyBaselinesForward(id)        // apply this window's baselines to all later windows
   setStationMaintenance(id, flag) // set (or clear, with null) a station's maintenance flag
-  appendRows(newRows)             // merge + deduplicate by datetime key, re-sort
+  appendRows(newRows)             // merge + deduplicate by datetime key, re-sort (in-memory)
+  setRows(rows)                   // replace all rows (hydration from the server)
   clearRows()
 }
 ```
 
-Persisted under `"sprinkler-store"` (persist `version: 2`) in localStorage. `maintenance` defaults to `{}`; persist's shallow merge fills it in for stores saved before it existed, so no version bump is required. The Analysis tab's config-edit actions reuse `updateWindow` (deep-cloning the active window's config and patching the targeted field); only maintenance flags need the dedicated `setStationMaintenance` action.
+**Persistence (`version: 3`).** `persist` is `partialize`d to write only
+`{ windows, maintenance }` to localStorage — small, client-owned state. `rows`
+stays in the store **in memory** but is **not persisted**; keeping the per-minute
+series out of localStorage is what fixes the `QuotaExceededError`. Existing users'
+large legacy row blobs are read once on rehydrate and then dropped the first time
+the partialized state is written back. The Analysis tab's config-edit actions
+reuse `updateWindow`; only maintenance flags need `setStationMaintenance`.
 
-**Dual-write (Phase 1 of the Turso migration).** localStorage is still the
-source of truth and the UI reads from it unchanged. On every CSV upload the
-config page also fire-and-forgets a POST to `/api/rows` via `lib/backend.ts`
-(rows + the current window set); a backend failure is a soft toast and never
-blocks the local flow. A one-time "Import this browser → server" button pushes
-everything already in localStorage so the DB starts at parity. Later phases move
-reads onto the API and eventually stop persisting `rows` in localStorage
+**Rows are server-authoritative (Phase 2 of the Turso migration).** On load,
+`StoreProvider` calls `GET /api/rows` and `setRows()` the result into memory
+(falling back to a fresh install's `default-data.csv`, which it also seeds to the
+server). Uploads `POST /api/rows` as the durable write (`appendRows` still updates
+the in-memory view for immediate reactivity, but no longer persists locally).
+"Clear all data" issues `DELETE /api/rows`. The pages still enrich the in-memory
+rows via `deriveData`; a later phase moves those reads onto rollup/day endpoints
+so the full series no longer loads in the browser
 entirely (see [Migration rollout](#migration-rollout-incremental-each-phase-shippable)).
 
 ### SSR Safety
@@ -623,7 +637,8 @@ A lightweight overlay (same pattern as `UploadModal`) listing staged `StagedItem
 | Issue | Notes |
 |---|---|
 | `enrichRows` is O(n) synchronous | OK to ~1M rows; now runs server-side at ingest, off the browser's main thread |
-| ~~localStorage ~5MB limit~~ | **Being resolved** by the Turso migration (raw rows + rollups in libSQL). Phase 1 dual-writes; later phases stop persisting `rows` in localStorage. See [Storage & Backend Architecture](#storage--backend-architecture) |
+| ~~localStorage ~5MB limit~~ | **Resolved (Phase 2).** Rows are no longer persisted in localStorage (`partialize` keeps only `windows`+`maintenance`); the per-minute series lives in Turso and hydrates into memory on load. See [Storage & Backend Architecture](#storage--backend-architecture) |
+| Full row series still loads into browser memory | The quota (write) issue is fixed, but pages still fetch all rows and enrich client-side. Phase 3 moves reads onto rollup/day endpoints to avoid loading the whole series |
 | Server rollups depend on process `TZ` | Enrichment is timezone-local; set `APP_TIMEZONE` (applied to `process.env.TZ` in `lib/db.ts`, since Vercel reserves `TZ`). A future refactor may thread tz explicitly |
 | Phase 1 recomputes all rollups per upload | A config-window change can affect any date, so the whole range is recomputed. Phase 4 makes this targeted |
 | No row validation beyond column names | Malformed timestamps silently dropped |

@@ -85,7 +85,29 @@ export async function readWindows(): Promise<ConfigWindow[]> {
   }))
 }
 
-// Raw rows for a single day (used by the day-detail view in a later phase).
+// All raw rows, ascending by datetime. Used to hydrate the in-memory store on
+// load now that rows are no longer persisted in localStorage.
+export async function readAllRows(): Promise<FlumeRow[]> {
+  await ensureSchema()
+  const db = getDb()
+  const res = await db.execute(
+    "SELECT datetime, gallons FROM flume_rows ORDER BY datetime ASC"
+  )
+  return res.rows.map((r) => ({ datetime: String(r.datetime), gallons: Number(r.gallons) }))
+}
+
+// Clear all data (rows + rollups). Windows/maintenance are untouched — they are
+// still client-owned in this phase.
+export async function clearAllData(): Promise<void> {
+  await ensureSchema()
+  const db = getDb()
+  await db.batch(
+    ["DELETE FROM flume_rows", "DELETE FROM daily_rollup"],
+    "write"
+  )
+}
+
+// Raw rows for a single day (used by the day-detail view).
 export async function readDayRows(date: string): Promise<FlumeRow[]> {
   await ensureSchema()
   const db = getDb()

@@ -5,6 +5,7 @@ import Papa from "papaparse"
 import { toast } from "sonner"
 import { useStore } from "@/lib/store"
 import type { FlumeRow } from "@/lib/types"
+import { pushRows } from "@/lib/backend"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -37,9 +38,14 @@ export default function UploadModal({ open, onClose }: Props) {
         toast.error("No valid rows found. Expected columns: datetime, gallons")
         return
       }
-      appendRows(rows)
+      appendRows(rows) // in-memory view (not persisted locally)
       toast.success(`Loaded ${rows.length.toLocaleString()} rows from ${label}`)
       onClose()
+      // Persist durably to the server (the real save now that rows aren't in
+      // localStorage).
+      pushRows(rows, useStore.getState().windows).then((r) => {
+        if (!r.ok) toast.warning(`Loaded, but saving to the server failed: ${r.error}`)
+      })
     },
     [appendRows, onClose]
   )
