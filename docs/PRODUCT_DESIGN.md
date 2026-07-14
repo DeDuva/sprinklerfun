@@ -1,7 +1,7 @@
 # SprinklerFun — Product Design
 
 ## Overview
-A client-side web application that helps a homeowner analyze Flume smart meter data to understand and optimize sprinkler water usage. All data and computation lives in the browser — no accounts, no backend, no server costs.
+A web application that helps a homeowner analyze Flume smart meter data to understand and optimize sprinkler water usage. Data is stored in a durable database (Turso) so it survives a browser wipe and is reachable from any device; the analysis experience stays fast and simple. (Originally browser-only via `localStorage` — that hit the browser's storage quota at multi-year, per-minute resolution, prompting the move to a backend. See the migration status in TECHNICAL_DESIGN.md.)
 
 ## User Persona
 **Primary User**: Homeowner with a Flume smart meter and a two-timer, multi-zone sprinkler system (EBMUD service area).
@@ -235,8 +235,17 @@ The page is organized around a **timeline of config windows**.
 
 ---
 
+## Storage & Durability
+Data lives in a Turso (libSQL/SQLite) database behind a small API, replacing the
+original browser-only `localStorage` store (which capped at ~5MB and couldn't
+hold multi-year, per-minute data). Benefits: durability across browser resets,
+access from multiple devices, and set-based SQL aggregation. This is rolling out
+in phases — currently the app dual-writes to the DB while `localStorage` remains
+the working store; see TECHNICAL_DESIGN.md for phase status. It remains a
+single-user, single-property app.
+
 ## Out of Scope (V1)
-- Multi-user / auth
+- Multi-user / multi-tenant accounts (the DB is single-user; writes gated by a shared secret)
 - Direct Flume API integration
 - Email / SMS alerts
 - Weather data integration
@@ -247,3 +256,4 @@ The page is organized around a **timeline of config windows**.
 - Weather-adjusted baselines (ET-based)
 - Seasonal comparison (this spring vs last spring)
 - PWA / offline support
+- Complete the DB migration: serve reads from the API, drop `rows` from `localStorage`

@@ -9,12 +9,21 @@
 | Styling | Tailwind CSS | Utility-first, no CSS files |
 | Charts | Recharts 3 | React-native, good enough for this data scale |
 | CSV parsing | Papa Parse | Handles Flume's datetime format, browser-native |
-| State | Zustand + `persist` | Simple global store with localStorage persistence |
+| State | Zustand + `persist` | Simple global store; client cache during the DB migration |
+| Database | Turso (libSQL / SQLite) via `@libsql/client` | Durable, multi-device time-series store; SQL-native aggregation |
+| Backend | Next.js Route Handlers (`app/api/*`, Node runtime) | Ingest + rollup endpoints; reuse the pure `analyze.ts` functions server-side |
 | UI components | shadcn/ui | Accessible, unstyled-first components |
 | Testing | Vitest | Zero-config, fast, works with TypeScript path aliases |
-| Hosting | Vercel | Zero-config Next.js deploy |
+| Hosting | Vercel | Zero-config Next.js deploy; Turso env vars for the DB |
 
-**No backend.** All computation runs in the browser.
+**Storage is migrating from browser-only to a Turso backend** (see
+[Storage & Backend Architecture](#storage--backend-architecture)). The original
+design kept all data and computation in the browser via `localStorage`; at
+per-minute resolution over multiple years the row series exceeded the ~5MB
+`localStorage` quota, so raw rows and derived rollups now live in Turso. The
+analysis functions in `lib/analyze.ts` remain pure and are reused **verbatim**
+on the server to compute rollups — the browser no longer enriches the full
+dataset.
 
 ---
 
@@ -27,7 +36,10 @@ sprinkler-app/
 │   ├── page.tsx                # Dashboard
 │   ├── analysis/page.tsx       # Per-station analysis
 │   ├── config/page.tsx         # Configuration editor + history
-│   └── day/[date]/page.tsx     # Minute-by-minute day detail
+│   ├── day/[date]/page.tsx     # Minute-by-minute day detail
+│   └── api/                    # Route Handlers (Node runtime) — the backend
+│       ├── rows/route.ts       # POST: ingest rows + windows, recompute rollups
+│       └── rollup/route.ts     # GET:  per-day/per-station aggregates
 ├── components/
 │   ├── Navbar.tsx
 │   ├── StoreProvider.tsx       # Client-only Zustand rehydration + default-config.json load
@@ -41,12 +53,18 @@ sprinkler-app/
 │   └── WarningsPanel.tsx       # Baseline-deviation warnings + maintenance-flag surfacing
 ├── lib/
 │   ├── types.ts                # All shared TypeScript interfaces, DEFAULT_CONFIG, migrateConfig
-│   ├── analyze.ts              # Pure analysis functions (no React)
+│   ├── analyze.ts              # Pure analysis functions (no React) — reused server-side
 │   ├── staging.ts              # Pure staged-config-edit logic for the Analysis tab
 │   ├── store.ts                # Zustand store with migration on rehydrate
+│   ├── db.ts                   # server-only: libSQL client + idempotent schema bootstrap
+│   ├── backend.ts              # client-only: dual-write bridge to /api/rows
+│   ├── server/
+│   │   ├── data.ts             # server data access + recomputeRollups (reuses analyze.ts)
+│   │   └── auth.ts             # single-user shared-secret guard for writes
 │   └── __tests__/
 │       ├── analyze.test.ts     # Vitest unit tests
 │       └── staging.test.ts     # Staged-edit logic tests
+├── .env.example                # TURSO_*, APP_TIMEZONE, APP_SHARED_SECRET
 ├── vitest.config.ts
 └── vercel.json
 ```
@@ -173,6 +191,142 @@ All functions are **pure** (no side effects, no React). They live in `lib/analyz
 
 ---
 
+## Storage & Backend Architecture
+
+### Why it changed
+
+The original design persisted the entire Zustand store — including the full
+`FlumeRow[]` minute series — into `localStorage`. At 1-minute resolution that is
+~525K rows/year (~25–30MB/year serialized), and `appendRows` re-serialized and
+rewrote the **whole** blob on every upload. `localStorage` caps at ~5MB per
+origin, so multi-year data threw `QuotaExceededError`. `localStorage` is the
+wrong tier for a growing time-series.
+
+### Model: raw + rollup
+
+The bulk data (raw minutes) lives in Turso. Only the day-detail view ever needs
+raw minutes, and only one day at a time. Everything else consumes *aggregates*
+that are `GROUP BY date/station, SUM(gallons)` — so those are precomputed once
+at ingest and stored as rollups.
+
+| Data | Table | Computed by | When |
+|---|---|---|---|
+| Raw minute rows | `flume_rows (datetime PK, gallons)` | CSV parse | on upload |
+| Config windows | `config_windows (id, effective_from, notes, config JSON, …)` | client edits | on upload / edit |
+| Daily rollups | `daily_rollup (date, station, gallons, is_sprinkler_day)` PK `(date, station)` | server, from enriched rows | on upload / config edit |
+| Maintenance flags | `maintenance (station_id PK, flagged_at, note)` | client edits | on edit |
+
+Schema is bootstrapped idempotently (`CREATE … IF NOT EXISTS`) by
+`ensureSchema()` in `lib/db.ts`, memoized once per process.
+
+### Route Handlers (`app/api/*`, Node runtime)
+
+- **`POST /api/rows`** — body `{ rows, windows }`. Mirrors the window set,
+  `INSERT OR IGNORE`s rows (the `datetime` PK does the dedupe `appendRows` used
+  to do by hand), then recomputes rollups. Returns `{ inserted, rollupDays }`.
+- **`GET /api/rollup?from=&to=`** — the small aggregate feed the dashboard/charts
+  read. Bounds optional.
+
+Both pin `runtime = "nodejs"` (the libSQL node client uses native bindings —
+not edge-compatible) and `dynamic = "force-dynamic"` (never cached).
+
+`recomputeRollups(from, to)` in `lib/server/data.ts` fetches raw rows for the
+range plus the **full** window set (a date's active window may be defined
+earlier), runs `enrichRowsMultiConfig` + `buildDailyRows` — the same pure
+functions the browser used — and upserts one rollup row per `(date, station)`.
+
+### ⚠️ Timezone constraint (critical)
+
+`enrichRows` intentionally converts Flume's UTC timestamps to **local** time so
+minute-of-day aligns with the configured start times (`lib/analyze.ts`, the
+`localDateAndMin` path). Because rollups are now computed **server-side**, the
+server process must run in the homeowner's timezone or its rollups won't match
+what the browser computes (Vercel defaults to UTC). Set **`APP_TIMEZONE`** (e.g.
+`America/Los_Angeles`) in the deployment env — `lib/db.ts` applies it to
+`process.env.TZ` at startup. We can't use `TZ` directly because Vercel reserves
+that env var; Node honors a runtime `TZ` assignment for subsequent `Date` calls.
+A future refactor may thread an explicit timezone through the pure functions
+instead of relying on process `TZ`.
+
+### Auth (single-user)
+
+Writes are gated by a shared secret (`x-sprinkler-secret` vs `APP_SHARED_SECRET`)
+in `lib/server/auth.ts`. Unset ⇒ allowed (local dev). Reads are open at the app
+layer; production relies on Vercel deployment protection. This is deliberately
+minimal — it's a single-house personal app, not multi-tenant.
+
+### Local development
+
+With no `TURSO_DATABASE_URL` set, `lib/db.ts` falls back to a local SQLite file
+at `./.data/sprinkler.db` (gitignored, parent dir auto-created), so `npm run dev`
+and tests need zero cloud setup. Production points `TURSO_DATABASE_URL` /
+`TURSO_AUTH_TOKEN` at a Turso database.
+
+### Deployment & environment setup
+
+Provision the database (once):
+
+```bash
+turso db create sprinklerfun
+turso db show sprinklerfun --url         # → TURSO_DATABASE_URL
+turso db tokens create sprinklerfun      # → TURSO_AUTH_TOKEN
+```
+
+Configure Vercel. Env vars are **per-project** — Vercel has no account-global
+env store — and the target project is whichever one the current directory is
+linked to. Link first, then add:
+
+```bash
+vercel link                              # select the "sprinklerfun" project
+                                         # (writes .vercel/project.json, gitignored)
+
+# 2nd arg is the ENVIRONMENT (production | preview | development), not the project:
+vercel env add TURSO_DATABASE_URL production
+vercel env add TURSO_AUTH_TOKEN production
+vercel env add APP_TIMEZONE production             # e.g. America/Los_Angeles (NOT `TZ` — reserved)
+vercel env add APP_SHARED_SECRET production
+vercel env add NEXT_PUBLIC_APP_SHARED_SECRET production   # same value as APP_SHARED_SECRET
+```
+
+- Run these in the same shell/working directory the app builds from (for WSL
+  checkouts, inside WSL at the repo path) so the link binds correctly.
+- Verify the binding with `cat .vercel/project.json` or `vercel project ls`.
+- `--scope <team-slug>` selects the team/account when you belong to several; it
+  does **not** make a var global.
+- Repeat per environment you need (`production`, `preview`, `development`), or
+  run `vercel env add NAME` with no environment to get the checkbox prompt.
+- Also enable Vercel **deployment protection** for read-side gating (the app's
+  shared secret only guards writes).
+- Local dev needs none of this — the `./.data/sprinkler.db` fallback covers it;
+  optionally copy `.env.example` → `.env.local`.
+
+**Gotchas (learned the hard way):**
+- The value is **not** a positional arg to `vercel env add` — positionals are
+  `[name] [environment] [gitBranch]`. Passing the value as a 4th token makes
+  Vercel read it as a git branch and fail. Enter it at the `? Value?` prompt, or
+  pipe it: `printf '%s' '<value>' | vercel env add NAME production`.
+- Use **`APP_TIMEZONE`**, never `TZ` — `TZ` is a Vercel-reserved variable and is
+  rejected.
+- `vercel link` creating the project and **connecting the Git repo are separate
+  steps**; Git-connect can fail (e.g. the Vercel GitHub app lacks access to the
+  repo's owner) without affecting env setup or CLI deploys. Wire Git later via
+  the dashboard or `vercel git connect`.
+
+> **`APP_TIMEZONE` is not optional in production.** Rollups are computed
+> server-side and enrichment is timezone-local (see the timezone constraint
+> above). Vercel defaults to UTC; set `APP_TIMEZONE` to the property's zone or
+> rollups will be wrong.
+
+### Migration rollout (incremental, each phase shippable)
+
+1. **Turso + schema + `/api/rows` + `/api/rollup`, client dual-writes.** ← *implemented (Phase 1).* localStorage remains the source of truth; the client mirrors every upload to the DB (`lib/backend.ts`), plus a one-time "Import this browser → server" action on the config page. After this phase the quota error is gone on the server path.
+2. Dashboard + analysis read rollups from the API; delete their client-side full-dataset enrichment.
+3. Day view reads `GET /api/day/:date`; remove `rows` from the store entirely.
+4. Window/maintenance CRUD via API; targeted rollup recompute on window edits (replace the Phase 1 full-range recompute).
+5. Drop `persist` of `rows`, remove the `useDeferredValue` scaffolding, delete dead client code.
+
+---
+
 ## Key Algorithms
 
 ### 1. Config-Aware Enrichment (`enrichRowsMultiConfig`)
@@ -274,6 +428,15 @@ The Analysis tab's per-row / bulk actions translate a `SegmentReconciliation` in
 ```
 
 Persisted under `"sprinkler-store"` (persist `version: 2`) in localStorage. `maintenance` defaults to `{}`; persist's shallow merge fills it in for stores saved before it existed, so no version bump is required. The Analysis tab's config-edit actions reuse `updateWindow` (deep-cloning the active window's config and patching the targeted field); only maintenance flags need the dedicated `setStationMaintenance` action.
+
+**Dual-write (Phase 1 of the Turso migration).** localStorage is still the
+source of truth and the UI reads from it unchanged. On every CSV upload the
+config page also fire-and-forgets a POST to `/api/rows` via `lib/backend.ts`
+(rows + the current window set); a backend failure is a soft toast and never
+blocks the local flow. A one-time "Import this browser → server" button pushes
+everything already in localStorage so the DB starts at parity. Later phases move
+reads onto the API and eventually stop persisting `rows` in localStorage
+entirely (see [Migration rollout](#migration-rollout-incremental-each-phase-shippable)).
 
 ### SSR Safety
 - Storage adapter no-ops when `typeof window === "undefined"`
@@ -459,8 +622,10 @@ A lightweight overlay (same pattern as `UploadModal`) listing staged `StagedItem
 
 | Issue | Notes |
 |---|---|
-| `enrichRows` is O(n) synchronous | OK to ~1M rows; beyond that, move to Web Worker |
-| localStorage ~5MB limit | ~1 year Flume data ≈ 15MB uncompressed. May need `lz-string` compression or IndexedDB |
+| `enrichRows` is O(n) synchronous | OK to ~1M rows; now runs server-side at ingest, off the browser's main thread |
+| ~~localStorage ~5MB limit~~ | **Being resolved** by the Turso migration (raw rows + rollups in libSQL). Phase 1 dual-writes; later phases stop persisting `rows` in localStorage. See [Storage & Backend Architecture](#storage--backend-architecture) |
+| Server rollups depend on process `TZ` | Enrichment is timezone-local; set `APP_TIMEZONE` (applied to `process.env.TZ` in `lib/db.ts`, since Vercel reserves `TZ`). A future refactor may thread tz explicitly |
+| Phase 1 recomputes all rollups per upload | A config-window change can affect any date, so the whole range is recomputed. Phase 4 makes this targeted |
 | No row validation beyond column names | Malformed timestamps silently dropped |
 | Config `effectiveFrom` resolution is 1 day | Two windows can't share a date (enforced in the editor); sub-day changes aren't representable |
 | IQR anomaly detection is naive | No seasonal adjustment; many weeks of data needed before IQR is meaningful |
