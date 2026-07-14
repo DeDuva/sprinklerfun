@@ -25,6 +25,10 @@ export interface PushResult {
   error?: string
 }
 
+function authHeaders(): Record<string, string> {
+  return SECRET ? { "x-sprinkler-secret": SECRET } : {}
+}
+
 export async function pushRows(
   rows: FlumeRow[],
   windows: ConfigWindow[]
@@ -32,12 +36,38 @@ export async function pushRows(
   try {
     const res = await fetch("/api/rows", {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(SECRET ? { "x-sprinkler-secret": SECRET } : {}),
-      },
+      headers: { "content-type": "application/json", ...authHeaders() },
       body: JSON.stringify({ rows, windows }),
     })
+    const data = (await res.json()) as PushResult
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` }
+    return { ...data, ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+// Fetch the full row series from the server (hydrates the in-memory store on
+// load, since rows are no longer persisted in localStorage).
+export async function fetchAllRows(): Promise<FlumeRow[]> {
+  const res = await fetch("/api/rows")
+  if (!res.ok) throw new Error(`GET /api/rows → HTTP ${res.status}`)
+  const data = (await res.json()) as { rows: FlumeRow[] }
+  return data.rows
+}
+
+// Fetch one day's raw rows (for the day-detail / flow / reconciliation views).
+export async function fetchDayRows(date: string): Promise<FlumeRow[]> {
+  const res = await fetch(`/api/day/${date}`)
+  if (!res.ok) throw new Error(`GET /api/day/${date} → HTTP ${res.status}`)
+  const data = (await res.json()) as { rows: FlumeRow[] }
+  return data.rows
+}
+
+// Clear all rows + rollups on the server.
+export async function clearAllRows(): Promise<PushResult> {
+  try {
+    const res = await fetch("/api/rows", { method: "DELETE", headers: authHeaders() })
     const data = (await res.json()) as PushResult
     if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` }
     return { ...data, ok: true }

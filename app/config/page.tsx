@@ -21,7 +21,7 @@ import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import Papa from "papaparse"
 import type { FlumeRow } from "@/lib/types"
-import { pushRows } from "@/lib/backend"
+import { pushRows, clearAllRows } from "@/lib/backend"
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 const PROGRAM_IDS: ProgramId[] = ["A", "B", "C"]
@@ -595,13 +595,12 @@ function UploadCsvCard() {
       toast.error("No valid rows found. Expected columns: datetime, gallons")
       return
     }
-    appendRows(parsed)
+    appendRows(parsed) // update in-memory view immediately (not persisted locally)
     toast.success(`Loaded ${parsed.length.toLocaleString()} rows from ${label}`)
-    // Phase 1 dual-write: mirror the upload to the Turso backend, best-effort.
-    // localStorage remains the source of truth, so a backend failure is a soft
-    // warning and never blocks the local flow.
+    // The server is the durable store — persist the upload there. Rows are no
+    // longer written to localStorage, so this is the real save (not a mirror).
     pushRows(parsed, useStore.getState().windows).then((r) => {
-      if (!r.ok) toast.warning(`Saved locally, but backend sync failed: ${r.error}`)
+      if (!r.ok) toast.warning(`Loaded, but saving to the server failed: ${r.error}`)
     })
   }
 
@@ -1142,7 +1141,13 @@ function ConfigPageInner() {
         <CardContent>
           <p className="text-sm text-gray-500 mb-3">{rows.length.toLocaleString()} rows currently loaded.</p>
           <Button variant="destructive" size="sm"
-            onClick={() => { if (confirm("Clear all CSV data?")) { clearRows(); toast.success("Data cleared") } }}>
+            onClick={async () => {
+              if (!confirm("Clear all CSV data? This deletes it from the server too.")) return
+              clearRows()
+              const r = await clearAllRows()
+              if (r.ok) toast.success("Data cleared")
+              else toast.error(`Cleared locally, but server delete failed: ${r.error}`)
+            }}>
             Clear all data
           </Button>
         </CardContent>

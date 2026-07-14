@@ -38,6 +38,9 @@ interface AppState {
   setStationMaintenance: (stationId: string, flag: MaintenanceFlag | null) => void
 
   appendRows: (newRows: FlumeRow[]) => void
+  // Replace the entire in-memory row set (used to hydrate from the server, since
+  // rows are no longer persisted in localStorage).
+  setRows: (rows: FlumeRow[]) => void
   clearRows: () => void
 }
 
@@ -136,11 +139,13 @@ export const useStore = create<AppState>()(
         set({ rows: merged, rowsVersion: get().rowsVersion + 1 })
       },
 
+      setRows: (rows) => set({ rows, rowsVersion: get().rowsVersion + 1 }),
+
       clearRows: () => set({ rows: [], rowsVersion: get().rowsVersion + 1 }),
     }),
     {
       name: "sprinkler-store",
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => {
         if (typeof window === "undefined") {
           return {
@@ -152,14 +157,20 @@ export const useStore = create<AppState>()(
         return localStorage
       }),
       skipHydration: true,
-      // v1 persisted { config, configHistory, rows }; v2 persists { windows, rows }.
+      // Persist only the small, client-owned state. `rows` (the per-minute
+      // series) now lives in Turso and is hydrated into memory on load — keeping
+      // it out of localStorage is what fixes the QuotaExceededError. Existing
+      // users' large row blobs are harmlessly read on the next rehydrate and
+      // then dropped the first time this partialized state is written back.
+      partialize: (state) => ({ windows: state.windows, maintenance: state.maintenance }),
+      // v1 persisted { config, configHistory, rows }; v2 persisted { windows, rows };
+      // v3 persists { windows, maintenance } (rows moved to the server).
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, fromVersion: number) => {
         if (!persisted) return persisted
         if (fromVersion < 2) {
           return {
             windows: toWindows({ config: persisted.config, configHistory: persisted.configHistory }),
-            rows: persisted.rows ?? [],
           }
         }
         return persisted
