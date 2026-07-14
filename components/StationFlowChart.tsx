@@ -49,7 +49,7 @@ const BarWithBaselineTick = (props: any) => {
           x2={tickX}
           y1={y + 2}
           y2={y + height - 2}
-          stroke="#f97316"
+          stroke="#FF9F3E"
           strokeWidth={2.5}
           strokeLinecap="round"
         />
@@ -137,12 +137,12 @@ function FlowTooltip({
         <>
           <div className="flex justify-between gap-4">
             <span className="text-gray-500">Baseline</span>
-            <span className="font-medium text-orange-500">{baseline.toFixed(3)}</span>
+            <span className="font-medium text-[#FF9F3E]">{baseline.toFixed(3)}</span>
           </div>
           {delta != null && (
             <div className="flex justify-between gap-4">
               <span className="text-gray-500">vs baseline</span>
-              <span className={`font-medium ${delta > 20 ? "text-red-500" : delta < -5 ? "text-blue-500" : "text-green-600"}`}>
+              <span className={`font-medium ${delta > 20 ? "text-[#FF6B5C]" : delta < -5 ? "text-[#35A7E4]" : "text-[#2E7D4F]"}`}>
                 {delta >= 0 ? "+" : ""}{delta.toFixed(1)}%
               </span>
             </div>
@@ -198,10 +198,10 @@ export default function StationFlowChart({ stats, config, selectedDay, sprinkler
       {hasBaselines && (
         <p className="text-xs text-gray-400 flex items-center gap-1.5">
           <svg width="10" height="14" className="shrink-0">
-            <line x1="5" y1="1" x2="5" y2="13" stroke="#f97316" strokeWidth="2.5" strokeLinecap="round" />
+            <line x1="5" y1="1" x2="5" y2="13" stroke="#FF9F3E" strokeWidth="2.5" strokeLinecap="round" />
           </svg>
           Orange tick = baseline gpm (per station).{" "}
-          <span className="text-red-500">Red bars</span> are &gt;20% above baseline.
+          <span className="text-[#FF6B5C]">Coral bars</span> are &gt;20% above baseline.
         </p>
       )}
       <ResponsiveContainer width="100%" height={Math.max(220, data.length * 28)}>
@@ -218,12 +218,12 @@ export default function StationFlowChart({ stats, config, selectedDay, sprinkler
           />
           <Bar dataKey="gpm" name="Avg gpm" shape={<BarWithBaselineTick />}>
             {data.map((entry, i) => (
-              <Cell key={i} fill={entry.isAbove ? "#ef4444" : "#3b82f6"} />
+              <Cell key={i} fill={entry.isAbove ? "#FF6B5C" : "#35A7E4"} />
             ))}
             <LabelList
               dataKey="gpm"
               position="right"
-              style={{ fontSize: 10, fill: "#64748b" }}
+              style={{ fontSize: 10, fill: "#5C7A90" }}
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               formatter={(v: any) => Number(v).toFixed(3)}
             />

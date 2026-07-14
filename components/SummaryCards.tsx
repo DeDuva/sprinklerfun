@@ -29,7 +29,7 @@ export default function SummaryCards({ totalGallons, sprinklerGallons, houseGall
           <CardTitle className="text-sm text-gray-500 font-medium">Sprinkler Gallons</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-2xl font-bold text-blue-600">{fmt(sprinklerGallons)}</p>
+          <p className="text-2xl font-bold text-[#1B6FA8]">{fmt(sprinklerGallons)}</p>
           {totalGallons > 0 && (
             <p className="text-xs text-gray-400">{Math.round((sprinklerGallons / totalGallons) * 100)}% of total</p>
           )}
@@ -40,7 +40,7 @@ export default function SummaryCards({ totalGallons, sprinklerGallons, houseGall
           <CardTitle className="text-sm text-gray-500 font-medium">House Gallons</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-2xl font-bold text-orange-500">{fmt(houseGallons)}</p>
+          <p className="text-2xl font-bold text-[#B9822F]">{fmt(houseGallons)}</p>
         </CardContent>
       </Card>
       <Card>
@@ -48,7 +48,7 @@ export default function SummaryCards({ totalGallons, sprinklerGallons, houseGall
           <CardTitle className="text-sm text-gray-500 font-medium">Estimated Cost</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-2xl font-bold text-green-600">
+          <p className="text-2xl font-bold text-[#2E7D4F]">
             ${estimatedCost.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })}
           </p>
         </CardContent>

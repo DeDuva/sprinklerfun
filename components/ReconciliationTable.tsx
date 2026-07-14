@@ -59,8 +59,8 @@ function StageButton({
         disabled
           ? "border-gray-100 text-gray-300 cursor-not-allowed"
           : staged
-          ? "border-blue-500 bg-blue-600 text-white hover:bg-blue-700"
-          : "border-gray-300 text-gray-700 hover:border-blue-400 hover:text-blue-600"
+          ? "border-sky-500 bg-sky-600 text-white hover:bg-sky-700"
+          : "border-gray-300 text-gray-700 hover:border-sky-400 hover:text-sky-600"
       )}
     >
       <span className="text-[10px]">{staged ? "✓" : "+"}</span>
@@ -153,7 +153,7 @@ export default function ReconciliationTable({
                     : deltaPct > 0.2
                     ? "text-red-500"
                     : deltaPct < -0.05
-                    ? "text-blue-500"
+                    ? "text-sky-500"
                     : "text-green-600"
 
                 const baselineTarget = r.actualGpm != null ? +r.actualGpm.toFixed(2) : null
@@ -163,7 +163,7 @@ export default function ReconciliationTable({
                     key={r.stationId}
                     className={cn(
                       "border-b border-gray-50 last:border-0 cursor-pointer hover:bg-gray-50/50 transition-colors",
-                      isSel && "bg-blue-50/60"
+                      isSel && "bg-sky-50/60"
                     )}
                     onClick={() => onSelectStation(isSel ? null : r.stationId)}
                   >

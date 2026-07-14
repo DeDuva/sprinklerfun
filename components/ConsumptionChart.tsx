@@ -17,17 +17,17 @@ import type { Breakdown, ChartBar, ConfigWindow, TimeBucket, TimeWindow } from "
 import { aggregateForChart, windowCutoff } from "@/lib/analyze"
 import type { EnrichedRow } from "@/lib/types"
 
-// ---- Colour palette -------------------------------------------------------
+// ---- Colour palette (Sunwater) ---------------------------------------------
 const STACK_COLORS: Record<string, string> = {
-  house:    "#fb923c",
-  sprinkler:"#3b82f6",
-  timer1:   "#3b82f6",
-  timer2:   "#6366f1",
+  house:    "#E3A857",
+  sprinkler:"#35A7E4",
+  timer1:   "#35A7E4",
+  timer2:   "#4FB05A",
 }
 const STATION_PALETTE = [
-  "#3b82f6","#6366f1","#8b5cf6","#ec4899","#f43f5e",
-  "#f97316","#eab308","#22c55e","#14b8a6","#06b6d4",
-  "#0ea5e9","#a855f7","#84cc16","#f59e0b","#10b981",
+  "#35A7E4","#4FB05A","#FFC24B","#FF6B5C","#8B6FD9",
+  "#FF9F3E","#2FB8A6","#E85D75","#7BC96F","#5EA8D8",
+  "#C77DD9","#F2A65A","#4A90D9","#3EC1A3","#D9754F",
 ]
 
 // ---- Sub-components -------------------------------------------------------
@@ -63,10 +63,10 @@ function ButtonGroup<T extends string>({
         <button
           key={o.key}
           onClick={() => onChange(o.key)}
-          className={`${cls} rounded border transition-colors ${
+          className={`${cls} rounded-full border transition-colors font-medium ${
             value === o.key
-              ? "bg-blue-600 text-white border-blue-600"
-              : "border-gray-300 text-gray-600 hover:border-gray-400"
+              ? "bg-[#35A7E4] text-white border-[#35A7E4]"
+              : "border-gray-300 text-gray-600 hover:border-[#35A7E4]"
           }`}
         >
           {o.label}
@@ -84,7 +84,7 @@ function AnomalyBar(props: any) {
     <g>
       <Rectangle x={x} y={y} width={width} height={height} fill={fill} />
       {isAnomaly && (
-        <text x={x + width / 2} y={y - 4} textAnchor="middle" fontSize={10} fill="#ef4444">
+        <text x={x + width / 2} y={y - 4} textAnchor="middle" fontSize={10} fill="#FF6B5C">
           ⚠
         </text>
       )}
@@ -98,10 +98,10 @@ function ConfigLabel({ viewBox, notes, onClick }: { viewBox?: { x: number; y: nu
   const { x, y } = viewBox
   return (
     <g onClick={onClick} style={{ cursor: onClick ? "pointer" : undefined }}>
-      <rect x={x - 1} y={y} width={2} height={200} fill="#6366f1" opacity={0.4} />
+      <rect x={x - 1} y={y} width={2} height={200} fill="#8B6FD9" opacity={0.5} />
       {/* wider transparent hit area so the marker is easy to click */}
       {onClick && <rect x={x - 4} y={y} width={150} height={16} fill="transparent" />}
-      <text x={x + 4} y={y + 12} fontSize={9} fill="#6366f1" style={{ pointerEvents: "none" }}>
+      <text x={x + 4} y={y + 12} fontSize={9} fill="#8B6FD9" style={{ pointerEvents: "none" }}>
         ⚙ {notes.length > 24 ? notes.slice(0, 24) + "…" : notes}
       </text>
     </g>
@@ -230,17 +230,17 @@ export default function ConsumptionChart({ enriched, windows, onDaySelect, selec
 
       {/* Config change legend */}
       {configMarkers.length > 0 && (
-        <div className="flex items-center gap-1.5 text-xs text-indigo-600">
+        <div className="flex items-center gap-1.5 text-xs text-[#8B6FD9]">
           <span className="font-medium">⚙</span>
           <span>Purple lines = config changes</span>
           <span className="text-gray-300 mx-1">·</span>
-          <span className="text-red-500 font-medium">⚠</span>
+          <span className="text-[#FF6B5C] font-medium">⚠</span>
           <span className="text-gray-600">= unusually high usage</span>
         </div>
       )}
       {configMarkers.length === 0 && (
         <div className="flex items-center gap-1.5 text-xs text-gray-400">
-          <span className="text-red-500">⚠</span>
+          <span className="text-[#FF6B5C]">⚠</span>
           <span>= unusually high usage (IQR-based)</span>
         </div>
       )}
@@ -297,7 +297,7 @@ export default function ConsumptionChart({ enriched, windows, onDaySelect, selec
             <Line
               type="monotone"
               dataKey="total"
-              stroke="#1e293b"
+              stroke="#143049"
               dot={false}
               strokeWidth={1.5}
               name="Total"
@@ -308,7 +308,7 @@ export default function ConsumptionChart({ enriched, windows, onDaySelect, selec
               <ReferenceLine
                 key={m.label}
                 x={m.label}
-                stroke="#6366f1"
+                stroke="#8B6FD9"
                 strokeDasharray="4 3"
                 strokeWidth={1.5}
                 label={(props: { viewBox?: { x: number; y: number } }) => (
@@ -325,7 +325,7 @@ export default function ConsumptionChart({ enriched, windows, onDaySelect, selec
             {selectedBarLabel && (
               <ReferenceLine
                 x={selectedBarLabel}
-                stroke="#0ea5e9"
+                stroke="#1B6FA8"
                 strokeWidth={2}
                 strokeDasharray="0"
               />

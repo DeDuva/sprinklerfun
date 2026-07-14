@@ -435,7 +435,7 @@ function WindowTimeline({
             key={w.id}
             onClick={() => onSelect(w.id)}
             className={`shrink-0 w-48 text-left rounded-lg border p-3 transition-colors ${
-              isSel ? "border-blue-500 ring-1 ring-blue-500 bg-blue-50/40" : "border-gray-200 hover:border-gray-300"
+              isSel ? "border-sky-500 ring-1 ring-sky-500 bg-sky-50/40" : "border-gray-200 hover:border-gray-300"
             }`}
           >
             <div className="flex items-center gap-1.5 mb-1 flex-wrap">
@@ -455,7 +455,7 @@ function WindowTimeline({
       })}
       <button
         onClick={onNew}
-        className="shrink-0 w-36 rounded-lg border border-dashed border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors flex items-center justify-center text-sm"
+        className="shrink-0 w-36 rounded-lg border border-dashed border-gray-300 text-gray-500 hover:border-sky-400 hover:text-sky-600 transition-colors flex items-center justify-center text-sm"
       >
         ＋ New config
       </button>
@@ -482,7 +482,7 @@ function NewWindowForm({
   const canCreate = validDate && !dup
 
   return (
-    <Card className="border-blue-200">
+    <Card className="border-sky-200">
       <CardHeader className="pb-2"><CardTitle className="text-base">New config window</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-gray-500">
@@ -686,7 +686,7 @@ function UploadCsvCard() {
               href={buildFlumeUrl(rows)}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-700 underline underline-offset-2"
+              className="text-sky-600 hover:text-sky-700 underline underline-offset-2"
             >
               Open Flume export →
             </a>
@@ -703,7 +703,7 @@ function UploadCsvCard() {
 
         <div
           className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
-            dragging ? "border-blue-500 bg-blue-50" : "border-gray-300 hover:border-gray-400"
+            dragging ? "border-sky-500 bg-sky-50" : "border-gray-300 hover:border-gray-400"
           }`}
           onClick={() => fileRef.current?.click()}
           onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
@@ -943,7 +943,7 @@ function ConfigPageInner() {
   if (windows.length === 0) {
     return (
       <div className="space-y-6 max-w-3xl">
-        <h1 className="text-2xl font-bold">Configuration</h1>
+        <h1 className="text-2xl font-semibold text-[#143049]" style={{ fontFamily: "var(--font-fredoka)" }}>Configuration</h1>
         <Card>
           <CardContent className="py-10 text-center space-y-3">
             <p className="text-gray-500">No config yet. Create your first config window to start tracking schedule changes over time.</p>
@@ -993,7 +993,7 @@ function ConfigPageInner() {
   return (
     <div className="space-y-6 max-w-3xl">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Configuration</h1>
+        <h1 className="text-2xl font-semibold text-[#143049]" style={{ fontFamily: "var(--font-fredoka)" }}>Configuration</h1>
       </div>
 
       {/* Timeline rail */}

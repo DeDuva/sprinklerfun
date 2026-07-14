@@ -19,9 +19,9 @@ interface Props {
 }
 
 const STATION_COLORS = [
-  "#3b82f6", "#6366f1", "#8b5cf6", "#ec4899", "#f97316",
-  "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#0ea5e9",
-  "#a855f7", "#f43f5e", "#84cc16", "#f59e0b", "#10b981",
+  "#35A7E4","#4FB05A","#FFC24B","#FF6B5C","#8B6FD9",
+  "#FF9F3E","#2FB8A6","#E85D75","#7BC96F","#5EA8D8",
+  "#C77DD9","#F2A65A","#4A90D9","#3EC1A3","#D9754F",
 ]
 
 export default function DailyChart({ dailyRows }: Props) {
@@ -97,11 +97,11 @@ export default function DailyChart({ dailyRows }: Props) {
         <Legend wrapperStyle={{ fontSize: 11 }} />
 
         {/* House usage (non-sprinkler visual) */}
-        <Bar dataKey="house" stackId="a" name="house" fill="#f97316">
+        <Bar dataKey="house" stackId="a" name="house" fill="#E3A857">
           {chartData.map((entry, i) => (
             <Cell
               key={i}
-              fill={(entry as Record<string, unknown>).isSprinklerDay ? "#cbd5e1" : "#f97316"}
+              fill={(entry as Record<string, unknown>).isSprinklerDay ? "#E3D6B8" : "#E3A857"}
             />
           ))}
         </Bar>
