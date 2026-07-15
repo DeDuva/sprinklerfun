@@ -23,6 +23,7 @@ import StationFlowChart from "@/components/StationFlowChart"
 import WarningsPanel from "@/components/WarningsPanel"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import Flo from "@/components/design/Flo"
+import RefreshDataCard from "@/components/RefreshDataCard"
 
 function ymKey(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
@@ -196,12 +197,13 @@ export default function DashboardPage() {
         <h1 className="text-2xl font-semibold text-[#143049]" style={{ fontFamily: "var(--font-fredoka)" }}>
           Dashboard
         </h1>
-        <div className="rounded-2xl border-2 border-dashed border-[#EADFC6] bg-white p-16 text-center flex flex-col items-center gap-3">
+        <div className="rounded-2xl border-2 border-dashed border-[#EADFC6] bg-white p-10 text-center flex flex-col items-center gap-3">
           <Flo mood="watching" size={72} />
           <p className="text-[#143049] text-lg font-medium">No data yet</p>
-          <p className="text-[#4A6076] text-sm">
-            Go to <Link href="/config" className="text-[#1B6FA8] font-medium underline">Config</Link> to upload your Flume CSV export — I&rsquo;ll take it from there.
-          </p>
+          <p className="text-[#4A6076] text-sm mb-2">Load your latest Flume export to get started.</p>
+          <div className="w-full max-w-xl">
+            <RefreshDataCard />
+          </div>
         </div>
       </div>
     )
@@ -224,6 +226,8 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      <RefreshDataCard />
+
       {/* Flo's headline */}
       <div className="rounded-2xl border-2 border-[#143049] bg-gradient-to-b from-white to-[#FFFDF8] p-5 shadow-[4px_4px_0_rgba(20,48,73,0.08)] flex items-center gap-4 flex-wrap">
         <Flo mood={floMood} size={64} idle />

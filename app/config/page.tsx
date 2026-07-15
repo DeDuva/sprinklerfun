@@ -22,6 +22,7 @@ import Papa from "papaparse"
 import type { FlumeRow } from "@/lib/types"
 import { pushRows, clearAllRows, fetchRollups } from "@/lib/backend"
 import type { RollupRow } from "@/lib/types"
+import { parseFlumeCsvRows, buildFlumeExportUrl } from "@/lib/csvImport"
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 const PROGRAM_IDS: ProgramId[] = ["A", "B", "C"]
@@ -558,28 +559,6 @@ function WindowDiff({ prev, next }: { prev: ConfigWindow | null; next: AppConfig
 
 // ---- Export / Import ------------------------------------------------------
 
-function parseRows(data: Record<string, string>[]): FlumeRow[] {
-  const rows: FlumeRow[] = []
-  for (const row of data) {
-    const dt = row["datetime"] ?? row["Datetime"] ?? row["DateTime"]
-    const g = parseFloat(row["gallons"] ?? row["Gallons"] ?? "0")
-    if (dt && !isNaN(g)) rows.push({ datetime: dt.trim(), gallons: g })
-  }
-  return rows
-}
-
-function buildFlumeUrl(lastDate: string | null): string {
-  const tz = "-07:00"
-  let since = "2026-05-01T00:00:00.000"
-  if (lastDate) {
-    // Start the export from the last stored day so only new data is fetched.
-    since = `${lastDate}T00:00:00.000`
-  }
-  const now = new Date()
-  const until = now.toISOString().replace("Z", "").slice(0, 23)
-  return `https://portal.flumewater.com/dashboard?since=${since}${tz}&until=${until}${tz}&scale=hour`
-}
-
 function UploadCsvCard() {
   const rowCount = useStore((s) => s.rowCount)
   const lastRowDate = useStore((s) => s.lastRowDate)
@@ -617,7 +596,7 @@ function UploadCsvCard() {
     Papa.parse<Record<string, string>>(file, {
       header: true,
       skipEmptyLines: true,
-      complete: (results) => finish(parseRows(results.data), file.name),
+      complete: (results) => finish(parseFlumeCsvRows(results.data), file.name),
       error: () => toast.error("Failed to parse CSV"),
     })
   }
@@ -635,7 +614,7 @@ function UploadCsvCard() {
       Papa.parse<Record<string, string>>(text, {
         header: true,
         skipEmptyLines: true,
-        complete: (results) => finish(parseRows(results.data), rawUrl.split("/").pop() ?? "URL"),
+        complete: (results) => finish(parseFlumeCsvRows(results.data), rawUrl.split("/").pop() ?? "URL"),
         error: () => toast.error("Failed to parse CSV"),
       })
       setUrlInput("")
@@ -663,7 +642,7 @@ function UploadCsvCard() {
           <div className="text-sm">
             <span className="font-medium text-gray-700">1.</span>{" "}
             <a
-              href={buildFlumeUrl(lastRowDate)}
+              href={buildFlumeExportUrl(lastRowDate)}
               target="_blank"
               rel="noopener noreferrer"
               className="text-sky-600 hover:text-sky-700 underline underline-offset-2"
