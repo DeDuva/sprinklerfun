@@ -1,8 +1,10 @@
 "use client"
 
-import { use, useDeferredValue, useMemo } from "react"
+import { use, useEffect, useMemo, useState } from "react"
 import { useStore } from "@/lib/store"
-import { deriveData, activeWindowForDate, currentConfig } from "@/lib/analyze"
+import { enrichRows, activeWindowForDate, currentConfig } from "@/lib/analyze"
+import { fetchDayRows } from "@/lib/backend"
+import type { FlumeRow } from "@/lib/types"
 import {
   AreaChart,
   Area,
@@ -38,33 +40,39 @@ function getColor(id: string) {
 
 export default function DayDetailPage({ params }: { params: Promise<{ date: string }> }) {
   const { date } = use(params)
-  const rows          = useStore((s) => s.rows)
   const windows       = useStore((s) => s.windows)
-  const rowsVersion   = useStore((s) => s.rowsVersion)
-
-  const deferredRows    = useDeferredValue(rows)
-  const deferredWindows = useDeferredValue(windows)
-  const deferredVersion = useDeferredValue(rowsVersion)
+  const serverVersion = useStore((s) => s.serverVersion)
 
   // Billing comes from the config window active on this day.
   const dayConfig = useMemo(
-    () => activeWindowForDate(deferredWindows, date)?.config ?? currentConfig(deferredWindows),
-    [deferredWindows, date]
+    () => activeWindowForDate(windows, date)?.config ?? currentConfig(windows),
+    [windows, date]
   )
 
-  const { chartData, stationIds, stationTotals, totalGallons } = useMemo(() => {
-    if (deferredRows.length === 0) return { chartData: [], stationIds: [], stationTotals: {}, totalGallons: 0 }
+  // Phase 3: fetch just this ONE day's raw rows and enrich them client-side,
+  // instead of loading (and enriching) the entire per-minute series.
+  const [dayRows, setDayRows] = useState<FlumeRow[] | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetchDayRows(date)
+      .then((rows) => { if (!cancelled) setDayRows(rows) })
+      .catch(() => { if (!cancelled) setDayRows([]) })
+    return () => { cancelled = true }
+  }, [date, serverVersion])
 
-    const { enriched } = deriveData(deferredRows, deferredWindows, deferredVersion)
-    const dayRows = enriched.filter((r) => r.date === date)
+  const { chartData, stationIds, stationTotals, totalGallons } = useMemo(() => {
+    if (!dayRows || dayRows.length === 0) return { chartData: [], stationIds: [], stationTotals: {}, totalGallons: 0 }
+
+    const enriched = enrichRows(dayRows, dayConfig)
+    const dayRowsEnriched = enriched.filter((r) => r.date === date)
 
     const stationSet = new Set<string>()
-    for (const r of dayRows) stationSet.add(r.station)
+    for (const r of dayRowsEnriched) stationSet.add(r.station)
     const stationIds = Array.from(stationSet).sort()
 
     // Build minute-level chart data
     const minuteMap: Record<number, Record<string, number>> = {}
-    for (const r of dayRows) {
+    for (const r of dayRowsEnriched) {
       if (!minuteMap[r.timeMin]) minuteMap[r.timeMin] = {}
       minuteMap[r.timeMin][r.station] = (minuteMap[r.timeMin][r.station] ?? 0) + r.gallons
     }
@@ -79,13 +87,13 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
       })
 
     const stationTotals: Record<string, number> = {}
-    for (const r of dayRows) {
+    for (const r of dayRowsEnriched) {
       stationTotals[r.station] = (stationTotals[r.station] ?? 0) + r.gallons
     }
-    const totalGallons = dayRows.reduce((s, r) => s + r.gallons, 0)
+    const totalGallons = dayRowsEnriched.reduce((s, r) => s + r.gallons, 0)
 
     return { chartData, stationIds, stationTotals, totalGallons }
-  }, [deferredRows, deferredWindows, deferredVersion, date])
+  }, [dayRows, dayConfig, date])
 
   const fmt = new Date(date + "T12:00:00").toLocaleDateString(undefined, {
     weekday: "long",
@@ -94,8 +102,8 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
     year: "numeric",
   })
 
-  if (rows.length === 0) {
-    return <div className="text-center py-24 text-gray-400">No data loaded</div>
+  if (dayRows === null) {
+    return <div className="text-center py-24 text-gray-400 animate-pulse">Loading…</div>
   }
 
   if (chartData.length === 0) {

@@ -9,8 +9,10 @@ import type {
   FlumeRow,
   MinutePoint,
   ProgramId,
+  RollupRow,
   SegmentReconciliation,
   StationStats,
+  StationWarning,
   TimeBucket,
   TimerConfig,
   TimeWindow,
@@ -257,50 +259,67 @@ export function enrichRowsMultiConfig(
 }
 
 // ---------------------------------------------------------------------------
-// Memoized derivation
+// Rollup reconstruction (Phase 3)
+//
+// The dashboard no longer loads the full per-minute series. Instead it reads the
+// server's `daily_rollup` (one gallon sum per date+station) via GET /api/rollup
+// and reconstructs the two shapes the pure aggregations expect:
+//   • DailyRow[]      — for computeSummary / date-range / sprinkler-day lists
+//   • EnrichedRow[]   — a SYNTHETIC one-row-per-(date,station) series for
+//                       aggregateForChart (which only reads date/station/timer/
+//                       gallons — never timeMin — so pre-summed rows are exact).
 // ---------------------------------------------------------------------------
 
-/**
- * Enrichment is the dominant cost on every page and produces identical output
- * for identical inputs. Rows and windows change only on CSV upload or config
- * edit, so we memoize the derived output against a cheap fingerprint and reuse
- * it across renders and page navigations until the underlying data changes.
- *
- * The cache holds a single entry — the latest dataset — which is all the app
- * ever needs, and keeps memory flat (no growth on repeated navigation).
- */
-export interface DerivedData {
-  enriched: EnrichedRow[]
-  daily: DailyRow[]
+/** Rebuild DailyRow[] from persisted rollup rows (inverse of buildDailyRows). */
+export function rollupsToDailyRows(rollups: RollupRow[]): DailyRow[] {
+  const byDate: Record<string, DailyRow> = {}
+  for (const r of rollups) {
+    if (!byDate[r.date]) {
+      byDate[r.date] = { date: r.date, isSprinklerDay: false, totalGallons: 0, byStation: {} }
+    }
+    const day = byDate[r.date]
+    day.totalGallons += r.gallons
+    day.byStation[r.station] = (day.byStation[r.station] ?? 0) + r.gallons
+    if (r.isSprinklerDay) day.isSprinklerDay = true
+  }
+  return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))
 }
 
 /**
- * Cheap, allocation-light cache key. `rowsVersion` is bumped by the store
- * whenever `rows` is replaced, so we never have to scan the (potentially large)
- * per-minute row array. Windows carry `updatedAt`, which bumps on every edit.
+ * Map each station id → its timer ("timer1"/"timer2"), unioned across every
+ * window's config (station ids are stable across windows). "house" maps to
+ * "house". Used to tag synthetic rollup-derived rows so aggregateForChart's
+ * timer/simple breakdowns match the client's old per-minute output.
  */
-function deriveFingerprint(rowsVersion: number, windows: ConfigWindow[]): string {
-  let w = ""
-  for (const x of windows) w += `${x.id}@${x.updatedAt}:${x.effectiveFrom};`
-  return `${rowsVersion}|${w}`
+export function stationTimerMap(windows: ConfigWindow[]): Record<string, string> {
+  const map: Record<string, string> = { house: "house" }
+  for (const w of windows) {
+    for (const s of w.config.timer1.stations) map[s.id] = "timer1"
+    for (const s of w.config.timer2.stations) map[s.id] = "timer2"
+  }
+  return map
 }
 
-let cacheKey: string | null = null
-let cacheValue: DerivedData | null = null
-
-export function deriveData(
-  rows: FlumeRow[],
-  windows: ConfigWindow[],
-  rowsVersion: number
-): DerivedData {
-  const key = deriveFingerprint(rowsVersion, windows)
-  if (key === cacheKey && cacheValue) return cacheValue
-
-  const enriched = enrichRowsMultiConfig(rows, windows)
-  const daily = buildDailyRows(enriched)
-  cacheValue = { enriched, daily }
-  cacheKey = key
-  return cacheValue
+/**
+ * Build a SYNTHETIC EnrichedRow[] from rollup rows — one row per (date, station)
+ * carrying the day's summed gallons. `aggregateForChart` groups by date bucket
+ * and sums gallons per stack key (derived from station/timer), so feeding it
+ * these pre-summed rows yields bucket totals identical to enriching the full
+ * per-minute series. `timeMin`/`datetime` are placeholders (unused by the chart).
+ */
+export function rollupsToEnriched(
+  rollups: RollupRow[],
+  timerOf: Record<string, string>
+): EnrichedRow[] {
+  return rollups.map((r) => ({
+    datetime: `${r.date}T00:00:00`,
+    date: r.date,
+    timeMin: 0,
+    gallons: r.gallons,
+    station: r.station,
+    timer: timerOf[r.station] ?? "house",
+    isSprinklerDay: r.isSprinklerDay,
+  }))
 }
 
 // ---------------------------------------------------------------------------
@@ -841,15 +860,6 @@ export function reconcileDay(
 // ---------------------------------------------------------------------------
 // Warnings
 // ---------------------------------------------------------------------------
-
-export interface StationWarning {
-  stationId: string
-  stationName: string
-  baselineGpm: number
-  recentAvgGpm: number
-  pctAboveBaseline: number
-  consecutiveDaysAbove: number
-}
 
 const WARN_THRESHOLD = 0.2
 const WARN_MIN_DAYS = 2

@@ -4,6 +4,7 @@ import {
   insertRows,
   replaceWindows,
   recomputeRollups,
+  recomputeStats,
   rowDateBounds,
   readAllRows,
   clearAllData,
@@ -63,6 +64,10 @@ export async function POST(req: NextRequest) {
     // later phase makes this targeted to the affected span.
     const bounds = await rowDateBounds()
     const days = bounds ? await recomputeRollups(bounds.min, bounds.max) : 0
+
+    // The per-minute-only aggregates (fleet gpm stats + baseline warnings) also
+    // depend on rows + the active config, so refresh them on the same write.
+    await recomputeStats()
 
     return Response.json({ ok: true, received: rows.length, inserted, rollupDays: days })
   } catch (err) {

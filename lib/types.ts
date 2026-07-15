@@ -179,6 +179,38 @@ export interface DailyRow {
   byStation: Record<string, number>
 }
 
+// One persisted daily-rollup row: the per-(date, station) gallon aggregate the
+// server derives from enriched rows and the dashboard reads back (via
+// GET /api/rollup) instead of loading the full per-minute series.
+export interface RollupRow {
+  date: string
+  station: string
+  gallons: number
+  isSprinklerDay: boolean
+}
+
+// Precomputed, per-minute-only aggregates the server stores and exposes via
+// GET /api/stats. `stationStats` is the fleet-wide buildStationStats output;
+// `warnings` is computeStationWarnings — neither can be reconstructed from the
+// daily gallon sums in `daily_rollup`, so they are computed at recompute time.
+export interface StatsPayload {
+  stationStats: StationStats[]
+  warnings: StationWarning[]
+  rowCount: number
+  lastDate: string | null // latest stored row date "YYYY-MM-DD" (for incremental export)
+}
+
+// Baseline-drift warning for a station (mirror of computeStationWarnings'
+// StationWarning; declared here so client + server share the wire shape).
+export interface StationWarning {
+  stationId: string
+  stationName: string
+  baselineGpm: number
+  recentAvgGpm: number
+  pctAboveBaseline: number
+  consecutiveDaysAbove: number
+}
+
 // ---------------------------------------------------------------------------
 // Helpers for building a default ProgramConfig
 // ---------------------------------------------------------------------------

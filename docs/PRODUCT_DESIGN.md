@@ -239,10 +239,13 @@ The page is organized around a **timeline of config windows**.
 Data lives in a Turso (libSQL/SQLite) database behind a small API, replacing the
 original browser-only `localStorage` store (which capped at ~5MB and couldn't
 hold multi-year, per-minute data). Benefits: durability across browser resets,
-access from multiple devices, and set-based SQL aggregation. This is rolling out
-in phases — currently the app dual-writes to the DB while `localStorage` remains
-the working store; see TECHNICAL_DESIGN.md for phase status. It remains a
-single-user, single-property app.
+access from multiple devices, and set-based SQL aggregation. The database is now
+the source of truth: raw minutes and all derived aggregates (daily rollups, fleet
+gpm stats, baseline warnings) live server-side, and **the browser no longer loads
+the full per-minute series** — it reads compact aggregate feeds and fetches a
+single day only when a minute-level view needs it (Phase 3 complete). Only the
+small config/maintenance state persists locally. See TECHNICAL_DESIGN.md for phase
+status. It remains a single-user, single-property app.
 
 ## Out of Scope (V1)
 - Multi-user / multi-tenant accounts (the DB is single-user; writes gated by a shared secret)
@@ -256,4 +259,4 @@ single-user, single-property app.
 - Weather-adjusted baselines (ET-based)
 - Seasonal comparison (this spring vs last spring)
 - PWA / offline support
-- Complete the DB migration: serve reads from the API, drop `rows` from `localStorage`
+- Finish the DB migration tail: window/maintenance CRUD via API and targeted (incremental) rollup/stats recompute (reads already come from the API and `rows` no longer live in `localStorage`)

@@ -6,8 +6,7 @@ import { useStore } from "@/lib/store"
 import { sortWindows, toWindows } from "@/lib/types"
 import type { AppConfig, ConfigWindow, ProgramConfig, ProgramId, Station, TimerConfig } from "@/lib/types"
 import {
-  enrichRowsMultiConfig,
-  buildDailyRows,
+  rollupsToDailyRows,
   activeWindowForDate,
   windowDateRange,
   diffConfigs,
@@ -21,7 +20,8 @@ import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import Papa from "papaparse"
 import type { FlumeRow } from "@/lib/types"
-import { pushRows, clearAllRows } from "@/lib/backend"
+import { pushRows, clearAllRows, fetchRollups } from "@/lib/backend"
+import type { RollupRow } from "@/lib/types"
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 const PROGRAM_IDS: ProgramId[] = ["A", "B", "C"]
@@ -568,14 +568,12 @@ function parseRows(data: Record<string, string>[]): FlumeRow[] {
   return rows
 }
 
-function buildFlumeUrl(rows: FlumeRow[]): string {
+function buildFlumeUrl(lastDate: string | null): string {
   const tz = "-07:00"
   let since = "2026-05-01T00:00:00.000"
-  if (rows.length > 0) {
-    const latest = rows.reduce((a, b) => (a.datetime > b.datetime ? a : b)).datetime
-    const d = new Date(latest)
-    d.setMinutes(d.getMinutes() - 1)
-    since = d.toISOString().replace("Z", "").slice(0, 23)
+  if (lastDate) {
+    // Start the export from the last stored day so only new data is fetched.
+    since = `${lastDate}T00:00:00.000`
   }
   const now = new Date()
   const until = now.toISOString().replace("Z", "").slice(0, 23)
@@ -583,44 +581,35 @@ function buildFlumeUrl(rows: FlumeRow[]): string {
 }
 
 function UploadCsvCard() {
-  const appendRows = useStore((s) => s.appendRows)
-  const rows = useStore((s) => s.rows)
+  const rowCount = useStore((s) => s.rowCount)
+  const lastRowDate = useStore((s) => s.lastRowDate)
+  const setRowCount = useStore((s) => s.setRowCount)
+  const setLastRowDate = useStore((s) => s.setLastRowDate)
+  const bumpServerVersion = useStore((s) => s.bumpServerVersion)
   const fileRef = useRef<HTMLInputElement>(null)
   const [urlInput, setUrlInput] = useState("")
   const [loadingUrl, setLoadingUrl] = useState(false)
   const [dragging, setDragging] = useState(false)
 
-  function finish(parsed: FlumeRow[], label: string) {
+  async function finish(parsed: FlumeRow[], label: string) {
     if (parsed.length === 0) {
       toast.error("No valid rows found. Expected columns: datetime, gallons")
       return
     }
-    appendRows(parsed) // update in-memory view immediately (not persisted locally)
-    toast.success(`Loaded ${parsed.length.toLocaleString()} rows from ${label}`)
-    // The server is the durable store — persist the upload there. Rows are no
-    // longer written to localStorage, so this is the real save (not a mirror).
-    pushRows(parsed, useStore.getState().windows).then((r) => {
-      if (!r.ok) toast.warning(`Loaded, but saving to the server failed: ${r.error}`)
-    })
-  }
-
-  // One-time migration: push everything already sitting in localStorage (rows +
-  // windows) to the server, so the backend starts from parity with this browser.
-  async function importLocalToServer() {
-    const { rows: allRows, windows } = useStore.getState()
-    if (allRows.length === 0) {
-      toast.error("No local rows to import")
-      return
-    }
-    const t = toast.loading(`Importing ${allRows.length.toLocaleString()} rows to server…`)
-    const r = await pushRows(allRows, windows)
+    // The server is the durable store — persist the upload there. It ingests the
+    // rows, recomputes rollups + stats, and returns the new inserted count. Bump
+    // serverVersion so the dashboard/analysis refetch their server-derived views.
+    const t = toast.loading(`Saving ${parsed.length.toLocaleString()} rows from ${label}…`)
+    const r = await pushRows(parsed, useStore.getState().windows)
     toast.dismiss(t)
     if (r.ok) {
-      toast.success(
-        `Imported to server: ${r.inserted?.toLocaleString()} new rows, ${r.rollupDays} rollup days`
-      )
+      setRowCount(rowCount + (r.inserted ?? 0))
+      const maxDate = parsed.reduce((a, b) => (a > b.datetime ? a : b.datetime), "").slice(0, 10)
+      if (maxDate && (!lastRowDate || maxDate > lastRowDate)) setLastRowDate(maxDate)
+      bumpServerVersion()
+      toast.success(`Saved ${(r.inserted ?? 0).toLocaleString()} new rows from ${label}`)
     } else {
-      toast.error(`Import failed: ${r.error}`)
+      toast.error(`Saving to the server failed: ${r.error}`)
     }
   }
 
@@ -664,18 +653,9 @@ function UploadCsvCard() {
           <CardTitle className="text-base">
             Upload CSV Data
             <span className="ml-2 text-xs font-normal text-gray-400">
-              {rows.length.toLocaleString()} rows loaded
+              {rowCount.toLocaleString()} rows stored
             </span>
           </CardTitle>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={importLocalToServer}
-            disabled={rows.length === 0}
-            title="Copy the rows and config windows already in this browser to the server database"
-          >
-            Import this browser → server
-          </Button>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -683,7 +663,7 @@ function UploadCsvCard() {
           <div className="text-sm">
             <span className="font-medium text-gray-700">1.</span>{" "}
             <a
-              href={buildFlumeUrl(rows)}
+              href={buildFlumeUrl(lastRowDate)}
               target="_blank"
               rel="noopener noreferrer"
               className="text-sky-600 hover:text-sky-700 underline underline-offset-2"
@@ -691,9 +671,7 @@ function UploadCsvCard() {
               Open Flume export →
             </a>
             <span className="text-xs text-gray-400 ml-2">
-              {rows.length > 0
-                ? `from ${rows.reduce((a, b) => (a.datetime > b.datetime ? a : b)).datetime.slice(0, 10)}`
-                : "full range"}
+              {lastRowDate ? `from ${lastRowDate}` : "full range"}
             </span>
           </div>
           <span className="text-sm text-gray-400">
@@ -870,12 +848,25 @@ function ExportImportCard() {
 function ConfigPageInner() {
   const searchParams = useSearchParams()
   const windows = useStore((s) => s.windows)
-  const rows = useStore((s) => s.rows)
+  const rowCount = useStore((s) => s.rowCount)
   const addWindowFromDate = useStore((s) => s.addWindowFromDate)
   const updateWindow = useStore((s) => s.updateWindow)
   const deleteWindow = useStore((s) => s.deleteWindow)
   const copyBaselinesForward = useStore((s) => s.copyBaselinesForward)
-  const clearRows = useStore((s) => s.clearRows)
+  const setRowCount = useStore((s) => s.setRowCount)
+  const bumpServerVersion = useStore((s) => s.bumpServerVersion)
+  const serverVersion = useStore((s) => s.serverVersion)
+
+  // Per-window day counts come from the rollup feed (the browser no longer holds
+  // the full per-minute series). Refetched when the server data changes.
+  const [rollups, setRollups] = useState<RollupRow[]>([])
+  useEffect(() => {
+    let cancelled = false
+    fetchRollups()
+      .then((r) => { if (!cancelled) setRollups(r) })
+      .catch(() => { if (!cancelled) setRollups([]) })
+    return () => { cancelled = true }
+  }, [serverVersion])
 
   // Track persist hydration so we can distinguish "loading" from "no config yet".
   const [hydrated, setHydrated] = useState(false)
@@ -919,10 +910,10 @@ function ConfigPageInner() {
     }
   }, [selectedWindow])
 
-  // Enriched data for per-window day counts.
+  // Rollup-derived per-window day counts.
   const counts = useMemo(() => {
-    if (rows.length === 0 || windows.length === 0) return {}
-    const daily = buildDailyRows(enrichRowsMultiConfig(rows, windows))
+    if (rollups.length === 0 || windows.length === 0) return {}
+    const daily = rollupsToDailyRows(rollups)
     const m: Record<string, { days: number; sprinklerDays: number }> = {}
     for (const d of daily) {
       const w = activeWindowForDate(windows, d.date)
@@ -932,7 +923,7 @@ function ConfigPageInner() {
       if (d.isSprinklerDay) m[w.id].sprinklerDays++
     }
     return m
-  }, [rows, windows])
+  }, [rollups, windows])
 
   const [showNew, setShowNew] = useState(false)
 
@@ -1139,14 +1130,18 @@ function ConfigPageInner() {
       <Card className="border-red-200">
         <CardHeader><CardTitle className="text-base text-red-600">Danger Zone</CardTitle></CardHeader>
         <CardContent>
-          <p className="text-sm text-gray-500 mb-3">{rows.length.toLocaleString()} rows currently loaded.</p>
+          <p className="text-sm text-gray-500 mb-3">{rowCount.toLocaleString()} rows currently stored.</p>
           <Button variant="destructive" size="sm"
             onClick={async () => {
-              if (!confirm("Clear all CSV data? This deletes it from the server too.")) return
-              clearRows()
+              if (!confirm("Clear all CSV data? This deletes it from the server.")) return
               const r = await clearAllRows()
-              if (r.ok) toast.success("Data cleared")
-              else toast.error(`Cleared locally, but server delete failed: ${r.error}`)
+              if (r.ok) {
+                setRowCount(0)
+                bumpServerVersion()
+                toast.success("Data cleared")
+              } else {
+                toast.error(`Server delete failed: ${r.error}`)
+              }
             }}>
             Clear all data
           </Button>

@@ -5,7 +5,7 @@ import type { AppConfig } from "../types"
 const s = () => useStore.getState()
 
 describe("store: window actions", () => {
-  beforeEach(() => useStore.setState({ windows: [], rows: [] }))
+  beforeEach(() => useStore.setState({ windows: [] }))
 
   it("addWindowFromDate seeds from DEFAULT_CONFIG when empty and returns the id", () => {
     const id = s().addWindowFromDate("2024-01-01", "first")

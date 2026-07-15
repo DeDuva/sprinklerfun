@@ -1,7 +1,20 @@
 import type { InArgs } from "@libsql/client"
 import { getDb, ensureSchema } from "@/lib/db"
-import type { ConfigWindow, FlumeRow, DailyRow } from "@/lib/types"
-import { enrichRowsMultiConfig, buildDailyRows } from "@/lib/analyze"
+import type {
+  ConfigWindow,
+  FlumeRow,
+  DailyRow,
+  RollupRow,
+  StationStats,
+  StationWarning,
+} from "@/lib/types"
+import {
+  enrichRowsMultiConfig,
+  buildDailyRows,
+  buildStationStats,
+  computeStationWarnings,
+  currentConfig,
+} from "@/lib/analyze"
 
 // ---------------------------------------------------------------------------
 // Server-side data access for the Turso backend (Phase 1).
@@ -96,13 +109,18 @@ export async function readAllRows(): Promise<FlumeRow[]> {
   return res.rows.map((r) => ({ datetime: String(r.datetime), gallons: Number(r.gallons) }))
 }
 
-// Clear all data (rows + rollups). Windows/maintenance are untouched — they are
-// still client-owned in this phase.
+// Clear all data (rows + rollups + precomputed stats/warnings). Windows and
+// maintenance are untouched — they are still client-owned in this phase.
 export async function clearAllData(): Promise<void> {
   await ensureSchema()
   const db = getDb()
   await db.batch(
-    ["DELETE FROM flume_rows", "DELETE FROM daily_rollup"],
+    [
+      "DELETE FROM flume_rows",
+      "DELETE FROM daily_rollup",
+      "DELETE FROM station_stats",
+      "DELETE FROM station_warnings",
+    ],
     "write"
   )
 }
@@ -164,13 +182,6 @@ export async function recomputeRollups(fromDate: string, toDate: string): Promis
   return daily.length
 }
 
-export interface RollupRow {
-  date: string
-  station: string
-  gallons: number
-  isSprinklerDay: boolean
-}
-
 export async function readRollups(fromDate?: string, toDate?: string): Promise<RollupRow[]> {
   await ensureSchema()
   const db = getDb()
@@ -194,6 +205,85 @@ export async function readRollups(fromDate?: string, toDate?: string): Promise<R
     station: String(r.station),
     gallons: Number(r.gallons),
     isSprinklerDay: Number(r.is_sprinkler_day) === 1,
+  }))
+}
+
+// ---------------------------------------------------------------------------
+// Station stats + warnings (the per-minute-only aggregates)
+//
+// buildStationStats (fleet-wide avg/std/min/max gpm) and computeStationWarnings
+// (baseline-drift alerts) both need the full per-minute enriched series and the
+// "current" config, so they can't be derived from the daily gallon sums in
+// daily_rollup. We compute them once here — over the whole series — and store
+// the results so the dashboard/analysis can read them cheaply via /api/stats.
+// Recompute is triggered on every write (upload / window edit / clear).
+// ---------------------------------------------------------------------------
+export async function recomputeStats(): Promise<{ stations: number; warnings: number }> {
+  await ensureSchema()
+  const db = getDb()
+
+  const [rows, windows] = await Promise.all([readAllRows(), readWindows()])
+  const enriched = enrichRowsMultiConfig(rows, windows)
+  const config = currentConfig(windows)
+  const stats = buildStationStats(enriched, config)
+  const warnings = computeStationWarnings(enriched, config, 21)
+
+  const stmts: { sql: string; args: InArgs }[] = [
+    { sql: "DELETE FROM station_stats", args: [] },
+    { sql: "DELETE FROM station_warnings", args: [] },
+  ]
+  for (const s of stats) {
+    stmts.push({
+      sql: `INSERT OR REPLACE INTO station_stats
+              (id, name, total_gallons, avg_gpm, min_gpm, max_gpm, std_gpm, cost_estimate, pct_of_sprinkler)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [s.id, s.name, s.totalGallons, s.avgGpm, s.minGpm, s.maxGpm, s.stdGpm, s.costEstimate, s.pctOfSprinkler],
+    })
+  }
+  for (const w of warnings) {
+    stmts.push({
+      sql: `INSERT OR REPLACE INTO station_warnings
+              (station_id, station_name, baseline_gpm, recent_avg_gpm, pct_above_baseline, consecutive_days_above)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [w.stationId, w.stationName, w.baselineGpm, w.recentAvgGpm, w.pctAboveBaseline, w.consecutiveDaysAbove],
+    })
+  }
+  await db.batch(stmts, "write")
+  return { stations: stats.length, warnings: warnings.length }
+}
+
+export async function readStationStats(): Promise<StationStats[]> {
+  await ensureSchema()
+  const db = getDb()
+  const res = await db.execute(
+    "SELECT id, name, total_gallons, avg_gpm, min_gpm, max_gpm, std_gpm, cost_estimate, pct_of_sprinkler FROM station_stats ORDER BY total_gallons DESC"
+  )
+  return res.rows.map((r) => ({
+    id: String(r.id),
+    name: String(r.name),
+    totalGallons: Number(r.total_gallons),
+    avgGpm: Number(r.avg_gpm),
+    minGpm: Number(r.min_gpm),
+    maxGpm: Number(r.max_gpm),
+    stdGpm: Number(r.std_gpm),
+    costEstimate: Number(r.cost_estimate),
+    pctOfSprinkler: Number(r.pct_of_sprinkler),
+  }))
+}
+
+export async function readStationWarnings(): Promise<StationWarning[]> {
+  await ensureSchema()
+  const db = getDb()
+  const res = await db.execute(
+    "SELECT station_id, station_name, baseline_gpm, recent_avg_gpm, pct_above_baseline, consecutive_days_above FROM station_warnings ORDER BY pct_above_baseline DESC"
+  )
+  return res.rows.map((r) => ({
+    stationId: String(r.station_id),
+    stationName: String(r.station_name),
+    baselineGpm: Number(r.baseline_gpm),
+    recentAvgGpm: Number(r.recent_avg_gpm),
+    pctAboveBaseline: Number(r.pct_above_baseline),
+    consecutiveDaysAbove: Number(r.consecutive_days_above),
   }))
 }
 

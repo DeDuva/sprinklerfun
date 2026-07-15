@@ -1,17 +1,22 @@
 "use client"
 
-import { useDeferredValue, useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { useStore } from "@/lib/store"
 import {
-  deriveData,
+  enrichRows,
+  buildDailyRows,
   buildStationStats,
   computeSummary,
-  computeStationWarnings,
+  rollupsToDailyRows,
+  rollupsToEnriched,
+  stationTimerMap,
   activeWindowForDate,
   currentConfig,
 } from "@/lib/analyze"
+import { fetchRollups, fetchStats, fetchDayRows } from "@/lib/backend"
+import type { FlumeRow, RollupRow, StatsPayload } from "@/lib/types"
 import SummaryCards from "@/components/SummaryCards"
 import ConsumptionChart from "@/components/ConsumptionChart"
 import StationFlowChart from "@/components/StationFlowChart"
@@ -35,19 +40,35 @@ function fmt(n: number) {
 
 export default function DashboardPage() {
   const router        = useRouter()
-  const rows          = useStore((s) => s.rows)
   const windows       = useStore((s) => s.windows)
-  const rowsVersion   = useStore((s) => s.rowsVersion)
+  const serverVersion = useStore((s) => s.serverVersion)
   const maintenance   = useStore((s) => s.maintenance)
 
-  const deferredRows    = useDeferredValue(rows)
-  const deferredWindows = useDeferredValue(windows)
-  const deferredVersion = useDeferredValue(rowsVersion)
-
   // "Current" config (today's window) — for billing, names, and warning baselines.
-  const deferredConfig  = useMemo(() => currentConfig(deferredWindows), [deferredWindows])
+  const config = useMemo(() => currentConfig(windows), [windows])
 
-  const isStale = deferredRows !== rows
+  // ---- Server-derived data (rollups + precomputed stats) -----------------
+  // Phase 3: the browser no longer loads the full per-minute series. The chart
+  // and monthly summary come from GET /api/rollup; the warnings come from the
+  // precomputed GET /api/stats feed. Refetched whenever the server data changes.
+  const [rollups, setRollups] = useState<RollupRow[] | null>(null)
+  const [stats, setStats] = useState<StatsPayload | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([fetchRollups(), fetchStats()])
+      .then(([r, s]) => {
+        if (cancelled) return
+        setRollups(r)
+        setStats(s)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setRollups([])
+        setStats(null)
+      })
+    return () => { cancelled = true }
+  }, [serverVersion])
 
   const [selectedFlowDay, setSelectedFlowDay] = useState<string | null>(null)
 
@@ -56,17 +77,16 @@ export default function DashboardPage() {
   const currentMonth = ymKey(today)
   const [selectedMonth, setSelectedMonth] = useState(currentMonth)
 
-  // ---- Expensive enrichment (deferred) -----------------------------------
+  // ---- Reconstruct DailyRow[] + synthetic EnrichedRow[] from rollups ------
   const derived = useMemo(() => {
-    if (deferredRows.length === 0) return null
+    if (!rollups || rollups.length === 0) return null
 
-    const { enriched, daily: allDaily } = deriveData(deferredRows, deferredWindows, deferredVersion)
-
-    const warnings = computeStationWarnings(enriched, deferredConfig, 21)
+    const allDaily = rollupsToDailyRows(rollups)
+    const enriched = rollupsToEnriched(rollups, stationTimerMap(windows))
 
     const hasBaselines = [
-      ...deferredConfig.timer1.stations,
-      ...deferredConfig.timer2.stations,
+      ...config.timer1.stations,
+      ...config.timer2.stations,
     ].some((s) => s.baselineGpm && s.baselineGpm > 0)
 
     const first = allDaily[0]?.date
@@ -78,8 +98,10 @@ export default function DashboardPage() {
       ? sprinklerDates[sprinklerDates.length - 1]
       : (last ?? null)
 
-    return { enriched, allDaily, warnings, hasBaselines, dateRange, sprinklerDates, defaultFlowDay }
-  }, [deferredRows, deferredWindows, deferredVersion, deferredConfig])
+    return { enriched, allDaily, hasBaselines, dateRange, sprinklerDates, defaultFlowDay }
+  }, [rollups, windows, config])
+
+  const warnings = stats?.warnings ?? []
 
   // ---- Monthly summary (cheap filter — reruns only when month changes) ---
   const monthlySummary = useMemo(() => {
@@ -92,7 +114,7 @@ export default function DashboardPage() {
     const effectiveEnd = selectedMonth === currentMonth ? todayStr : monthLastDay
 
     const monthly  = derived.allDaily.filter((d) => d.date >= monthStart && d.date <= effectiveEnd)
-    const summary  = computeSummary(monthly, deferredConfig)
+    const summary  = computeSummary(monthly, config)
 
     const fmtOpts = (year?: "numeric"): Intl.DateTimeFormatOptions =>
       ({ month: "short", day: "numeric", ...(year ? { year } : {}) })
@@ -102,19 +124,33 @@ export default function DashboardPage() {
 
     return { summary, rangeLabel: `${startFmt} – ${endFmt}`, monthFmt }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [derived, selectedMonth, deferredConfig])
+  }, [derived, selectedMonth, config])
 
-  // ---- Per-station stats + day summary for selected flow day -------------
+  // ---- Per-station flow for the selected day (single-day fetch + enrich) --
+  // Fetch just ONE day's raw rows and enrich them client-side (cheap) — the
+  // per-station gpm chart needs the per-minute series, but only for this day.
+  const flowDay = selectedFlowDay ?? derived?.defaultFlowDay ?? null
+  const [dayData, setDayData] = useState<{ day: string; rows: FlumeRow[] } | null>(null)
+
+  useEffect(() => {
+    if (!flowDay) return
+    let cancelled = false
+    fetchDayRows(flowDay)
+      .then((rows) => { if (!cancelled) setDayData({ day: flowDay, rows }) })
+      .catch(() => { if (!cancelled) setDayData({ day: flowDay, rows: [] }) })
+    return () => { cancelled = true }
+  }, [flowDay, serverVersion])
+
   const flowDayStats = useMemo(() => {
-    if (!derived) return null
-    const day = selectedFlowDay ?? derived.defaultFlowDay
-    if (!day) return null
-    const dayRows  = derived.enriched.filter((r) => r.date === day)
-    const dayDaily = derived.allDaily.filter((d) => d.date === day)
+    // Ignore a stale fetch for a different day (e.g. mid day-switch).
+    if (!derived || !dayData || dayData.day !== flowDay) return null
+    const { day, rows } = dayData
 
     // Use the config window active on this day (matches enrichRowsMultiConfig)
-    const activeWin = activeWindowForDate(deferredWindows, day)
-    const dayConfig = activeWin?.config ?? deferredConfig
+    const activeWin = activeWindowForDate(windows, day)
+    const dayConfig = activeWin?.config ?? config
+    const enriched = enrichRows(rows, dayConfig)
+    const dayDaily = buildDailyRows(enriched)
     const daySummary = computeSummary(dayDaily, dayConfig)
     const configVersionLabel = activeWin
       ? new Date(activeWin.effectiveFrom + "T12:00:00").toLocaleDateString(undefined, {
@@ -122,8 +158,8 @@ export default function DashboardPage() {
         })
       : null
 
-    return { stats: buildStationStats(dayRows, dayConfig), day, dayConfig, daySummary, configVersionLabel }
-  }, [derived, selectedFlowDay, deferredWindows, deferredConfig])
+    return { stats: buildStationStats(enriched, dayConfig), day, dayConfig, daySummary, configVersionLabel }
+  }, [derived, dayData, flowDay, windows, config])
 
   // Month nav bounds
   const firstMonth = derived?.dateRange?.first.slice(0, 7) ?? currentMonth
@@ -137,7 +173,7 @@ export default function DashboardPage() {
     const ids = Object.keys(maintenance)
     if (ids.length === 0) return []
     const nameById: Record<string, string> = {}
-    for (const s of [...deferredConfig.timer1.stations, ...deferredConfig.timer2.stations]) {
+    for (const s of [...config.timer1.stations, ...config.timer2.stations]) {
       nameById[s.id] = s.name
     }
     return ids.map((id) => ({
@@ -146,14 +182,15 @@ export default function DashboardPage() {
       note: maintenance[id].note,
       flaggedAt: maintenance[id].flaggedAt,
     }))
-  }, [maintenance, deferredConfig])
+  }, [maintenance, config])
 
   const fmtDate = (d: string) =>
     new Date(d + "T12:00:00").toLocaleDateString(undefined, {
       month: "short", day: "numeric", year: "numeric",
     })
 
-  if (rows.length === 0) {
+  // Empty state only once we've loaded and confirmed there's genuinely no data.
+  if (rollups !== null && rollups.length === 0) {
     return (
       <div className="space-y-4">
         <h1 className="text-2xl font-semibold text-[#143049]" style={{ fontFamily: "var(--font-fredoka)" }}>
@@ -171,7 +208,7 @@ export default function DashboardPage() {
   }
 
   // Flo's plain-English headline for this month.
-  const floMood = derived && derived.warnings.length > 0 ? "alert" : "happy"
+  const floMood = warnings.length > 0 ? "alert" : "happy"
   const floHeadline = monthlySummary
     ? `Your yard used ${fmt(monthlySummary.summary.totalGallons)} gal in ${monthlySummary.monthFmt}${
         monthlySummary.summary.totalGallons > 0
@@ -179,14 +216,14 @@ export default function DashboardPage() {
           : "."
       }`
     : "Crunching the numbers…"
-  const floNote = derived && derived.warnings.length > 0
-    ? `Worth a look: ${derived.warnings.map((w) => w.stationName).join(", ")} running above baseline.`
+  const floNote = warnings.length > 0
+    ? `Worth a look: ${warnings.map((w) => w.stationName).join(", ")} running above baseline.`
     : derived && derived.hasBaselines
       ? "Everything's tracking within baseline. 🌿"
       : null
 
   return (
-    <div className={`space-y-6 transition-opacity duration-200 ${isStale ? "opacity-60" : ""}`}>
+    <div className="space-y-6">
       {/* Flo's headline */}
       <div className="rounded-2xl border-2 border-[#143049] bg-gradient-to-b from-white to-[#FFFDF8] p-5 shadow-[4px_4px_0_rgba(20,48,73,0.08)] flex items-center gap-4 flex-wrap">
         <Flo mood={floMood} size={64} idle />
@@ -195,7 +232,7 @@ export default function DashboardPage() {
             {floHeadline}
           </p>
           {floNote && (
-            <p className={`text-sm mt-0.5 ${derived && derived.warnings.length > 0 ? "text-[#B33B2E]" : "text-[#4A6076]"}`}>
+            <p className={`text-sm mt-0.5 ${warnings.length > 0 ? "text-[#B33B2E]" : "text-[#4A6076]"}`}>
               {floNote}
             </p>
           )}
@@ -213,7 +250,7 @@ export default function DashboardPage() {
           Station Alerts
         </h2>
         {derived ? (
-          <WarningsPanel warnings={derived.warnings} hasBaselines={derived.hasBaselines} maintenance={maintenanceEntries} />
+          <WarningsPanel warnings={warnings} hasBaselines={derived.hasBaselines} maintenance={maintenanceEntries} />
         ) : (
           <div className="h-10 rounded-lg bg-gray-100 animate-pulse" />
         )}
@@ -277,7 +314,7 @@ export default function DashboardPage() {
           {derived ? (
             <ConsumptionChart
               enriched={derived.enriched}
-              windows={deferredWindows}
+              windows={windows}
               onDaySelect={setSelectedFlowDay}
               selectedDay={selectedFlowDay ?? derived.defaultFlowDay}
               onConfigClick={(id) => router.push(`/config?window=${id}`)}

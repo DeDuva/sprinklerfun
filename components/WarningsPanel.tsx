@@ -1,6 +1,6 @@
 "use client"
 
-import type { StationWarning } from "@/lib/analyze"
+import type { StationWarning } from "@/lib/types"
 import Flo from "@/components/design/Flo"
 
 export interface MaintenanceEntry {

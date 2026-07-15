@@ -1,4 +1,4 @@
-import type { ConfigWindow, FlumeRow } from "./types"
+import type { ConfigWindow, FlumeRow, RollupRow, StatsPayload } from "./types"
 
 // ---------------------------------------------------------------------------
 // Client-side bridge to the Turso backend (Phase 1 dual-write).
@@ -47,13 +47,35 @@ export async function pushRows(
   }
 }
 
-// Fetch the full row series from the server (hydrates the in-memory store on
-// load, since rows are no longer persisted in localStorage).
-export async function fetchAllRows(): Promise<FlumeRow[]> {
-  const res = await fetch("/api/rows")
-  if (!res.ok) throw new Error(`GET /api/rows → HTTP ${res.status}`)
-  const data = (await res.json()) as { rows: FlumeRow[] }
-  return data.rows
+// Mirror the current window set to the server and trigger a rollup + stats
+// recompute, WITHOUT ingesting any new rows. Config windows are client-owned
+// (localStorage), but the server computes rollups/stats from its own mirror of
+// them — so every window edit must resync or the dashboard's server-derived
+// reads go stale. Reuses POST /api/rows (rows: []), which already mirrors
+// windows + recomputes. Best-effort; returns the same PushResult shape.
+export async function syncWindows(windows: ConfigWindow[]): Promise<PushResult> {
+  return pushRows([], windows)
+}
+
+// The dashboard's consumption chart + monthly summary read these per-day/
+// per-station aggregates instead of the full per-minute series.
+export async function fetchRollups(from?: string, to?: string): Promise<RollupRow[]> {
+  const qs = new URLSearchParams()
+  if (from) qs.set("from", from)
+  if (to) qs.set("to", to)
+  const suffix = qs.toString() ? `?${qs}` : ""
+  const res = await fetch(`/api/rollup${suffix}`)
+  if (!res.ok) throw new Error(`GET /api/rollup → HTTP ${res.status}`)
+  const data = (await res.json()) as { rollups: RollupRow[] }
+  return data.rollups
+}
+
+// The precomputed per-minute-only aggregates: fleet gpm stats + baseline
+// warnings + total row count.
+export async function fetchStats(): Promise<StatsPayload> {
+  const res = await fetch("/api/stats")
+  if (!res.ok) throw new Error(`GET /api/stats → HTTP ${res.status}`)
+  return (await res.json()) as StatsPayload
 }
 
 // Fetch one day's raw rows (for the day-detail / flow / reconciliation views).
