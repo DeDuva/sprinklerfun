@@ -58,7 +58,7 @@ function SortHeader({
   onSort: (k: SortKey) => void
 }) {
   return (
-    <TableHead className="cursor-pointer select-none hover:text-blue-600" onClick={() => onSort(k)}>
+    <TableHead className="cursor-pointer select-none hover:text-sky-600" onClick={() => onSort(k)}>
       {label} {sortKey === k ? (sortDir === "desc" ? "↓" : "↑") : ""}
     </TableHead>
   )
@@ -220,7 +220,7 @@ export default function AnalysisPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Timing & Flow Calibration</h1>
+      <h1 className="text-2xl font-semibold text-[#143049]" style={{ fontFamily: "var(--font-fredoka)" }}>Timing & Flow Calibration</h1>
 
       <Card>
         <CardHeader>
@@ -305,10 +305,10 @@ export default function AnalysisPage() {
           )}
 
           {staged.size > 0 && (
-            <div className="sticky bottom-3 mt-4 flex items-center justify-between gap-3 flex-wrap rounded-lg border border-blue-300 bg-blue-50 px-4 py-2.5 shadow-sm">
-              <span className="text-sm text-blue-800">
+            <div className="sticky bottom-3 mt-4 flex items-center justify-between gap-3 flex-wrap rounded-lg border border-sky-300 bg-sky-50 px-4 py-2.5 shadow-sm">
+              <span className="text-sm text-sky-800">
                 <span className="font-semibold">{staged.size}</span> proposed config change{staged.size !== 1 ? "s" : ""}
-                <span className="text-blue-600"> · not saved yet</span>
+                <span className="text-sky-600"> · not saved yet</span>
               </span>
               <div className="flex items-center gap-2">
                 <Button variant="ghost" size="sm" onClick={discardStaged}>Discard</Button>
@@ -334,8 +334,8 @@ export default function AnalysisPage() {
               <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={52} />
               {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
               <Tooltip formatter={(v: any) => [`${Number(v).toFixed(3)} gpm`]} />
-              <Bar dataKey="gpm" fill="#3b82f6" name="avg gpm">
-                <ErrorBar dataKey="err" width={4} strokeWidth={1} stroke="#1d4ed8" />
+              <Bar dataKey="gpm" fill="#35A7E4" name="avg gpm">
+                <ErrorBar dataKey="err" width={4} strokeWidth={1} stroke="#1B6FA8" />
               </Bar>
             </BarChart>
           </ResponsiveContainer>

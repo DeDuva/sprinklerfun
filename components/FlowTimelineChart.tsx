@@ -25,9 +25,9 @@ interface Props {
 }
 
 const PALETTE = [
-  "#3b82f6", "#6366f1", "#8b5cf6", "#ec4899", "#f97316",
-  "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#0ea5e9",
-  "#a855f7", "#f43f5e", "#84cc16", "#f59e0b", "#10b981",
+  "#35A7E4","#4FB05A","#FFC24B","#FF6B5C","#8B6FD9",
+  "#FF9F3E","#2FB8A6","#E85D75","#7BC96F","#5EA8D8",
+  "#C77DD9","#F2A65A","#4A90D9","#3EC1A3","#D9754F",
 ]
 
 const fmtTime = (min: number) => {
@@ -256,7 +256,7 @@ export default function FlowTimelineChart({
             interval="preserveStartEnd"
             minTickGap={40}
           />
-          <YAxis tick={{ fontSize: 11 }} width={36} label={{ value: "gpm", angle: -90, position: "insideLeft", fontSize: 11, fill: "#94a3b8" }} />
+          <YAxis tick={{ fontSize: 11 }} width={36} label={{ value: "gpm", angle: -90, position: "insideLeft", fontSize: 11, fill: "#5C7A90" }} />
           <Tooltip content={<FlowTooltip />} />
 
           {/* Configured station bands — only render the selected one to avoid clutter */}
@@ -299,8 +299,8 @@ export default function FlowTimelineChart({
           <Area
             type="monotone"
             dataKey="actual"
-            stroke="#3b82f6"
-            fill="#3b82f6"
+            stroke="#35A7E4"
+            fill="#35A7E4"
             fillOpacity={0.25}
             strokeWidth={1.5}
             isAnimationActive={false}
@@ -309,7 +309,7 @@ export default function FlowTimelineChart({
           <Line
             type="stepAfter"
             dataKey="configured"
-            stroke="#f97316"
+            stroke="#FF9F3E"
             strokeWidth={2}
             dot={false}
             connectNulls={false}
@@ -321,7 +321,7 @@ export default function FlowTimelineChart({
             dataKey="label"
             height={22}
             travellerWidth={8}
-            stroke="#cbd5e1"
+            stroke="#E3D6B8"
             startIndex={Math.min(zoom?.start ?? 0, data.length - 1)}
             endIndex={Math.min(zoom?.end ?? data.length - 1, data.length - 1)}
             onChange={(r: { startIndex?: number; endIndex?: number }) => {

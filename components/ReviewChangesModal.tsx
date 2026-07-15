@@ -70,7 +70,7 @@ export default function ReviewChangesModal({
                         <p className="text-xs">
                           <span className="text-gray-400 line-through">{it.fromText}</span>
                           <span className="mx-1.5 text-gray-400">→</span>
-                          <span className="font-semibold text-blue-600">{it.toText}</span>
+                          <span className="font-semibold text-sky-600">{it.toText}</span>
                           {it.note && <span className="ml-2 text-gray-400">· {it.note}</span>}
                         </p>
                       </div>
