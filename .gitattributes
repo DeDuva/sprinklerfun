@@ -1,0 +1,6 @@
+# Normalize line endings to LF for all text files, regardless of the platform's
+# git `core.autocrlf` setting. This repo lives on the WSL filesystem but is
+# sometimes touched by Windows-side git; without this, checkouts flip-flop
+# between CRLF and LF and show spurious whole-file diffs. `text=auto` lets git
+# detect text vs binary; `eol=lf` forces LF in the working tree on checkout.
+* text=auto eol=lf
