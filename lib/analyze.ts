@@ -4,6 +4,8 @@ import type {
   ChartBar,
   ConfigWindow,
   DailyRow,
+  DelayFit,
+  DelayRecommendation,
   EnrichedRow,
   ExpectedSegment,
   FlumeRow,
@@ -81,9 +83,12 @@ function localDateAndMin(datetime: string): { date: string; rowMin: number } {
  * Reconstruct the configured station schedule for a single day-of-week.
  *
  * Walks every enabled program on both timers whose `days` include `dow`, and for
- * each lays out its stations back-to-back from the program start: station i runs
- * for `[cursor, cursor + durationMin]`, then the cursor advances. Only enabled
- * stations with a positive duration produce a segment.
+ * each lays out its stations in run order from the program start: station i runs
+ * for `[cursor, cursor + durationMin]`, then the cursor advances by that duration
+ * plus the timer's `stationDelaySec`. Only enabled stations with a positive
+ * duration produce a segment. With no delay configured (the default, and every
+ * config written before the field existed) the layout is back-to-back and
+ * byte-identical to what this produced before.
  *
  * Segments are returned in iteration order — timer1 programs A/B/C, then timer2 —
  * which is the order `enrichRows` relies on for first-match station assignment.
@@ -106,24 +111,42 @@ export function buildDaySchedule(config: AppConfig, dow: number): ExpectedSegmen
       const prog = timer.programs[pid]
       if (!prog || !prog.enabled || !prog.days.includes(dow)) continue
 
+      // Dead time the controller inserts between stations. Held as a fraction of
+      // a minute and accumulated on a fractional cursor — a 30 s delay is real
+      // and compounds across a run, but never resolves as a gap in 1-minute
+      // meter bins, so rounding it away per-station would lose it entirely.
+      const delayMin = Math.max(0, timer.stationDelaySec ?? 0) / 60
+
       let cursor = parseTimeToMinutes(prog.start)
+      let emitted = 0
       for (const station of timer.stations) {
         const ps = prog.stations[station.id]
         const dur = ps?.durationMin ?? 0
         const ena = ps?.enabled ?? false
-        const end = cursor + dur
         if (ena && dur > 0) {
+          // The delay falls BEFORE every station after the first, so the program
+          // start stays exact and the offset accumulates down the run. Nothing is
+          // added after the last station — the delay is a gap between stations,
+          // not a tail on the program.
+          if (emitted > 0) cursor += delayMin
+          // Round both ends off the same fractional cursor, so the emitted span
+          // is always exactly durationMin and every downstream consumer
+          // (enrichRows' `startMin < rowMin <= endMin`, reconcileDay's boundary
+          // space, the chart's step line) keeps working in whole minutes.
+          const start = Math.round(cursor)
+          const end = Math.round(cursor + dur)
           segments.push({
             stationId: station.id,
             name: nameById.get(station.id) ?? station.id,
             timer: timerKey,
             programId: pid,
-            startMin: cursor,
+            startMin: start,
             endMin: end,
             durationMin: dur,
             baselineGpm: baselineById.get(station.id) ?? null,
           })
-          cursor = end
+          cursor += dur
+          emitted++
         }
       }
     }
@@ -407,7 +430,13 @@ export function diffConfigs(prev: AppConfig, next: AppConfig): ConfigChange[] {
     const nt: TimerConfig = next[tk]
     if (!pt || !nt) continue
 
-    // Hardware: station add/remove, name + baseline changes
+    // Hardware: inter-station delay, station add/remove, name + baseline changes
+    const pDelay = pt.stationDelaySec ?? 0
+    const nDelay = nt.stationDelaySec ?? 0
+    if (pDelay !== nDelay) {
+      changes.push({ area: tlabel, field: "Station delay", from: `${pDelay}s`, to: `${nDelay}s` })
+    }
+
     const pById = new Map(pt.stations.map((s) => [s.id, s]))
     const nById = new Map(nt.stations.map((s) => [s.id, s]))
     for (const s of nt.stations) if (!pById.has(s.id)) changes.push({ area: tlabel, field: "Station added", from: "—", to: s.name || s.id })
@@ -648,6 +677,112 @@ export interface ReconcileOptions {
   driftSearchMin?: number
   /** Minimum gpm step for an interior station boundary to be unambiguous. */
   minStepGpm?: number
+  /**
+   * Longest off-gap still treated as dead time between two stations of the same
+   * program rather than the end of the program. Above this, a quiet stretch
+   * separates two different programs.
+   */
+  maxDelayMin?: number
+}
+
+// ---------------------------------------------------------------------------
+// Program run detection
+// ---------------------------------------------------------------------------
+
+/** One program's metered run: its span, the on-fragments inside it, and the gaps. */
+export interface ProgramRun {
+  start: number   // first on-minute
+  end: number     // last on-minute
+  onThreshold: number
+  /** Contiguous on-stretches. More than one means dead time is visible. */
+  fragments: Array<{ start: number; end: number }>
+  /** Off-minutes between consecutive fragments — the measured dead times. */
+  gaps: number[]
+}
+
+/** Build the minute→gpm lookup both the reconciler and the estimator read. */
+export function seriesMap(series: MinutePoint[]): Map<number, number> {
+  const m = new Map<number, number>()
+  for (const p of series) m.set(p.timeMin, p.gpm)
+  return m
+}
+
+/**
+ * Locate one program's actual run in the metered series.
+ *
+ * A program with an inter-station delay does NOT produce one continuous run —
+ * it fragments into a stretch per station, separated by the dead time. Picking
+ * the single longest fragment (which is what this logic did when it was inline
+ * in `reconcileDay`) truncates the program at its first delay and mis-assigns
+ * everything after it. So fragments separated by no more than `maxDelayMin` are
+ * merged into one run, and the gaps between them are kept — they are the direct
+ * measurement `inferStationDelay` needs.
+ */
+export function findProgramRun(
+  gpmAt: Map<number, number>,
+  ordered: ExpectedSegment[],
+  opts: ReconcileOptions = {}
+): ProgramRun | null {
+  if (ordered.length === 0) return null
+  const at = (m: number) => gpmAt.get(m) ?? 0
+  const driftSearch = opts.driftSearchMin ?? 10
+  const maxDelay = opts.maxDelayMin ?? 5
+
+  const progStart = ordered[0].startMin
+  const progEnd = ordered[ordered.length - 1].endMin
+
+  const baselines = ordered
+    .map((s) => s.baselineGpm)
+    .filter((b): b is number => b != null && b > 0)
+  const onThreshold =
+    opts.onThresholdGpm ?? (baselines.length ? Math.max(0.5, 0.4 * Math.min(...baselines)) : 0.5)
+
+  // Search wide enough to contain a run that has stretched by the largest delay
+  // we would still call a delay, not just the configured span plus drift.
+  const lo = progStart - driftSearch
+  const hi = progEnd + driftSearch + maxDelay * ordered.length
+
+  const frags: Array<{ start: number; end: number }> = []
+  let cur: { start: number; end: number } | null = null
+  for (let m = lo; m <= hi; m++) {
+    if (at(m) >= onThreshold) {
+      if (!cur) cur = { start: m, end: m }
+      else cur.end = m
+    } else if (cur) {
+      frags.push(cur)
+      cur = null
+    }
+  }
+  if (cur) frags.push(cur)
+  if (frags.length === 0) return null
+
+  // Merge fragments separated by dead time into candidate runs.
+  const runs: ProgramRun[] = []
+  let acc: ProgramRun | null = null
+  for (const f of frags) {
+    if (acc && f.start - acc.end - 1 <= maxDelay) {
+      acc.gaps.push(f.start - acc.end - 1)
+      acc.fragments.push(f)
+      acc.end = f.end
+    } else {
+      if (acc) runs.push(acc)
+      acc = { start: f.start, end: f.end, onThreshold, fragments: [f], gaps: [] }
+    }
+  }
+  if (acc) runs.push(acc)
+
+  // Pick the run overlapping the configured span most; else the longest.
+  let best: ProgramRun | null = null
+  let bestOverlap = 0
+  for (const r of runs) {
+    const ov = Math.min(r.end, progEnd) - Math.max(r.start, progStart) + 1
+    if (ov > bestOverlap) {
+      bestOverlap = ov
+      best = r
+    }
+  }
+  if (!best) best = runs.reduce((a, b) => (b.end - b.start > a.end - a.start ? b : a))
+  return best
 }
 
 /**
@@ -674,12 +809,10 @@ export function reconcileDay(
   schedule: ExpectedSegment[],
   opts: ReconcileOptions = {}
 ): SegmentReconciliation[] {
-  const driftSearch = opts.driftSearchMin ?? 10
   const minStep = opts.minStepGpm ?? 0.5
   const REFINE_WIN = 3 // minutes each side when scoring a boundary step
 
-  const gpmAt = new Map<number, number>()
-  for (const p of series) gpmAt.set(p.timeMin, p.gpm)
+  const gpmAt = seriesMap(series)
   const at = (m: number) => gpmAt.get(m) ?? 0
   const meanRange = (from: number, to: number): number | null => {
     if (to < from) return null
@@ -692,7 +825,7 @@ export function reconcileDay(
     return n > 0 ? sum / n : null
   }
 
-  // Group by program run (timer + programId); each is one continuous run.
+  // Group by program run (timer + programId).
   const groups = new Map<string, ExpectedSegment[]>()
   for (const seg of schedule) {
     const key = `${seg.timer}:${seg.programId}`
@@ -705,43 +838,8 @@ export function reconcileDay(
   for (const segs of groups.values()) {
     const ordered = [...segs].sort((a, b) => a.startMin - b.startMin)
     const progStart = ordered[0].startMin
-    const progEnd = ordered[ordered.length - 1].endMin
 
-    const baselines = ordered
-      .map((s) => s.baselineGpm)
-      .filter((b): b is number => b != null && b > 0)
-    const onThreshold =
-      opts.onThresholdGpm ?? (baselines.length ? Math.max(0.5, 0.4 * Math.min(...baselines)) : 0.5)
-
-    // Find contiguous on-runs in the search region; pick the one overlapping the
-    // configured span most (else the longest, if nothing overlaps).
-    const lo = progStart - driftSearch
-    const hi = progEnd + driftSearch
-    const runs: Array<{ start: number; end: number }> = []
-    let cur: { start: number; end: number } | null = null
-    for (let m = lo; m <= hi; m++) {
-      if (at(m) >= onThreshold) {
-        if (!cur) cur = { start: m, end: m }
-        else cur.end = m
-      } else if (cur) {
-        runs.push(cur)
-        cur = null
-      }
-    }
-    if (cur) runs.push(cur)
-
-    let best: { start: number; end: number } | null = null
-    let bestOverlap = 0
-    for (const r of runs) {
-      const ov = Math.min(r.end, progEnd) - Math.max(r.start, progStart) + 1
-      if (ov > bestOverlap) {
-        bestOverlap = ov
-        best = r
-      }
-    }
-    if (!best && runs.length) {
-      best = runs.reduce((a, b) => (b.end - b.start > a.end - a.start ? b : a))
-    }
+    const best = findProgramRun(gpmAt, ordered, opts)
 
     const baseRecon = (seg: ExpectedSegment): SegmentReconciliation => ({
       stationId: seg.stationId,
@@ -759,6 +857,7 @@ export function reconcileDay(
       startDriftMin: null,
       durationDriftMin: null,
       gpmDeltaPct: null,
+      gapBeforeMin: null,
       confidence: "low",
       confidenceReason: "No flow detected for this program",
     })
@@ -781,8 +880,22 @@ export function reconcileDay(
     boundaries[0] = runStartBoundary
     boundaries[N] = runEndBoundary
 
+    // A program shifts as a whole (progDrift) but it also STRETCHES — from dead
+    // time between stations, from stations running long, or both. Boundary i is
+    // displaced by roughly i x (stretch per transition) on top of the shift.
+    // Anchoring on progDrift alone, as this did before, puts a late boundary far
+    // outside the +-4 min refinement window below: with 11 stations and a minute
+    // of stretch per transition the last one sits 10 minutes out, gets pinned to
+    // a wrong position, and its duration and gpm are then reported as measured
+    // fact. Spreading the observed stretch evenly puts every boundary within
+    // reach; the refinement still moves each one to its true edge, so genuine
+    // per-station duration error is preserved rather than smeared.
+    const cfgSpan = ordered[N - 1].endMin - progStart
+    const obsSpan = runEndBoundary - runStartBoundary
+    const stretchPerTransition = N > 1 ? (obsSpan - cfgSpan) / (N - 1) : 0
+
     for (let i = 1; i < N; i++) {
-      const center = ordered[i].startMin + progDrift // drift-shifted configured boundary
+      const center = Math.round(ordered[i].startMin + progDrift + i * stretchPerTransition)
       // keep boundaries monotonic and strictly inside the run
       const searchLo = Math.max(boundaries[i - 1] + 1, center - 4)
       const searchHi = Math.min(runEndBoundary - (N - i), center + 4)
@@ -827,6 +940,15 @@ export function reconcileDay(
 
       const startDrift = startB - seg.startMin
       const durationDrift = duration - seg.durationMin
+      // Dead time immediately before this station: consecutive off-minutes
+      // ending at its start boundary. The first station of a program has
+      // nothing before it to measure.
+      let gapBeforeMin: number | null = null
+      if (i > 0) {
+        let n = 0
+        while (n < 30 && at(startB - n) < best.onThreshold) n++
+        gapBeforeMin = n
+      }
       const gpmDeltaPct =
         seg.baselineGpm != null && seg.baselineGpm > 0 && actualGpm != null
           ? (actualGpm - seg.baselineGpm) / seg.baselineGpm
@@ -848,10 +970,338 @@ export function reconcileDay(
         startDriftMin: startDrift,
         durationDriftMin: durationDrift,
         gpmDeltaPct,
+        gapBeforeMin,
         confidence: reasons.length > 0 ? "low" : "high",
         confidenceReason: reasons.length > 0 ? reasons.join("; ") : undefined,
       })
     }
+  }
+
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Inter-station delay inference
+// ---------------------------------------------------------------------------
+
+export interface DelayOptions extends ReconcileOptions {
+  /** Below this, an inferred delay is noise rather than a controller setting. */
+  minDelaySec?: number
+  /** Largest delay worth fitting. */
+  maxDelaySec?: number
+  /** Minimum RSS improvement over a zero-delay model to trust a fit. */
+  minRssImprovement?: number
+}
+
+const DELAY_STEP_SEC = 5
+
+/** Most common value in a list, with the count that backs it. */
+function mode(values: number[]): { value: number; share: number } | null {
+  if (values.length === 0) return null
+  const counts = new Map<number, number>()
+  for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1)
+  let bestV = values[0]
+  let bestN = 0
+  for (const [v, n] of counts) {
+    if (n > bestN || (n === bestN && v < bestV)) {
+      bestN = n
+      bestV = v
+    }
+  }
+  return { value: bestV, share: bestN / values.length }
+}
+
+function median(values: number[]): number {
+  const s = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(s.length / 2)
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+}
+
+/**
+ * Residual sum of squares of a piecewise-constant model: lay the stations out
+ * from `runStart` with `delayMin` between them, then score every minute against
+ * the mean of the segment it lands in. Minutes falling in a delay gap are pooled
+ * separately, so a delay that correctly lines gaps up with quiet minutes scores
+ * better than one that does not.
+ *
+ * Deliberately baseline-free. Once a run has drifted, the configured baselines
+ * are being compared against the wrong stations — which is exactly the state
+ * this function has to work in — so a model that leaned on them would be scoring
+ * against numbers the drift has already invalidated.
+ */
+function piecewiseRss(
+  at: (m: number) => number,
+  durations: number[],
+  runStart: number,
+  runEnd: number,
+  delayMin: number
+): number {
+  const buckets = new Map<number, number[]>()
+  let cursor = runStart
+  const push = (key: number, m: number) => {
+    const b = buckets.get(key)
+    if (b) b.push(at(m))
+    else buckets.set(key, [at(m)])
+  }
+  for (let i = 0; i < durations.length; i++) {
+    if (i > 0) {
+      const gapEnd = Math.round(cursor + delayMin)
+      for (let m = Math.round(cursor); m < gapEnd; m++) push(-1, m)
+      cursor += delayMin
+    }
+    const a = Math.round(cursor)
+    const b = Math.round(cursor + durations[i])
+    for (let m = a; m < b; m++) push(i, m)
+    cursor += durations[i]
+  }
+  // Anything past the modelled span still belongs to the run and must be scored,
+  // or a too-short delay would win simply by ignoring the tail it fails to cover.
+  for (let m = Math.round(cursor); m <= runEnd; m++) push(-2, m)
+
+  let rss = 0
+  for (const vals of buckets.values()) {
+    if (vals.length === 0) continue
+    const mean = vals.reduce((s, v) => s + v, 0) / vals.length
+    for (const v of vals) rss += (v - mean) ** 2
+  }
+  return rss
+}
+
+/**
+ * Infer the per-transition dead time for each program run in a day.
+ *
+ * The estimate comes from measuring gaps, not from dividing elongation. Those
+ * are different quantities and conflating them over-corrects: on the reference
+ * data one timer's run stretched 16 minutes over 10 transitions, which divides
+ * to 96 s, while the gaps between its stations measured a clean 60 s. The other
+ * ~36 s per transition was stations running long — a duration problem that a
+ * delay setting must not absorb, or the fix quietly over-waters those zones.
+ *
+ * So: take the modal measured gap as the delay, and report the leftover
+ * elongation as `residualMin` for the duration proposals to handle. The RSS grid
+ * search is the confidence gate, not the estimator — it answers "does a delay
+ * model explain this run better than no delay at all", which is what separates a
+ * timer with real dead time from one that is simply running long.
+ *
+ * When the delay is too short to blank a whole meter bin no gaps are visible at
+ * all, so the elongation estimate is the only signal left; it is used, but held
+ * to the `minDelaySec` floor so a rounding artifact never becomes a config edit.
+ */
+export function inferStationDelay(
+  series: MinutePoint[],
+  schedule: ExpectedSegment[],
+  date: string,
+  opts: DelayOptions = {}
+): DelayFit[] {
+  const minDelaySec = opts.minDelaySec ?? 15
+  const maxDelaySec = opts.maxDelaySec ?? 180
+  const minImprovement = opts.minRssImprovement ?? 0.1
+
+  const gpmAt = seriesMap(series)
+  const at = (m: number) => gpmAt.get(m) ?? 0
+
+  const groups = new Map<string, ExpectedSegment[]>()
+  for (const seg of schedule) {
+    const key = `${seg.timer}:${seg.programId}`
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(seg)
+  }
+
+  const out: DelayFit[] = []
+
+  for (const segs of groups.values()) {
+    const ordered = [...segs].sort((a, b) => a.startMin - b.startMin)
+    const N = ordered.length
+    const transitions = N - 1
+    const base: Omit<DelayFit, "delayMin" | "modalGapMin" | "elongationMin" |
+      "delayExplainedMin" | "residualMin" | "rssImprovement" | "confidence" | "confidenceReason"> = {
+      date,
+      timer: ordered[0].timer,
+      programId: ordered[0].programId,
+      stationCount: N,
+      transitions,
+    }
+    const unfit = (reason: string): DelayFit => ({
+      ...base,
+      delayMin: 0,
+      modalGapMin: null,
+      elongationMin: 0,
+      delayExplainedMin: 0,
+      residualMin: 0,
+      rssImprovement: 0,
+      confidence: "low",
+      confidenceReason: reason,
+    })
+
+    if (transitions < 1) {
+      out.push(unfit("Single-station program — nothing to transition between"))
+      continue
+    }
+
+    const run = findProgramRun(gpmAt, ordered, opts)
+    if (!run) {
+      out.push(unfit("No flow detected for this program"))
+      continue
+    }
+
+    const progStart = ordered[0].startMin
+    // The configured span already carries whatever delay is configured today, so
+    // measuring against it makes the estimate additive and the whole thing
+    // idempotent: once the right delay is saved, elongation goes to zero and the
+    // next run recommends the same value rather than stacking another one on.
+    const cfgSpan = ordered[N - 1].endMin - progStart
+    const cfgTotal = ordered.reduce((s, x) => s + x.durationMin, 0)
+    const configuredDelayMin = (cfgSpan - cfgTotal) / transitions
+
+    const runStartBoundary = run.start - 1
+    const obsSpan = run.end - runStartBoundary
+    const elongationMin = obsSpan - cfgSpan
+
+    const durations = ordered.map((s) => s.durationMin)
+    const rssZero = piecewiseRss(at, durations, run.start, run.end, 0)
+    const stepMin = DELAY_STEP_SEC / 60
+    const maxMin = maxDelaySec / 60
+
+    // Only the best achievable score matters here, not which delay achieved it:
+    // this is the gate ("does any delay model beat no delay at all"), while the
+    // measured gaps are what actually set the value.
+    let bestRss = rssZero
+    for (let d = stepMin; d <= maxMin + 1e-9; d += stepMin) {
+      const rss = piecewiseRss(at, durations, run.start, run.end, d)
+      if (rss < bestRss) bestRss = rss
+    }
+    const rssImprovement = rssZero > 0 ? (rssZero - bestRss) / rssZero : 0
+
+    // Measured gaps are the estimator when there are any; the grid search only
+    // decides whether to believe them.
+    const usableGaps = run.gaps.filter((g) => g > 0)
+    const m = mode(usableGaps)
+    let delayMin: number
+    let modalGapMin: number | null = null
+    const reasons: string[] = []
+
+    if (m && usableGaps.length >= 2) {
+      modalGapMin = m.value
+      // A measured gap is the absolute dead time, whatever the config currently
+      // says — nothing to add to it.
+      // A clear mode is a repeated physical measurement. A scattered one usually
+      // means dry stations breaking the run into pieces that are not delays, so
+      // the median is the safer summary.
+      delayMin = m.share >= 0.5 ? m.value : median(usableGaps)
+      if (m.share < 0.5) reasons.push("Measured gaps are inconsistent")
+    } else {
+      // No gap ever blanked a whole bin. Fall back to spreading the elongation —
+      // which is measured against a configured span that already contains
+      // whatever delay is set today, so it yields the ADDITIONAL delay and has to
+      // be added to the current one. It also cannot separate dead time from long
+      // runs, hence the noise floor below.
+      delayMin = Math.max(0, configuredDelayMin + elongationMin / transitions)
+      reasons.push("No measurable gaps — estimated from run elongation")
+    }
+
+    const delaySec = Math.round((delayMin * 60) / DELAY_STEP_SEC) * DELAY_STEP_SEC
+    delayMin = delaySec / 60
+
+    // Both figures are stated relative to the configured span, so the card can
+    // say "explains N of the M minutes this program overran".
+    const delayExplainedMin = (delayMin - configuredDelayMin) * transitions
+    const residualMin = elongationMin - delayExplainedMin
+
+    if (delaySec < minDelaySec) reasons.push("Below the noise floor — no delay worth setting")
+    if (rssImprovement < minImprovement) {
+      reasons.push("A delay model does not explain this run better than no delay")
+    }
+    // A run shorter than its configured span never completed — a rain-sensor
+    // abort, a manual stop, a meter dropout. The gaps it does show are still
+    // real, but its residual is meaningless (it reads as tens of minutes of
+    // negative duration drift), so it must not vote on the aggregate.
+    const ranShort = elongationMin < 0
+    if (ranShort) reasons.push("Program ran shorter than configured — likely cut short")
+
+    const confident = delaySec >= minDelaySec && rssImprovement >= minImprovement &&
+      !ranShort && !reasons.includes("Measured gaps are inconsistent")
+
+    out.push({
+      ...base,
+      delayMin,
+      modalGapMin,
+      elongationMin,
+      delayExplainedMin,
+      residualMin,
+      rssImprovement,
+      confidence: confident ? "high" : "low",
+      confidenceReason: reasons.length ? reasons.join("; ") : undefined,
+    })
+  }
+
+  return out
+}
+
+/**
+ * Aggregate per-day fits into one recommendation per timer.
+ *
+ * A single day can be wrecked by a rain-sensor abort, a manual run, or a meter
+ * dropout, so only fits that passed their own confidence gate vote, and the
+ * median (not the mean) decides — on the reference data 6 of 26 days had a timer
+ * cut short, and they were all correctly excluded here.
+ */
+export function recommendStationDelays(
+  fits: DelayFit[],
+  config: AppConfig
+): DelayRecommendation[] {
+  const out: DelayRecommendation[] = []
+
+  for (const timer of ["timer1", "timer2"] as const) {
+    const mine = fits.filter((f) => f.timer === timer)
+    const good = mine.filter((f) => f.confidence === "high")
+    const configuredSec = Math.max(0, config[timer].stationDelaySec ?? 0)
+
+    const days = new Set(mine.map((f) => f.date)).size
+    const daysFit = new Set(good.map((f) => f.date)).size
+
+    if (good.length === 0) {
+      out.push({
+        timer,
+        delaySec: null,
+        configuredSec,
+        daysFit: 0,
+        daysTotal: days,
+        minSec: null,
+        maxSec: null,
+        medianElongationMin: mine.length ? median(mine.map((f) => f.elongationMin)) : null,
+        medianExplainedMin: null,
+        medianResidualMin: null,
+        reason: days === 0
+          ? "No runs found for this timer in the days examined."
+          : "No inter-station delay detected — stations run back to back.",
+      })
+      continue
+    }
+
+    const secs = good.map((f) => Math.round(f.delayMin * 60))
+    const delaySec = Math.round(median(secs) / DELAY_STEP_SEC) * DELAY_STEP_SEC
+    const medianElongationMin = median(good.map((f) => f.elongationMin))
+    const medianResidualMin = median(good.map((f) => f.residualMin))
+    const medianExplainedMin = median(good.map((f) => f.delayExplainedMin))
+
+    const residual = Math.round(medianResidualMin)
+    const reason = residual > 1
+      ? `Also running about ${residual} min long per cycle beyond the delay — that part is station duration, not dead time.`
+      : "The delay accounts for essentially all of this program's overrun."
+
+    out.push({
+      timer,
+      delaySec,
+      configuredSec,
+      daysFit,
+      daysTotal: days,
+      minSec: Math.min(...secs),
+      maxSec: Math.max(...secs),
+      medianElongationMin,
+      medianExplainedMin,
+      medianResidualMin,
+      reason,
+    })
   }
 
   return out

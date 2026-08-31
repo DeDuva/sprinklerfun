@@ -111,6 +111,7 @@ interface ProgramConfig {
 ```ts
 interface TimerConfig {
   stations: Station[]                                     // ordered; defines run order
+  stationDelaySec?: number                                // dead time between stations
   programs: { A: ProgramConfig; B: ProgramConfig; C: ProgramConfig }
 }
 ```
@@ -435,14 +436,32 @@ Reconciles a day's `ExpectedSegment[]` (from `buildDaySchedule`) against its act
 
 Per program (grouped by `timer:programId`):
 1. **On-threshold** — `onThresholdGpm` option, else `max(0.5, 0.4 × min baseline in the program)`, else `0.5`.
-2. **Run detection** — scan `[progStart − driftSearch, progEnd + driftSearch]` (default `driftSearch = 10`) for contiguous "on" stretches (flow ≥ threshold); pick the one with the greatest overlap with the configured span (else the longest). Its first on-minute − 1 = the run's start boundary; its last on-minute = the end boundary. `progDrift = runStartBoundary − progStart`.
-3. **Interior boundary refinement** — for each station boundary, search ±4 min around its drift-shifted configured position for the minute with the largest flow step (max `|mean(left window) − mean(right window)|`, window = 3 min, clamped monotonic inside the run). If the best step `< minStepGpm` (default `0.5`) the adjacent levels are indistinguishable: fall back to the shifted configured boundary and mark the boundary **low-confidence**.
+2. **Run detection** (`findProgramRun`) — scan `[progStart − driftSearch, progEnd + driftSearch + maxDelay·n]` (default `driftSearch = 10`) for contiguous "on" stretches (flow ≥ threshold), then **merge stretches separated by ≤ `maxDelayMin` (default 5)** — an inter-station delay fragments a program into one stretch per station, and picking a single fragment would truncate the program at its first delay. Pick the merged run with the greatest overlap with the configured span (else the longest). Its first on-minute − 1 = the run's start boundary; its last on-minute = the end boundary. `progDrift = runStartBoundary − progStart`. The gaps between fragments are retained — they are what `inferStationDelay` measures.
+3. **Interior boundary refinement** — anchor boundary `i` at `configStart + progDrift + i × (observed stretch / transitions)`, then search ±4 min around it for the minute with the largest flow step (max `|mean(left window) − mean(right window)|`, window = 3 min, clamped monotonic inside the run). If the best step `< minStepGpm` (default `0.5`) the adjacent levels are indistinguishable: fall back to the shifted configured boundary and mark the boundary **low-confidence**.
 4. **Sustained gpm** — mean over each station's interval **excluding its first and last minute** (adjacent-station bleed). Runs ≤ 3 min have no clean interior → full mean, **low-confidence**.
-5. Emit per station: `actualStart/End/Duration`, trimmed `actualGpm`, `startDriftMin`, `durationDriftMin`, `gpmDeltaPct`, and a `confidence` (`low` if a run was missing, ≤3 min, or sat on an ambiguous boundary).
+5. Emit per station: `actualStart/End/Duration`, trimmed `actualGpm`, `startDriftMin`, `durationDriftMin`, `gpmDeltaPct`, `gapBeforeMin` (measured dead time before this station), and a `confidence` (`low` if a run was missing, ≤3 min, or sat on an ambiguous boundary).
 
 A program with no detected run yields all-null actuals (low-confidence). Two enabled programs on the same timer/day produce two independent runs for the same station — reconciled separately (the reconciliation table shows both; the chart's station chips dedupe by id).
 
 The Analysis tab's per-row / bulk actions translate a `SegmentReconciliation` into a config edit on the **window active on the selected day** (`activeWindowForDate`) via `updateWindow`: baseline → `station.baselineGpm`; start → shift `program.start` by `startDriftMin` (per-station starts derive from program start + upstream durations); duration → `programStation.durationMin`. "Calibrate from this day" applies all three across every detected station at once.
+
+### 7. Inter-Station Delay Inference (`inferStationDelay` / `recommendStationDelays`)
+
+**Problem**: controllers insert dead time between closing one station's valve and opening the next. It is vendor-specific, invisible in the config model, and it accumulates — station *i* starts ~*i × delay* late and the program overruns by *(n−1) × delay*. Left unmodelled, the only tool the app offered for that drift was the per-station duration proposal, which would bake a hardware delay into run times and over-water every zone.
+
+**Why elongation ÷ transitions is the wrong estimator**: a program's overrun has two causes — dead time *and* stations running longer than configured — and they need opposite fixes. On the reference data (26 sprinkler days, config window effective 2026‑07‑01) timer 2 overran by exactly 16 min over 10 transitions on 20 of 26 days. Dividing gives 96 s; a residual-sum-of-squares grid search over the delay converges on 95 s. Both over-attribute. The **gaps between detected on-runs measure a clean 60 s** (modal gap 1 min, 105 of 114 observations). The other ~36 s per transition is duration overrun.
+
+**Algorithm** (per `timer:programId`, per day):
+1. `findProgramRun` — the merged run plus the gaps between its fragments.
+2. **Elongation** — `observedSpan − configuredSpan`. Measured against the configured span, which already contains whatever delay is currently set, so the estimate is additive and the whole thing is idempotent: once the right delay is saved, elongation goes to zero and the next fit recommends the same value rather than stacking another one on.
+3. **Estimate** — the **modal measured gap** when at least two gaps are visible (median if the mode holds < 50%, which usually means dry stations are fragmenting the run rather than delays). When no gap ever blanks a whole 1-minute bin, fall back to `configuredDelay + elongation / transitions`, held to a `minDelaySec` floor (default 15 s) so a rounding artifact never becomes a config edit.
+4. **Confidence gate** — a baseline-free piecewise-constant RSS fit (`piecewiseRss`: score every minute against the mean of the segment it lands in, gap minutes pooled separately) must beat a zero-delay model by ≥ 10%. Deliberately baseline-free: once a run has drifted, the configured baselines are being compared against the wrong stations. A run *shorter* than its configured span never completed (rain-sensor abort, manual stop) and is excluded — its gaps are real but its residual is meaningless.
+5. **Decomposition** — `delayExplainedMin = (delay − configuredDelay) × transitions`, `residualMin = elongation − delayExplained`. Both are surfaced; the residual stays visible as duration drift for the per-station proposals.
+6. `recommendStationDelays` — median across the days that passed the gate, rounded to 5 s, with the day count and spread.
+
+Served by `GET /api/delay?days=N` (server-side: the fit needs many days of per-minute flow and the browser holds one), rendered by `StationDelayCard`, staged via `buildDelayChange` through the same review-and-save path as every other proposal. Saving re-attributes stored rollups, since `buildDaySchedule` feeds `enrichRows` — already handled by the existing `syncWindows → POST /api/rows` recompute.
+
+On the reference data this yields **timer 1: no delay** (0 of 26 days; its run tracks configuration to within a minute) and **timer 2: 60 s** (20 of 26 days, range 60–60 s), which pulls timer 2's last station from 16 min of start drift down to 6 min — the remaining 6 min being genuine duration drift. `lib/__tests__/analyze.test.ts` asserts this against committed fixtures (`data/sprinkler-config-2026-08-31.json`, `data/day-2026-08-28.json`).
 
 ---
 

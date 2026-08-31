@@ -34,6 +34,11 @@ export interface ProgramConfig {
 
 export interface TimerConfig {
   stations: Station[]   // ordered; defines run order shared across all programs
+  // Dead time the controller inserts between closing one station's valve and
+  // opening the next. A firmware property of the timer, so it is shared across
+  // programs A/B/C — like run order, and unlike duration. Absent means 0, which
+  // is what every config written before this field existed implies.
+  stationDelaySec?: number
   programs: { A: ProgramConfig; B: ProgramConfig; C: ProgramConfig }
 }
 
@@ -158,8 +163,53 @@ export interface SegmentReconciliation {
   startDriftMin: number | null    // actualStart - cfgStart
   durationDriftMin: number | null // actualDuration - cfgDuration
   gpmDeltaPct: number | null      // (actualGpm - baseline) / baseline
+  // Minutes of sub-threshold flow measured immediately before this station's
+  // run — the observed inter-station dead time. Null for the first station of a
+  // program (nothing precedes it) and when no run was detected.
+  gapBeforeMin: number | null
   confidence: "high" | "low"
   confidenceReason?: string
+}
+
+// ---------------------------------------------------------------------------
+// Inter-station delay inference
+// ---------------------------------------------------------------------------
+
+// One program run's delay fit for one day. A program's total elongation splits
+// into two causes that the config models separately: dead time between stations
+// (delayMin, a timer property) and stations running longer than configured
+// (the residual, a per-station duration property). Reporting only the first
+// hides the second, which is how a controller delay ends up baked into run
+// times — so both travel together.
+export interface DelayFit {
+  date: string           // "YYYY-MM-DD"
+  timer: "timer1" | "timer2"
+  programId: ProgramId
+  stationCount: number
+  transitions: number    // stationCount - 1
+  delayMin: number       // best-fit dead time per transition
+  modalGapMin: number | null // most common measured off-gap, before refinement
+  elongationMin: number  // observed run length - configured total
+  delayExplainedMin: number  // delayMin * transitions
+  residualMin: number    // elongationMin - delayExplainedMin (duration drift)
+  rssImprovement: number // vs. a zero-delay fit; the confidence gate
+  confidence: "high" | "low"
+  confidenceReason?: string
+}
+
+// Per-timer aggregate across several days — what the UI proposes.
+export interface DelayRecommendation {
+  timer: "timer1" | "timer2"
+  delaySec: number | null   // null when no delay is detectable (T1's case)
+  configuredSec: number     // what the active config currently says
+  daysFit: number           // days that passed the confidence gate
+  daysTotal: number         // days examined
+  minSec: number | null
+  maxSec: number | null
+  medianElongationMin: number | null
+  medianExplainedMin: number | null
+  medianResidualMin: number | null
+  reason: string            // plain-language verdict for the card
 }
 
 // One entry per ISO week (YYYY-Www), for the weekly consumption chart

@@ -193,7 +193,11 @@ function TimerSection({
     const ps = prog.stations[s.id]
     return ps?.enabled && (ps?.durationMin ?? 0) > 0
   })
-  const totalMin = activeStations.reduce((sum, s) => sum + (prog.stations[s.id]?.durationMin ?? 0), 0)
+  const runMin = activeStations.reduce((sum, s) => sum + (prog.stations[s.id]?.durationMin ?? 0), 0)
+  // What the program actually occupies: watering time plus the dead time the
+  // controller inserts between stations.
+  const delayMin = (Math.max(0, timer.stationDelaySec ?? 0) * Math.max(0, activeStations.length - 1)) / 60
+  const totalMin = Math.round(runMin + delayMin)
 
   const updateProgram = (pid: ProgramId, update: Partial<ProgramConfig>) => {
     onChange({
@@ -337,6 +341,35 @@ function TimerSection({
                 onChange={(e) => updateProgram(activeProgram, { start: e.target.value || prog.start })}
                 className="w-36 h-8"
               />
+            </div>
+
+            {/* Inter-station delay — hardware, shared across programs */}
+            <div>
+              <Label htmlFor={`${label}-delay`} className="text-sm mb-1 block">
+                Station delay (seconds)
+                <span className="ml-2 text-xs font-normal text-gray-400">
+                  — controller setting, applies to every program
+                </span>
+              </Label>
+              <Input
+                id={`${label}-delay`}
+                type="number"
+                min={0}
+                step={5}
+                className="w-32"
+                value={timer.stationDelaySec ?? 0}
+                onChange={(e) => {
+                  const v = Math.max(0, Number(e.target.value) || 0)
+                  onChange({ ...timer, stationDelaySec: v })
+                }}
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                Dead time between one station closing and the next opening. It
+                accumulates: {activeStations.length > 1
+                  ? `${activeStations.length - 1} transitions add ${(((timer.stationDelaySec ?? 0) * (activeStations.length - 1)) / 60).toFixed(1)} min to this program.`
+                  : "no effect with fewer than two active stations."}
+                {" "}Analysis can infer it from your meter data.
+              </p>
             </div>
 
             {/* Stations */}

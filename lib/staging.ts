@@ -1,4 +1,4 @@
-import type { AppConfig, SegmentReconciliation } from "./types"
+import type { AppConfig, DelayRecommendation, SegmentReconciliation } from "./types"
 
 // ---------------------------------------------------------------------------
 // Staged config edits — the pure core behind the Analysis tab's
@@ -8,6 +8,10 @@ import type { AppConfig, SegmentReconciliation } from "./types"
 // and renders; all the logic that decides *what* a change does lives here.
 // ---------------------------------------------------------------------------
 
+// Kinds that come from a single reconciliation row. The inter-station delay is
+// staged too, but it is a per-timer hardware property with no row to hang off,
+// so it gets its own builder below rather than a member here — that keeps
+// `stageKey`/`wouldChange`/`buildStagedChange` total over what they accept.
 export type StageKind = "baseline" | "start" | "duration"
 
 export interface StagedChange {
@@ -121,6 +125,49 @@ export function buildStagedChange(r: SegmentReconciliation, kind: StageKind): St
     apply: (cfg) => {
       const p = cfg[r.timer].programs[r.programId]
       p.start = minToTime(parseTime(p.start) + drift)
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Inter-station delay — a per-timer hardware property, staged on its own
+// ---------------------------------------------------------------------------
+
+/** Stable key for a timer's staged delay change. */
+export function delayStageKey(timer: "timer1" | "timer2"): string {
+  return `${timer}:stationDelay`
+}
+
+/** Whether proposing this recommendation would actually alter the config. */
+export function delayWouldChange(rec: DelayRecommendation): boolean {
+  return rec.delaySec != null && rec.delaySec !== rec.configuredSec
+}
+
+/**
+ * Build the staged change for a timer's inter-station delay.
+ *
+ * Note what this deliberately does NOT do: absorb the whole overrun. The
+ * recommendation carries a residual — the part of the drift that is stations
+ * running long rather than dead time — and that stays visible as duration drift
+ * for the per-station proposals to handle. Rolling it in here would set a delay
+ * larger than the controller's real one and quietly over-water every zone.
+ */
+export function buildDelayChange(rec: DelayRecommendation): StagedChange {
+  const to = rec.delaySec as number
+  const label = rec.timer === "timer1" ? "T1" : "T2"
+  const residual = rec.medianResidualMin != null ? Math.round(rec.medianResidualMin) : 0
+  return {
+    key: delayStageKey(rec.timer),
+    area: `${label} · hardware`,
+    field: "Station delay",
+    fromText: `${rec.configuredSec}s`,
+    toText: `${to}s`,
+    note:
+      `from ${rec.daysFit} of ${rec.daysTotal} days` +
+      (residual > 1 ? ` · ${residual} min/cycle of duration drift remains` : "") +
+      " · re-attributes stored rollups on save",
+    apply: (cfg) => {
+      cfg[rec.timer].stationDelaySec = to
     },
   }
 }
