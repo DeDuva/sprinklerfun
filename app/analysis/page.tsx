@@ -12,7 +12,7 @@ import {
   activeWindowForDate,
   currentConfig,
 } from "@/lib/analyze"
-import { fetchRollups, fetchStats, fetchDayRows } from "@/lib/backend"
+import { fetchRollups, fetchStats, fetchDayRows, fetchDelayRecommendations } from "@/lib/backend"
 import {
   BarChart,
   Bar,
@@ -36,6 +36,7 @@ import DayPicker from "@/components/DayPicker"
 import FlowTimelineChart from "@/components/FlowTimelineChart"
 import ReconciliationTable from "@/components/ReconciliationTable"
 import ReviewChangesModal from "@/components/ReviewChangesModal"
+import StationDelayCard from "@/components/StationDelayCard"
 import {
   type StageKind,
   type StagedChange,
@@ -43,8 +44,11 @@ import {
   buildStagedChange,
   proposeAllChanges,
   applyStagedChanges,
+  delayStageKey,
+  delayWouldChange,
+  buildDelayChange,
 } from "@/lib/staging"
-import type { FlumeRow, RollupRow, SegmentReconciliation, StationStats } from "@/lib/types"
+import type { DelayRecommendation, FlumeRow, RollupRow, SegmentReconciliation, StationStats } from "@/lib/types"
 
 type SortKey = keyof StationStats
 
@@ -80,6 +84,10 @@ export default function AnalysisPage() {
   // series, which the browser no longer holds).
   const [rollups, setRollups] = useState<RollupRow[] | null>(null)
   const [fleetStats, setFleetStats] = useState<StationStats[]>([])
+  // The delay fit spans many days, so it is neither day-scoped nor derivable
+  // from the single day this page holds — the server fits it and sends the
+  // verdict.
+  const [delayRecs, setDelayRecs] = useState<DelayRecommendation[] | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -94,6 +102,17 @@ export default function AnalysisPage() {
         setRollups([])
         setFleetStats([])
       })
+    return () => { cancelled = true }
+  }, [serverVersion])
+
+  useEffect(() => {
+    let cancelled = false
+    // No reset to null here: clearing synchronously in an effect body triggers a
+    // cascading render, and the sibling rollup/stats effects don't either — a
+    // refetch shows the previous verdict until the new one lands.
+    fetchDelayRecommendations()
+      .then((r) => { if (!cancelled) setDelayRecs(r) })
+      .catch(() => { if (!cancelled) setDelayRecs([]) })
     return () => { cancelled = true }
   }, [serverVersion])
 
@@ -175,6 +194,22 @@ export default function AnalysisPage() {
       const k = stageKey(r, kind)
       if (next.has(k)) next.delete(k)
       else next.set(k, buildStagedChange(r, kind))
+      return next
+    })
+  }
+
+  // The delay is a per-timer hardware property, so it is keyed by timer rather
+  // than by a reconciliation row — but it stages, reviews and saves through
+  // exactly the same path as every other proposal.
+  const isDelayStaged = (timer: "timer1" | "timer2") => staged.has(delayStageKey(timer))
+  const toggleDelayStage = (rec: DelayRecommendation) => {
+    if (!winId) { toast.error("No config window active for this day — create one in Config first."); return }
+    if (!delayWouldChange(rec)) return
+    mutateStaged((prev) => {
+      const next = new Map(prev)
+      const k = delayStageKey(rec.timer)
+      if (next.has(k)) next.delete(k)
+      else next.set(k, buildDelayChange(rec))
       return next
     })
   }
@@ -262,6 +297,29 @@ export default function AnalysisPage() {
           ) : (
             <div className="h-80 rounded bg-gray-100 animate-pulse" />
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            Station Delay
+            <span className="ml-2 text-xs font-normal text-gray-400">
+              dead time between one station closing and the next opening
+            </span>
+          </CardTitle>
+          <p className="text-xs text-gray-400 mt-1">
+            Inferred from measured gaps across recent sprinkler days — a controller
+            setting, not a per-zone one.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <StationDelayCard
+            recommendations={delayRecs}
+            loading={delayRecs === null}
+            isStaged={isDelayStaged}
+            onToggle={toggleDelayStage}
+          />
         </CardContent>
       </Card>
 

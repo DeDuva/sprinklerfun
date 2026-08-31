@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to the same PR supersedes the previous run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Enrichment converts timestamps to LOCAL time so minute-of-day lines up with
+  # configured start times, and rollups are computed server-side from that — so
+  # the suite is timezone-sensitive by design. Runners default to UTC; pin the
+  # property's zone (the same value production sets as APP_TIMEZONE) so CI
+  # exercises the conditions the app actually runs in. Without this the suite
+  # still passes under UTC, but only by luck: it fails under UTC+14.
+  TZ: America/Los_Angeles
+
+jobs:
+  test:
+    name: types + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Tracks the development machine. Keep in step with the Node version
+          # set in the Vercel project, or CI can pass on code the deploy rejects.
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # Includes the regression test that asserts the inter-station delay
+      # estimator still reproduces the measured production result from the
+      # committed fixtures in data/ — the derived-data paths rewrite every
+      # rollup on save, so a silent change there would not be obvious.
+      - name: Tests
+        run: npm test
+
+  lint:
+    name: lint (advisory)
+    runs-on: ubuntu-latest
+    # Advisory, not a gate: `npm run lint` currently reports 6 pre-existing
+    # errors — conditional hooks and a ref written during render in
+    # FlowTimelineChart, an `any` in StationFlowChart, and a synchronous setState
+    # in an effect in app/config/page.tsx. They are real React correctness bugs
+    # and fixing them changes behaviour, so they are deliberately not bundled
+    # into an unrelated change. Once they are fixed, delete this line and the
+    # job becomes a real gate.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint

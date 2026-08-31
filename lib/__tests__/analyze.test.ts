@@ -15,6 +15,10 @@ import {
   buildDaySchedule,
   buildDayMinuteSeries,
   reconcileDay,
+  inferStationDelay,
+  recommendStationDelays,
+  findProgramRun,
+  seriesMap,
   rollupsToDailyRows,
   rollupsToEnriched,
   stationTimerMap,
@@ -201,6 +205,41 @@ describe("buildDaySchedule", () => {
     const schedule = buildDaySchedule(makeConfig(), 0)
     expect(schedule[0].baselineGpm).toBeNull()
   })
+
+  it("inserts stationDelaySec between stations but not after the last one", () => {
+    const cfg = makeConfigWithBaselines()
+    cfg.timer1.stationDelaySec = 60
+    const schedule = buildDaySchedule(cfg, 0)
+    expect(schedule.map((s) => [s.stationId, s.startMin, s.endMin])).toEqual([
+      ["T1-01", 360, 370],
+      ["T1-02", 371, 376], // one minute of dead time, then the full 5 min run
+      ["T2-01", 480, 488], // timer2 has no delay set — untouched
+    ])
+  })
+
+  it("accumulates a sub-minute delay instead of rounding it away per station", () => {
+    // 30 s is invisible in any single 1-minute bin, but over ten transitions it
+    // is five minutes — the whole reason the cursor is kept fractional.
+    const cfg = makeConfig()
+    cfg.timer1.stationDelaySec = 30
+    cfg.timer1.stations = Array.from({ length: 11 }, (_, i) => ({ id: `S${i}`, name: `S${i}` }))
+    cfg.timer1.programs.A.stations = Object.fromEntries(
+      cfg.timer1.stations.map((s) => [s.id, { durationMin: 10, enabled: true }])
+    )
+    const schedule = buildDaySchedule(cfg, 0).filter((s) => s.timer === "timer1")
+    expect(schedule[0].startMin).toBe(360)
+    expect(schedule[schedule.length - 1].endMin).toBe(360 + 11 * 10 + 5)
+    // Every emitted span is still exactly the configured duration.
+    for (const s of schedule) expect(s.endMin - s.startMin).toBe(s.durationMin)
+  })
+
+  it("is unchanged when no delay is configured", () => {
+    const cfg = makeConfigWithBaselines()
+    const withUndefined = buildDaySchedule(cfg, 0)
+    cfg.timer1.stationDelaySec = 0
+    cfg.timer2.stationDelaySec = 0
+    expect(buildDaySchedule(cfg, 0)).toEqual(withUndefined)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -327,6 +366,231 @@ describe("reconcileDay", () => {
     expect(t1.durationDriftMin).toBe(2)
     expect(t2.actualStartMin).toBe(372)
     expect(t2.actualGpm).toBeCloseTo(5, 5)
+  })
+
+  it("reaches a boundary that has drifted far outside the ±4 min refinement window", () => {
+    // 11 stations of 10 min from 06:00, each transition losing a minute of dead
+    // time — so the last station starts 10 min after where the config puts it.
+    // Anchoring every boundary on the program's start drift alone cannot reach
+    // that far, and the last station would be pinned to a wrong position and its
+    // duration and gpm reported as measured fact.
+    const schedule: ExpectedSegment[] = []
+    const actual: Array<{ start: number; end: number; gpm: number }> = []
+    let cfg = 360
+    let act = 360
+    for (let i = 0; i < 11; i++) {
+      const gpm = i % 2 === 0 ? 8 : 3 // alternate so every boundary is a real step
+      schedule.push(seg({ stationId: `S${i}`, startMin: cfg, durationMin: 10, baselineGpm: gpm }))
+      actual.push({ start: act, end: act + 10, gpm })
+      cfg += 10
+      act += 11 // 10 min of watering + 1 min of dead time
+    }
+    const series = minuteSeries(actual, { from: 340, to: 520, bg: 0 })
+    const recon = reconcileDay(series, schedule)
+
+    const last = recon[recon.length - 1]
+    expect(last.actualStartMin).toBe(360 + 10 * 11)
+    expect(last.startDriftMin).toBe(10)
+    // The real duration is intact — the stretch was attributed to dead time, not
+    // smeared into the run times.
+    expect(last.actualDurationMin).toBe(10)
+    expect(last.actualGpm).toBeCloseTo(8, 5) // station 10 is even → the 8 gpm level
+    expect(last.gapBeforeMin).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Inter-station delay inference
+// ---------------------------------------------------------------------------
+
+/**
+ * A program of `n` stations, each `dur` minutes, starting at `start`, with
+ * `gapMin` of dead time between them and each run `overrunMin` longer than
+ * configured. Returns the configured schedule and the matching actual series.
+ */
+function delayScenario(o: {
+  n: number
+  dur: number
+  start?: number
+  gapMin?: number
+  overrunMin?: number
+}) {
+  const start = o.start ?? 360
+  const gap = o.gapMin ?? 0
+  const overrun = o.overrunMin ?? 0
+  const schedule: ExpectedSegment[] = []
+  const actual: Array<{ start: number; end: number; gpm: number }> = []
+  let cfg = start
+  let act = start
+  for (let i = 0; i < o.n; i++) {
+    const gpm = i % 2 === 0 ? 8 : 3
+    schedule.push(seg({ stationId: `S${i}`, startMin: cfg, durationMin: o.dur, baselineGpm: gpm }))
+    actual.push({ start: act, end: act + o.dur + overrun, gpm })
+    cfg += o.dur
+    act += o.dur + overrun + gap
+  }
+  const series = minuteSeries(actual, { from: start - 20, to: act + 40, bg: 0 })
+  return { schedule, series }
+}
+
+describe("inferStationDelay", () => {
+  it("recovers a 60 s delay from the gaps it leaves between stations", () => {
+    const { schedule, series } = delayScenario({ n: 11, dur: 10, gapMin: 1 })
+    const [fit] = inferStationDelay(series, schedule, "2026-08-28")
+
+    expect(fit.modalGapMin).toBe(1)
+    expect(Math.round(fit.delayMin * 60)).toBe(60)
+    expect(fit.transitions).toBe(10)
+    expect(fit.elongationMin).toBe(10)
+    expect(fit.delayExplainedMin).toBeCloseTo(10, 5)
+    expect(fit.residualMin).toBeCloseTo(0, 5)
+    expect(fit.confidence).toBe("high")
+  })
+
+  it("reports no delay for stations that run back to back", () => {
+    const { schedule, series } = delayScenario({ n: 11, dur: 10, gapMin: 0 })
+    const [fit] = inferStationDelay(series, schedule, "2026-08-28")
+
+    expect(fit.modalGapMin).toBeNull()
+    expect(fit.elongationMin).toBe(0)
+    // Below the noise floor, so it must not become a config edit.
+    expect(fit.confidence).toBe("low")
+  })
+
+  it("separates dead time from stations running long instead of folding them together", () => {
+    // 1 min of dead time AND every station running 1 min over. Total elongation
+    // is 2 min per transition; only half of it is delay. Dividing elongation by
+    // transitions would report ~120 s and over-water every zone.
+    const { schedule, series } = delayScenario({ n: 11, dur: 10, gapMin: 1, overrunMin: 1 })
+    const [fit] = inferStationDelay(series, schedule, "2026-08-28")
+
+    expect(Math.round(fit.delayMin * 60)).toBe(60)
+    expect(fit.elongationMin).toBe(21)
+    expect(fit.delayExplainedMin).toBeCloseTo(10, 5)
+    // The rest stays visible as duration drift for the per-station proposals.
+    expect(fit.residualMin).toBeCloseTo(11, 5)
+    expect(fit.confidence).toBe("high")
+  })
+
+  it("is idempotent — once the delay is configured it recommends the same value", () => {
+    const cfg = makeConfigWithBaselines()
+    cfg.timer1.stationDelaySec = 60
+    const schedule = buildDaySchedule(cfg, 0).filter((s) => s.timer === "timer1")
+    // Actual flow matching that schedule exactly.
+    const series = minuteSeries(
+      schedule.map((s, i) => ({ start: s.startMin, end: s.endMin, gpm: i === 0 ? 2 : 3 })),
+      { from: 340, to: 400, bg: 0 }
+    )
+    const [fit] = inferStationDelay(series, schedule, "2026-08-28")
+    expect(fit.elongationMin).toBe(0)
+    expect(Math.round(fit.delayMin * 60)).toBe(60)
+  })
+
+  it("does not let a program that was cut short vote on the delay", () => {
+    const { schedule } = delayScenario({ n: 11, dur: 10, gapMin: 1 })
+    // Flow stops a third of the way through — a rain-sensor abort.
+    const truncated = minuteSeries(
+      schedule.slice(0, 4).map((s, i) => ({ start: s.startMin, end: s.endMin, gpm: i % 2 === 0 ? 8 : 3 })),
+      { from: 340, to: 520, bg: 0 }
+    )
+    const [fit] = inferStationDelay(truncated, schedule, "2026-08-28")
+    expect(fit.elongationMin).toBeLessThan(0)
+    expect(fit.confidence).toBe("low")
+    expect(fit.confidenceReason).toMatch(/cut short/)
+  })
+})
+
+describe("findProgramRun", () => {
+  it("merges fragments split by dead time rather than truncating at the first gap", () => {
+    const { schedule, series } = delayScenario({ n: 5, dur: 10, gapMin: 1 })
+    const run = findProgramRun(seriesMap(series), schedule)!
+    expect(run.fragments).toHaveLength(5)
+    expect(run.gaps).toEqual([1, 1, 1, 1])
+    // The whole program, not just its longest piece.
+    expect(run.end - run.start + 1).toBe(5 * 10 + 4)
+  })
+
+  it("does not merge across the quiet stretch between two programs", () => {
+    const { schedule, series } = delayScenario({ n: 3, dur: 10, gapMin: 1 })
+    // A second, unrelated run well after this program ends.
+    const withNext = series.map((p) =>
+      p.timeMin > 500 && p.timeMin <= 530 ? { ...p, gpm: 6 } : p
+    )
+    const run = findProgramRun(seriesMap(withNext), schedule)!
+    expect(run.end).toBeLessThan(500)
+  })
+})
+
+describe("recommendStationDelays", () => {
+  const cfg = makeConfigWithBaselines()
+
+  it("takes the median across days and ignores the ones that failed to fit", () => {
+    const { schedule, series } = delayScenario({ n: 11, dur: 10, gapMin: 1 })
+    const good = ["2026-08-19", "2026-08-21", "2026-08-24"].flatMap((d) =>
+      inferStationDelay(series, schedule, d)
+    )
+    const { series: flat } = delayScenario({ n: 11, dur: 10, gapMin: 0 })
+    const bad = inferStationDelay(flat, schedule, "2026-08-26")
+
+    const [t1] = recommendStationDelays([...good, ...bad], cfg)
+    expect(t1.delaySec).toBe(60)
+    expect(t1.daysFit).toBe(3)
+    expect(t1.daysTotal).toBe(4)
+    expect(t1.reason).toMatch(/delay accounts for/)
+  })
+
+  it("says so plainly when a timer has no delay rather than proposing zero", () => {
+    const { schedule, series } = delayScenario({ n: 11, dur: 10, gapMin: 0 })
+    const fits = inferStationDelay(series, schedule, "2026-08-28")
+    const [t1] = recommendStationDelays(fits, cfg)
+    expect(t1.delaySec).toBeNull()
+    expect(t1.reason).toMatch(/No inter-station delay detected/)
+  })
+
+  it("reproduces the measured production result on a real metered day", () => {
+    // The day from the report that prompted this work, with the config window
+    // that was active on it. Two different controllers: one runs its stations
+    // back to back, the other inserts a minute between them. Synthetic fixtures
+    // can only confirm the estimator does what it was written to do — this
+    // confirms it still says what the meter actually said.
+    const cfg: AppConfig = JSON.parse(
+      readFileSync(join(process.cwd(), "data", "sprinkler-config-2026-08-31.json"), "utf8")
+    ).windows[0].config
+    const rows: FlumeRow[] = JSON.parse(
+      readFileSync(join(process.cwd(), "data", "day-2026-08-28.json"), "utf8")
+    ).rows
+
+    const date = "2026-08-28" // a Friday
+    const dow = (new Date(date + "T12:00:00").getDay() + 6) % 7
+    const schedule = buildDaySchedule(cfg, dow)
+    const series = buildDayMinuteSeries(enrichRows(rows, cfg).filter((r) => r.date === date))
+    const fits = inferStationDelay(series, schedule, date)
+    const [t1, t2] = recommendStationDelays(fits, cfg)
+
+    expect(t1.delaySec).toBeNull() // timer 1 is already aligned
+    expect(t2.delaySec).toBe(60)
+    expect(t2.medianElongationMin).toBe(16)
+    expect(t2.medianExplainedMin).toBe(10)
+    expect(t2.medianResidualMin).toBe(6) // duration drift, not dead time
+
+    // And applying it pulls the far end of timer 2's run back into place.
+    const before = reconcileDay(series, schedule).filter((r) => r.timer === "timer2")
+    const withDelay: AppConfig = JSON.parse(JSON.stringify(cfg))
+    withDelay.timer2.stationDelaySec = 60
+    const after = reconcileDay(series, buildDaySchedule(withDelay, dow)).filter(
+      (r) => r.timer === "timer2"
+    )
+    expect(before[before.length - 1].startDriftMin).toBe(16)
+    expect(after[after.length - 1].startDriftMin).toBe(6)
+  })
+
+  it("names the leftover duration drift so it is not hidden inside the delay", () => {
+    const { schedule, series } = delayScenario({ n: 11, dur: 10, gapMin: 1, overrunMin: 1 })
+    const fits = inferStationDelay(series, schedule, "2026-08-28")
+    const [t1] = recommendStationDelays(fits, cfg)
+    expect(t1.delaySec).toBe(60)
+    expect(Math.round(t1.medianResidualMin!)).toBe(11)
+    expect(t1.reason).toMatch(/station duration, not dead time/)
   })
 })
 

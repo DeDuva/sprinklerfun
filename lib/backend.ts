@@ -1,4 +1,4 @@
-import type { ConfigWindow, FlumeRow, RollupRow, StatsPayload } from "./types"
+import type { ConfigWindow, DelayRecommendation, FlumeRow, RollupRow, StatsPayload } from "./types"
 
 // ---------------------------------------------------------------------------
 // Client-side bridge to the Turso backend (Phase 1 dual-write).
@@ -76,6 +76,16 @@ export async function fetchStats(): Promise<StatsPayload> {
   const res = await fetch("/api/stats")
   if (!res.ok) throw new Error(`GET /api/stats → HTTP ${res.status}`)
   return (await res.json()) as StatsPayload
+}
+
+// The inferred inter-station delay per timer, fitted server-side across several
+// recent sprinkler days (the browser only ever holds one day of per-minute flow).
+export async function fetchDelayRecommendations(days?: number): Promise<DelayRecommendation[]> {
+  const suffix = days ? `?days=${days}` : ""
+  const res = await fetch(`/api/delay${suffix}`)
+  if (!res.ok) throw new Error(`GET /api/delay → HTTP ${res.status}`)
+  const data = (await res.json()) as { recommendations: DelayRecommendation[] }
+  return data.recommendations
 }
 
 // Fetch one day's raw rows (for the day-detail / flow / reconciliation views).

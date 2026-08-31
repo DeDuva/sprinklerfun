@@ -6,8 +6,11 @@ import {
   proposeAllChanges,
   applyStagedChanges,
   programStartStations,
+  delayStageKey,
+  delayWouldChange,
+  buildDelayChange,
 } from "../staging"
-import type { AppConfig, SegmentReconciliation } from "../types"
+import type { AppConfig, DelayRecommendation, SegmentReconciliation } from "../types"
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -32,6 +35,7 @@ function recon(over: Partial<SegmentReconciliation> & {
     startDriftMin: 0,
     durationDriftMin: 0,
     gpmDeltaPct: 0,
+    gapBeforeMin: null,
     confidence: "high",
   }
   return { ...defaults, ...over }
@@ -247,5 +251,62 @@ describe("applyStagedChanges", () => {
     expect(next.timer1.programs.A.start).toBe("06:00:00")
     expect(next.timer1.stations.find((s) => s.id === "T1-01")!.baselineGpm).toBe(2.6)
     expect(next.timer1.programs.A.stations["T1-01"].durationMin).toBe(12)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Inter-station delay
+// ---------------------------------------------------------------------------
+
+function rec(over: Partial<DelayRecommendation> = {}): DelayRecommendation {
+  return {
+    timer: "timer2",
+    delaySec: 60,
+    configuredSec: 0,
+    daysFit: 20,
+    daysTotal: 26,
+    minSec: 60,
+    maxSec: 60,
+    medianElongationMin: 16,
+    medianExplainedMin: 10,
+    medianResidualMin: 6,
+    reason: "…",
+    ...over,
+  }
+}
+
+describe("station delay staging", () => {
+  it("keys per timer, not per station or program", () => {
+    expect(delayStageKey("timer1")).toBe("timer1:stationDelay")
+    expect(delayStageKey("timer2")).toBe("timer2:stationDelay")
+  })
+
+  it("is a no-op when the config already matches, or when nothing was detected", () => {
+    expect(delayWouldChange(rec())).toBe(true)
+    expect(delayWouldChange(rec({ configuredSec: 60 }))).toBe(false)
+    expect(delayWouldChange(rec({ delaySec: null }))).toBe(false)
+  })
+
+  it("applies onto the timer and survives a round-trip through applyStagedChanges", () => {
+    const change = buildDelayChange(rec())
+    expect(change.area).toBe("T2 · hardware")
+    expect(change.fromText).toBe("0s")
+    expect(change.toText).toBe("60s")
+
+    const next = applyStagedChanges(config(), [change])
+    expect(next.timer2.stationDelaySec).toBe(60)
+    // The other timer is untouched — a delay is one controller's property.
+    expect(next.timer1.stationDelaySec).toBeUndefined()
+  })
+
+  it("says in the review note that duration drift is left behind, not absorbed", () => {
+    // The delay must not swallow the part of the overrun that is stations
+    // running long — that is what would over-water them.
+    expect(buildDelayChange(rec()).note).toMatch(/6 min\/cycle of duration drift remains/)
+    expect(buildDelayChange(rec({ medianResidualMin: 0 })).note).not.toMatch(/duration drift/)
+  })
+
+  it("warns that saving re-attributes stored rollups", () => {
+    expect(buildDelayChange(rec()).note).toMatch(/rollups/)
   })
 })
