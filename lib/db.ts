@@ -80,7 +80,7 @@ export function ensureSchema(): Promise<void> {
   if (globalForDb.__sprinklerSchemaReady) return globalForDb.__sprinklerSchemaReady
 
   const db = getDb()
-  globalForDb.__sprinklerSchemaReady = (async () => {
+  const ready = (async () => {
     await db.batch(
       [
         `CREATE TABLE IF NOT EXISTS flume_rows (
@@ -137,5 +137,31 @@ export function ensureSchema(): Promise<void> {
     )
   })()
 
-  return globalForDb.__sprinklerSchemaReady
+  globalForDb.__sprinklerSchemaReady = ready
+
+  // Do not memoize a REJECTION. This used to cache the promise unconditionally,
+  // so one transient failure — bad credentials during a rollout, a read-only
+  // filesystem, a network blip — was permanent for the life of the process:
+  // every later request re-awaited the same rejection and no retry was possible
+  // short of a cold start. Clearing on failure makes the next call try again.
+  ready.catch(() => {
+    if (globalForDb.__sprinklerSchemaReady === ready) {
+      delete globalForDb.__sprinklerSchemaReady
+    }
+  })
+
+  return ready
+}
+
+/**
+ * Drop the memoized client and schema promise.
+ *
+ * Tests only. `getDb()` caches on globalThis, which survives `vi.resetModules()`
+ * — so without this a test file gets whichever database the previous one opened,
+ * and the URL is read once at first call, making a per-test env override useless.
+ * Calling this between tests is what makes each one start from an empty DB.
+ */
+export function resetDbForTests(): void {
+  delete globalForDb.__sprinklerDb
+  delete globalForDb.__sprinklerSchemaReady
 }
