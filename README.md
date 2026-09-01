@@ -33,6 +33,7 @@ npm run dev        # http://localhost:3000
 ## Project layout
 
 ```
+├── .github/workflows/      # CI: typecheck, tests, lint — required to merge
 ├── app/                    # Next.js App Router pages
 │   ├── page.tsx            # Dashboard (/)
 │   ├── analysis/           # Per-station analysis (/analysis)
@@ -48,7 +49,7 @@ npm run dev        # http://localhost:3000
 │   ├── PRODUCT_DESIGN.md   # Feature spec, user flows, design principles
 │   ├── TECHNICAL_DESIGN.md # Stack choices, architecture decisions
 │   └── SprinklerFun-20241019.ipynb  # Original Jupyter prototype
-└── data/                   # Exported config snapshots (JSON) for version control
+└── data/                   # Config snapshots + metered-day fixtures used by tests
 ```
 
 ## Saving your config to git
@@ -79,7 +80,17 @@ npm run test:ui    # Vitest UI
 
 ## Deploying
 
-The app is configured for zero-config Vercel deployment (`vercel.json` at root). Push to main → Vercel builds and deploys automatically.
+Zero-config Vercel deployment (`vercel.json` at root). Vercel builds production from `main` on every merge.
+
+The gate is at the **merge**, not the deploy — Vercel has no "wait for CI" setting, so a branch ruleset on `main` requires the `types + tests` and `lint` checks, requires a PR, and requires the branch to be up to date. Nothing red reaches `main`, and production only ever builds from `main`:
+
+```
+PR ──→ types + tests, lint ──→ [ruleset] ──→ merge ──→ Vercel deploys production
+              │
+              └─ red ⇒ merge blocked ⇒ nothing deploys
+```
+
+That is why there is no deploy job in CI and no Vercel token in repo secrets — branch protection provides the guarantee a token would have bought. See [Technical Design](docs/TECHNICAL_DESIGN.md) for details.
 
 ## Docs
 
