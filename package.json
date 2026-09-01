@@ -12,6 +12,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "fixtures": "jiti scripts/make-fixtures.ts",
@@ -35,7 +36,11 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.6",
     "@types/node": "^24.13.3",
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19",
@@ -45,6 +50,7 @@
     "eslint": "^9.39.5",
     "eslint-config-next": "16.3.4",
     "jiti": "^2.7.0",
+    "jsdom": "^30.0.1",
     "shadcn": "^4.9.0",
     "tailwindcss": "^4",
     "typescript": "^5.9.3",

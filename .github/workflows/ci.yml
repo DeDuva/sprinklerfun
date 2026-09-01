@@ -12,8 +12,8 @@ name: CI
 # Actions would need a long-lived credential to buy a guarantee branch
 # protection already provides.
 #
-# If you rename the `test` or `lint` job, update the ruleset's required checks to
-# match, or the gate silently stops requiring anything.
+# If you rename the `test`, `lint` or `e2e` job, update the ruleset's required
+# checks to match, or the gate silently stops requiring anything.
 
 on:
   pull_request:
@@ -64,6 +64,42 @@ jobs:
         # rather than decorative. They are a floor set just under the current
         # numbers — raise them as coverage improves, do not lower them to pass.
         run: npm run test:coverage
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+
+      # A real `next build` — the only check that catches a Next-specific break
+      # (an RSC boundary violation, a bad "use client") before it reaches a
+      # deploy. Kept as its own step so a build failure reads as a build failure
+      # rather than as a mysterious server-start timeout.
+      - name: Build
+        run: npm run build
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Runs against the production build on a throwaway SQLite file, seeded
+      # through the public API. No Vercel preview, no protection-bypass token,
+      # no shared database.
+      - name: End-to-end
+        run: npm run test:e2e
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
 
   lint:
     name: lint
