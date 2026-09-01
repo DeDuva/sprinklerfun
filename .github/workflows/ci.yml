@@ -1,5 +1,20 @@
 name: CI
 
+# How deploys are gated
+#
+# This workflow does NOT deploy. Vercel's Git integration builds production from
+# `main` on every merge, and it has no native "wait for CI" setting — so the gate
+# is at the MERGE, not at the deploy: a ruleset on `main` requires the
+# `types + tests` check below and forbids direct pushes. Nothing red reaches
+# `main`, and production only ever builds from `main`.
+#
+# That is why there is no deploy job and no Vercel token here. Deploying from
+# Actions would need a long-lived credential to buy a guarantee branch
+# protection already provides.
+#
+# If you rename the `test` job, update the ruleset's required check to match, or
+# the gate silently stops requiring anything.
+
 on:
   pull_request:
   push:
@@ -8,10 +23,11 @@ on:
 permissions:
   contents: read
 
-# A new push to the same PR supersedes the previous run.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Supersede in-flight PR runs; leave `main` runs alone, since that run is the
+  # post-merge signal on the merged result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Enrichment converts timestamps to LOCAL time so minute-of-day lines up with
@@ -21,6 +37,9 @@ env:
   # exercises the conditions the app actually runs in. Without this the suite
   # still passes under UTC, but only by luck: it fails under UTC+14.
   TZ: America/Los_Angeles
+  # Matches the Vercel project's Node.js Version. Keep the two in step, or CI
+  # can pass on code the deploy rejects.
+  NODE_VERSION: 24
 
 jobs:
   test:
@@ -31,9 +50,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # Tracks the development machine. Keep in step with the Node version
-          # set in the Vercel project, or CI can pass on code the deploy rejects.
-          node-version: 24
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - run: npm ci
@@ -56,14 +73,14 @@ jobs:
     # FlowTimelineChart, an `any` in StationFlowChart, and a synchronous setState
     # in an effect in app/config/page.tsx. They are real React correctness bugs
     # and fixing them changes behaviour, so they are deliberately not bundled
-    # into an unrelated change. Once they are fixed, delete this line and the
-    # job becomes a real gate.
+    # into an unrelated change. Once they are fixed, delete this line and add
+    # this job to the ruleset's required checks.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
       - run: npm run lint
