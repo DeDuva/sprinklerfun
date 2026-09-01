@@ -69,6 +69,7 @@ sprinkler-app/
 │   └── __tests__/
 │       ├── analyze.test.ts     # Vitest unit tests
 │       └── staging.test.ts     # Staged-edit logic tests
+├── .github/workflows/ci.yml    # typecheck + tests + lint; required checks on main
 ├── .env.example                # TURSO_*, APP_TIMEZONE, APP_SHARED_SECRET
 ├── vitest.config.ts
 └── vercel.json
