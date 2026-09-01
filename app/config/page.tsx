@@ -10,6 +10,7 @@ import {
   activeWindowForDate,
   windowDateRange,
   diffConfigs,
+  localDateKey,
 } from "@/lib/analyze"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -30,7 +31,7 @@ const PROGRAM_IDS: ProgramId[] = ["A", "B", "C"]
 const fmtDate = (d: string) =>
   new Date(d + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
 
-const todayStr = () => new Date().toISOString().slice(0, 10)
+const todayStr = () => localDateKey(new Date())
 
 // ---- Program station table ------------------------------------------------
 
@@ -748,7 +749,7 @@ function ExportImportCard() {
     const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" })
     const a = document.createElement("a")
     a.href = URL.createObjectURL(blob)
-    a.download = `sprinkler-config-${new Date().toISOString().slice(0, 10)}.json`
+    a.download = `sprinkler-config-${localDateKey(new Date())}.json`
     a.click()
     URL.revokeObjectURL(a.href)
     toast.success("Config exported")

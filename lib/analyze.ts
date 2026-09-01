@@ -31,6 +31,26 @@ function parseTimeToMinutes(timeStr: string): number {
   return h * 60 + m
 }
 
+/**
+ * "YYYY-MM-DD" for a Date, in LOCAL time.
+ *
+ * `toISOString().slice(0, 10)` looks like it does this and does not: it converts
+ * to UTC first. Every date in this app is a local calendar day — a sprinkler day,
+ * a rollup key, "today" — so the UTC conversion is wrong in both directions.
+ *
+ * West of UTC it is wrong every evening: at 17:00 in America/Los_Angeles it is
+ * already tomorrow in UTC, so "today" silently became the next day for the rest
+ * of the night. East of UTC+12 it is wrong the other way — the noon anchor these
+ * helpers use to dodge DST lands on the previous UTC day, which is why the suite
+ * failed under Pacific/Kiritimati while passing under UTC by luck.
+ */
+export function localDateKey(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
 // Returns ISO week key "YYYY-Www" and Monday date for a given date string
 function isoWeek(dateStr: string): { weekKey: string; weekStart: string } {
   const d = new Date(dateStr + "T12:00:00")
@@ -43,7 +63,7 @@ function isoWeek(dateStr: string): { weekKey: string; weekStart: string } {
     ((monday.getTime() - jan4.getTime()) / 86400000 + jan4.getDay() + 1) / 7
   )
   const weekKey = `${y}-W${String(weekNum).padStart(2, "0")}`
-  const weekStart = monday.toISOString().slice(0, 10)
+  const weekStart = localDateKey(monday)
   return { weekKey, weekStart }
 }
 
@@ -354,7 +374,7 @@ export function rollupsToEnriched(
 export function addDays(dateStr: string, delta: number): string {
   const d = new Date(dateStr + "T12:00:00")
   d.setDate(d.getDate() + delta)
-  return d.toISOString().slice(0, 10)
+  return localDateKey(d)
 }
 
 /**
@@ -397,7 +417,7 @@ export function windowDateRange(windows: ConfigWindow[]): WindowRange[] {
 
 /** The config in effect today (for "current" displays: names, billing). */
 export function currentConfig(windows: ConfigWindow[]): AppConfig {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateKey(new Date())
   return activeWindowForDate(windows, today)?.config ?? DEFAULT_CONFIG
 }
 
@@ -532,7 +552,7 @@ export function windowCutoff(w: TimeWindow, lastDate: string): string {
   const d = new Date(lastDate + "T12:00:00")
   const days = { "2w": 14, "1m": 30, "3m": 90, "6m": 180, "1y": 365 }[w]!
   d.setDate(d.getDate() - days)
-  return d.toISOString().slice(0, 10)
+  return localDateKey(d)
 }
 
 function detectAnomalies(values: number[]): boolean[] {

@@ -12,8 +12,8 @@ name: CI
 # Actions would need a long-lived credential to buy a guarantee branch
 # protection already provides.
 #
-# If you rename the `test`, `lint` or `e2e` job, update the ruleset's required
-# checks to match, or the gate silently stops requiring anything.
+# If you rename the `test`, `lint`, `e2e` or `audit` job, update the ruleset's
+# required checks to match, or the gate silently stops requiring anything.
 
 on:
   pull_request:
@@ -65,6 +65,19 @@ jobs:
         # numbers — raise them as coverage improves, do not lower them to pass.
         run: npm run test:coverage
 
+      # The date handling is local-time by design, so "passes in one timezone"
+      # proves very little. These three are the boundaries that actually caught
+      # bugs: UTC+14 broke the date helpers, UTC-11 is the far side of the same
+      # problem, and Kolkata has a half-hour offset. Cheap — the suite runs in ~3s.
+      - name: Tests (timezone boundaries)
+        run: |
+          set -euo pipefail
+          for tz in UTC Pacific/Kiritimati Pacific/Midway Asia/Kolkata; do
+            echo "::group::TZ=$tz"
+            TZ="$tz" npx vitest run
+            echo "::endgroup::"
+          done
+
   e2e:
     name: e2e
     runs-on: ubuntu-latest
@@ -100,6 +113,22 @@ jobs:
             playwright-report/
             test-results/
           retention-days: 7
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # At 0 advisories as of the dependency work, so this starts green and stays
+      # meaningful. Dependabot opens the fixes; this is what stops one sitting
+      # unnoticed in the meantime.
+      - name: npm audit
+        run: npm audit --audit-level=high
 
   lint:
     name: lint

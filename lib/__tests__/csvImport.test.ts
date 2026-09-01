@@ -64,22 +64,49 @@ describe("parseFlumeCsvRows", () => {
 describe("buildFlumeExportUrl", () => {
   afterEach(() => vi.useRealTimers())
 
-  it("spans from the given date to now", () => {
+  // "±HH:MM" at the very end of a bound.
+  const offsetOf = (url: string, param: "since" | "until") =>
+    new URL(url).searchParams.get(param)!.slice(-6)
+
+  it("spans from the given date to now, in local wall-clock time", () => {
     vi.useFakeTimers()
-    vi.setSystemTime(new Date("2026-08-28T12:00:00"))
+    vi.setSystemTime(new Date(2026, 7, 28, 12, 0, 0)) // local noon, 28 Aug
     const url = buildFlumeExportUrl("2026-08-01")
-    expect(url).toContain("2026-08-01")
-    expect(url).toMatch(/2026-08-28/)
+    const params = new URL(url).searchParams
+    expect(params.get("since")).toContain("2026-08-01T00:00:00.000")
+    // The upper bound is the local date, not whatever UTC says it is. This
+    // previously used toISOString(), so east or west of UTC it named a different
+    // day than the one the user is actually looking at.
+    expect(params.get("until")).toContain("2026-08-28T12:00:00.000")
   })
 
-  it("uses a hardcoded -07:00 offset, which is wrong for half the year", () => {
-    // Pinned deliberately, as a bug this test documents rather than endorses.
-    // -07:00 is PDT; the property is on PST (-08:00) from roughly November to
-    // March, so a winter export requests a window shifted by an hour. Fixing it
-    // means deriving the offset from the date, which is a behaviour change and
-    // belongs in its own commit.
+  it("derives the offset from the date instead of hardcoding one", () => {
+    // Was pinned at "-07:00" — Pacific *daylight* time — so a winter export
+    // asked for a window shifted by an hour. Worse, `until` was a UTC
+    // wall-clock wearing that label, which was seven hours out all year.
     vi.useFakeTimers()
-    vi.setSystemTime(new Date("2026-01-15T12:00:00"))
-    expect(buildFlumeExportUrl("2026-01-01")).toContain("-07:00")
+    vi.setSystemTime(new Date(2026, 0, 15, 12, 0, 0)) // January
+    const winter = buildFlumeExportUrl("2026-01-01")
+    vi.setSystemTime(new Date(2026, 6, 15, 12, 0, 0)) // July
+    const summer = buildFlumeExportUrl("2026-07-01")
+
+    for (const url of [winter, summer]) {
+      expect(offsetOf(url, "since")).toMatch(/^[+-]\d{2}:\d{2}$/)
+      expect(offsetOf(url, "until")).toMatch(/^[+-]\d{2}:\d{2}$/)
+    }
+
+    // In a zone with DST the two seasons must differ; in a zone without one they
+    // must agree. Asserting the relationship keeps this true in any timezone,
+    // which is the whole point — the old test only held in Pacific time.
+    const hasDst =
+      new Date(2026, 0, 15).getTimezoneOffset() !== new Date(2026, 6, 15).getTimezoneOffset()
+    expect(offsetOf(winter, "until") !== offsetOf(summer, "until")).toBe(hasDst)
+  })
+
+  it("falls back to the epoch date when nothing is stored yet", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 7, 28, 12, 0, 0))
+    const since = new URL(buildFlumeExportUrl(null)).searchParams.get("since")!
+    expect(since).toContain("2026-05-01T00:00:00.000")
   })
 })
