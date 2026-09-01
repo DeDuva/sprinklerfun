@@ -60,7 +60,10 @@ jobs:
       # committed fixtures in data/ — the derived-data paths rewrite every
       # rollup on save, so a silent change there would not be obvious.
       - name: Tests
-        run: npm test
+        # With coverage, so the thresholds in vitest.config.mts are enforced
+        # rather than decorative. They are a floor set just under the current
+        # numbers — raise them as coverage improves, do not lower them to pass.
+        run: npm run test:coverage
 
   lint:
     name: lint
