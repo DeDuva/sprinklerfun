@@ -1,0 +1,42 @@
+version: 2
+
+# Nothing watched dependencies before this file existed. At the time it was added
+# the project had 17 high-severity advisories outstanding, including one in `next`
+# itself, and no signal anywhere that they existed.
+#
+# Security updates are separate from this config — those are enabled at the repo
+# level and open immediately, ignoring the schedule below. This file governs the
+# routine version drift.
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    # Minor and patch bumps land as one PR per week rather than a dozen. Majors
+    # stay separate because they need reading, not just a green check.
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # The workflow pins actions by commit SHA; Dependabot understands that form
+    # and updates both the SHA and the trailing version comment together.
+    groups:
+      actions:
+        update-types:
+          - major
+          - minor
+          - patch
+    commit-message:
+      prefix: "ci"

@@ -37,20 +37,17 @@ env:
   # exercises the conditions the app actually runs in. Without this the suite
   # still passes under UTC, but only by luck: it fails under UTC+14.
   TZ: America/Los_Angeles
-  # Matches the Vercel project's Node.js Version. Keep the two in step, or CI
-  # can pass on code the deploy rejects.
-  NODE_VERSION: 24
 
 jobs:
   test:
     name: types + tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .nvmrc
           cache: npm
 
       - run: npm ci
@@ -73,10 +70,10 @@ jobs:
     # catches an early return drifting back above a hook, which is a bug that
     # shows up as a crash on a user interaction rather than at build time.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - run: npm run lint
