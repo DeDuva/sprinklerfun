@@ -24,7 +24,7 @@ import {
   stationTimerMap,
 } from "../analyze"
 import type { AppConfig, ConfigWindow, EnrichedRow, ExpectedSegment, FlumeRow, MinutePoint, RollupRow } from "../types"
-import { DEFAULT_CONFIG, normalizeTime, toWindows } from "../types"
+import { normalizeTime, toWindows } from "../types"
 
 // ---------------------------------------------------------------------------
 // Helpers

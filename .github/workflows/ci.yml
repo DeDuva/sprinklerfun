@@ -5,15 +5,15 @@ name: CI
 # This workflow does NOT deploy. Vercel's Git integration builds production from
 # `main` on every merge, and it has no native "wait for CI" setting — so the gate
 # is at the MERGE, not at the deploy: a ruleset on `main` requires the
-# `types + tests` check below and forbids direct pushes. Nothing red reaches
-# `main`, and production only ever builds from `main`.
+# `types + tests` and `lint` checks below and forbids direct pushes. Nothing red
+# reaches `main`, and production only ever builds from `main`.
 #
 # That is why there is no deploy job and no Vercel token here. Deploying from
 # Actions would need a long-lived credential to buy a guarantee branch
 # protection already provides.
 #
-# If you rename the `test` job, update the ruleset's required check to match, or
-# the gate silently stops requiring anything.
+# If you rename the `test` or `lint` job, update the ruleset's required checks to
+# match, or the gate silently stops requiring anything.
 
 on:
   pull_request:
@@ -66,16 +66,12 @@ jobs:
         run: npm test
 
   lint:
-    name: lint (advisory)
+    name: lint
     runs-on: ubuntu-latest
-    # Advisory, not a gate: `npm run lint` currently reports 6 pre-existing
-    # errors — conditional hooks and a ref written during render in
-    # FlowTimelineChart, an `any` in StationFlowChart, and a synchronous setState
-    # in an effect in app/config/page.tsx. They are real React correctness bugs
-    # and fixing them changes behaviour, so they are deliberately not bundled
-    # into an unrelated change. Once they are fixed, delete this line and add
-    # this job to the ruleset's required checks.
-    continue-on-error: true
+    # A real gate as of the commit that emptied the backlog of pre-existing
+    # errors. `react-hooks/rules-of-hooks` in particular is the only thing that
+    # catches an early return drifting back above a hook, which is a bug that
+    # shows up as a crash on a user interaction rather than at build time.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
