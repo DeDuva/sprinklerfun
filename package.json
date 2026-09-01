@@ -38,7 +38,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitest/ui": "^4.1.8",
-    "eslint": "^9",
+    "eslint": "^10",
     "eslint-config-next": "16.3.4",
     "shadcn": "^4.9.0",
     "tailwindcss": "^4",
