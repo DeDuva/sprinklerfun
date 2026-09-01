@@ -1,5 +1,20 @@
 name: CI
 
+# How deploys are gated
+#
+# This workflow does NOT deploy. Vercel's Git integration builds production from
+# `main` on every merge, and it has no native "wait for CI" setting — so the gate
+# is at the MERGE, not at the deploy: a ruleset on `main` requires the
+# `types + tests` check below and forbids direct pushes. Nothing red reaches
+# `main`, and production only ever builds from `main`.
+#
+# That is why there is no deploy job and no Vercel token here. Deploying from
+# Actions would need a long-lived credential to buy a guarantee branch
+# protection already provides.
+#
+# If you rename the `test` job, update the ruleset's required check to match, or
+# the gate silently stops requiring anything.
+
 on:
   pull_request:
   push:
@@ -10,8 +25,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  # Supersede an in-flight PR run, but never kill a main run — that one may be
-  # mid-deploy, and cancelling it would leave production in an unknown state.
+  # Supersede in-flight PR runs; leave `main` runs alone, since that run is the
+  # post-merge signal on the merged result.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -58,8 +73,8 @@ jobs:
     # FlowTimelineChart, an `any` in StationFlowChart, and a synchronous setState
     # in an effect in app/config/page.tsx. They are real React correctness bugs
     # and fixing them changes behaviour, so they are deliberately not bundled
-    # into an unrelated change. Once they are fixed, delete this line and the
-    # job becomes a real gate.
+    # into an unrelated change. Once they are fixed, delete this line and add
+    # this job to the ruleset's required checks.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -69,44 +84,3 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
-
-  deploy:
-    name: deploy production
-    # The gate. Vercel's own Git integration deploys in parallel with Actions and
-    # would ship a red build; routing the deploy through here means a failing
-    # typecheck or test stops it. `lint` is deliberately not a dependency — it is
-    # advisory (see above) and would block every deploy.
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment:
-      name: production
-      url: https://sprinklerfun.vercel.app
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      # Remote build, the same thing `vercel --prod` does from a laptop. The
-      # project has no Git integration, so this is the only path that keeps
-      # main and production in step.
-      - name: Deploy
-        env:
-          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
-        run: npx vercel@latest deploy --prod --yes --token="${{ secrets.VERCEL_TOKEN }}"
-
-      # A green deploy step only means the build shipped. Confirm the running
-      # site actually serves, so a broken runtime fails the pipeline rather than
-      # sitting undetected until someone opens the app.
-      - name: Smoke-test production
-        run: |
-          set -euo pipefail
-          for path in /api/stats /api/delay; do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --retry 5 --retry-delay 5 \
-              --retry-all-errors "https://sprinklerfun.vercel.app$path")
-            echo "$path -> $code"
-            [ "$code" = "200" ] || { echo "::error::$path returned $code"; exit 1; }
-          done

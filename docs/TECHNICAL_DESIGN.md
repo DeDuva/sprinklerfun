@@ -359,6 +359,47 @@ vercel env add NEXT_PUBLIC_APP_SHARED_SECRET production   # same value as APP_SH
 > above). Vercel defaults to UTC; set `APP_TIMEZONE` to the property's zone or
 > rollups will be wrong.
 
+### CI/CD — where the gate actually is
+
+`.github/workflows/ci.yml` runs typecheck + tests on every PR and every push to
+`main`. **It does not deploy.** Vercel's Git integration builds production from
+`main` on every merge, and Vercel has no native "wait for CI checks" setting for
+production deployments — so the gate is placed at the **merge**, not the deploy:
+
+```
+PR ──→ types + tests ──→ [ruleset on main] ──→ merge ──→ Vercel deploys production
+            │
+            └─ red ⇒ merge blocked ⇒ main unchanged ⇒ nothing deploys
+```
+
+A repository ruleset on `main` requires the `types + tests` check, requires a PR,
+requires the branch to be up to date before merging, and forbids deletion and
+force-pushes. Since production only ever builds from `main`, and nothing red can
+reach `main`, production only ever runs green code.
+
+Two consequences worth knowing:
+
+- **No Vercel token exists, deliberately.** Deploying from Actions would need a
+  long-lived credential in GitHub secrets to buy a guarantee branch protection
+  already provides for free. The one exception is a manual `vercel --prod` from a
+  linked checkout, which is how the project was deployed before Git integration.
+- **"Up to date before merging" is not optional.** Without it, two PRs can each
+  pass CI independently and then merge in sequence, leaving `main` in a state
+  neither one tested.
+- `lint` runs but is advisory (`continue-on-error`) and is **not** a required
+  check — it fails on 6 pre-existing React errors. Fixing those is what unblocks
+  promoting it to a gate.
+
+If the `test` job is ever renamed, the ruleset's required check must be renamed
+with it, or the gate silently stops requiring anything.
+
+Preview deployments (every PR, once Git integration is on) get no `TURSO_*` env
+vars, since those are set only for the `production` environment. They therefore
+fall back to the `file:` branch of `lib/db.ts` on a read-only filesystem and
+their API routes error. That is intentional for now — previews cannot reach
+production data — but it means a preview is not a usable review environment
+until it is given its own database.
+
 ### Migration rollout (incremental, each phase shippable)
 
 1. **Turso + schema + `/api/rows` + `/api/rollup`, client dual-writes.** ← *implemented (Phase 1).* localStorage was still the source of truth; the client mirrored every upload to the DB (`lib/backend.ts`). This stood up the backend but did **not** relieve the quota error (the localStorage write still ran first).
