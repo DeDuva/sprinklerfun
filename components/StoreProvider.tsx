@@ -4,8 +4,12 @@ import { useEffect } from "react"
 import Papa from "papaparse"
 import { useStore } from "@/lib/store"
 import { toWindows } from "@/lib/types"
-import type { FlumeRow } from "@/lib/types"
 import { fetchStats, pushRows, syncWindows } from "@/lib/backend"
+import { parseFlumeCsvRows } from "@/lib/csvImport"
+
+// Rows per seed request. Keeps each POST body an order of magnitude under
+// Vercel's ~4.5 MB limit regardless of how much history accumulates.
+const SEED_CHUNK = 20_000
 
 export default function StoreProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
@@ -65,15 +69,21 @@ export default function StoreProvider({ children }: { children: React.ReactNode 
               header: true,
               skipEmptyLines: true,
               complete: async (results) => {
-                const rows: FlumeRow[] = []
-                for (const row of results.data) {
-                  const dt = row["datetime"] ?? row["Datetime"] ?? row["DateTime"]
-                  const g = parseFloat(row["gallons"] ?? row["Gallons"] ?? "0")
-                  if (dt && !isNaN(g)) rows.push({ datetime: dt.trim(), gallons: g })
-                }
+                const rows = parseFlumeCsvRows(results.data)
                 if (rows.length === 0) return
-                const r = await pushRows(rows, useStore.getState().windows)
-                if (r.ok) {
+                // Seed in batches. A single POST of the whole file was ~4.2 MB of
+                // JSON against Vercel's ~4.5 MB body limit — it fit only by
+                // luck, and one more month of data would have turned the
+                // fresh-install path into an opaque 413. Windows ride along with
+                // the first batch only; the rest are pure row inserts.
+                let seeded = false
+                for (let i = 0; i < rows.length; i += SEED_CHUNK) {
+                  const batch = rows.slice(i, i + SEED_CHUNK)
+                  const r = await pushRows(batch, i === 0 ? useStore.getState().windows : [])
+                  if (!r.ok) break
+                  seeded = true
+                }
+                if (seeded) {
                   await refreshRowCount()
                   useStore.getState().bumpServerVersion()
                 }

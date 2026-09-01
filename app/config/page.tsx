@@ -20,7 +20,7 @@ import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import Papa from "papaparse"
 import type { FlumeRow } from "@/lib/types"
-import { pushRows, clearAllRows, fetchRollups } from "@/lib/backend"
+import { pushRows, fetchRollups } from "@/lib/backend"
 import type { RollupRow } from "@/lib/types"
 import { parseFlumeCsvRows, buildFlumeExportUrl } from "@/lib/csvImport"
 
@@ -866,8 +866,6 @@ function ConfigPageInner() {
   const updateWindow = useStore((s) => s.updateWindow)
   const deleteWindow = useStore((s) => s.deleteWindow)
   const copyBaselinesForward = useStore((s) => s.copyBaselinesForward)
-  const setRowCount = useStore((s) => s.setRowCount)
-  const bumpServerVersion = useStore((s) => s.bumpServerVersion)
   const serverVersion = useStore((s) => s.serverVersion)
 
   // Per-window day counts come from the rollup feed (the browser no longer holds
@@ -1146,24 +1144,16 @@ function ConfigPageInner() {
 
       <ExportImportCard />
 
-      <Card className="border-red-200">
-        <CardHeader><CardTitle className="text-base text-red-600">Danger Zone</CardTitle></CardHeader>
+      <Card>
+        <CardHeader><CardTitle className="text-base">Stored data</CardTitle></CardHeader>
         <CardContent>
-          <p className="text-sm text-gray-500 mb-3">{rowCount.toLocaleString()} rows currently stored.</p>
-          <Button variant="destructive" size="sm"
-            onClick={async () => {
-              if (!confirm("Clear all CSV data? This deletes it from the server.")) return
-              const r = await clearAllRows()
-              if (r.ok) {
-                setRowCount(0)
-                bumpServerVersion()
-                toast.success("Data cleared")
-              } else {
-                toast.error(`Server delete failed: ${r.error}`)
-              }
-            }}>
-            Clear all data
-          </Button>
+          <p className="text-sm text-gray-500">{rowCount.toLocaleString()} rows currently stored.</p>
+          <p className="text-xs text-gray-400 mt-2">
+            The &ldquo;clear all data&rdquo; button was removed. It called an endpoint that
+            dropped every table in one request, guarded only by a secret published in
+            this page&rsquo;s JavaScript. Clearing data is now a deliberate action against
+            the database &mdash; see docs/RUNBOOK.md.
+          </p>
         </CardContent>
       </Card>
     </div>

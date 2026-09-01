@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 import { createClient, type Client } from "@libsql/client"
+import { isDeployed } from "./server/env"
 
 // ---------------------------------------------------------------------------
 // libSQL / Turso client (server-only)
@@ -40,6 +41,21 @@ const globalForDb = globalThis as unknown as {
 
 export function getDb(): Client {
   if (globalForDb.__sprinklerDb) return globalForDb.__sprinklerDb
+
+  // The local-file fallback is a dev convenience that used to double as a
+  // production failure mode: with TURSO_DATABASE_URL missing, the app did not
+  // error — it opened a file DB on an ephemeral serverless filesystem,
+  // bootstrapped an empty schema, served zero rows as though that were the
+  // truth, and discarded every write when the instance recycled. Refusing to
+  // start is the only honest behaviour, and it is what makes /api/health
+  // meaningful.
+  if (isDeployed() && !process.env.TURSO_DATABASE_URL) {
+    throw new Error(
+      "TURSO_DATABASE_URL is not set on a Vercel deployment. Refusing to fall back " +
+        "to an ephemeral local file database, which would silently serve an empty " +
+        "dataset and discard every write when the instance recycles."
+    )
+  }
 
   const url = process.env.TURSO_DATABASE_URL ?? LOCAL_FALLBACK_URL
   const authToken = process.env.TURSO_AUTH_TOKEN
