@@ -34,6 +34,7 @@ npm run dev        # http://localhost:3000
 
 ```
 ├── .github/workflows/      # CI: typecheck, tests, lint — required to merge
+├── scripts/                # Fixture generation + live verification (not in CI)
 ├── app/                    # Next.js App Router pages
 │   ├── page.tsx            # Dashboard (/)
 │   ├── analysis/           # Per-station analysis (/analysis)
@@ -49,12 +50,21 @@ npm run dev        # http://localhost:3000
 │   ├── PRODUCT_DESIGN.md   # Feature spec, user flows, design principles
 │   ├── TECHNICAL_DESIGN.md # Stack choices, architecture decisions
 │   └── SprinklerFun-20241019.ipynb  # Original Jupyter prototype
-└── data/                   # Config snapshots + metered-day fixtures used by tests
+└── data/                   # Config snapshots + generated (synthetic) flow fixtures
 ```
 
 ## Saving your config to git
 
 The app stores config in `localStorage`. To back it up, export it from the Config page and save the JSON to `data/`. Naming convention: `config-YYYY-MM-DD-notes.json`. Commit after each seasonal audit so your baseline gpm history is version-controlled alongside the code.
+
+**Config only — never metered data.** The config snapshots hold station names, durations and baseline gpm, none of which identify anything. A CSV export is different: at one-minute resolution it reveals when the house wakes, showers and sits empty, and this repository is public. The fixtures under `data/` and the demo seed at `public/default-data.csv` are generated:
+
+```bash
+npm run fixtures     # regenerate the synthetic fixtures
+npm run verify:prod  # check the analysis against live data (local only, read-only)
+```
+
+See [SECURITY.md](SECURITY.md) for what is and isn't protected.
 
 ## Tech stack
 
