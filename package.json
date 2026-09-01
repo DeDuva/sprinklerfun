@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "fixtures": "jiti scripts/make-fixtures.ts",
-    "verify:prod": "jiti scripts/verify-prod.ts"
+    "verify:prod": "jiti scripts/verify-prod.ts",
+    "backup": "jiti scripts/backup.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

@@ -1,0 +1,70 @@
+name: Backup
+
+# The app is publicly writable by choice (see SECURITY.md), so recovery is the
+# primary control rather than a backstop — and the Turso free plan gives a
+# 1-day point-in-time-restore window. An unnoticed wipe is unrecoverable after
+# 24 hours. These artifacts are what turn that into 90 days of recovery points,
+# so they are doing the real work here, not backstopping Turso.
+#
+# Needs two repository secrets: TURSO_DATABASE_URL and TURSO_AUTH_TOKEN. The
+# token should be READ-ONLY and scoped to the one database
+# (`turso db tokens create <db> --read-only`) — this job only ever reads, and a
+# platform token, which `turso db export` would require, can destroy every
+# database in the account.
+
+on:
+  schedule:
+    # 09:15 UTC ≈ 02:15 America/Los_Angeles — after the sprinklers have run and
+    # any overnight upload has landed. Off the hour, because everything is
+    # scheduled on the hour and GitHub's queue shows it.
+    - cron: "15 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: dump and archive
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # scripts/backup.ts exits non-zero on an empty result or an implausibly
+      # small file. A backup that quietly contains nothing is worse than a failed
+      # one, because it looks like success right up until someone needs it.
+      - name: Dump
+        id: dump
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: npm run backup
+
+      - name: Upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sprinklerfun-backup-${{ github.run_id }}
+          path: backup/*.sql.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      # Deliberately never committed: this is the household water data the
+      # fixtures were scrubbed of in #41, and the repository is public.
+      - name: Summary
+        run: |
+          echo "### Backup complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ steps.dump.outputs.file }}\` — $(( ${{ steps.dump.outputs.bytes }} / 1024 )) KB gzipped, kept 90 days." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Restore: \`turso db shell <database> < backup.sql\` — see docs/RUNBOOK.md." >> "$GITHUB_STEP_SUMMARY"

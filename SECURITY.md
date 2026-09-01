@@ -48,7 +48,8 @@ recovery.
 | Auth fails closed in production | Previously an unset or blank `APP_SHARED_SECRET` returned `true`, making the database anonymously writable with no symptom at all. |
 | Missing `TURSO_DATABASE_URL` throws in production | It used to fall back to an ephemeral local file, serving an empty dataset as if it were real and discarding writes on recycle. |
 | Security headers | `frame-ancestors 'none'`, `nosniff`, `strict-origin-when-cross-origin`, HSTS, `Permissions-Policy`. No CSP yet — see `next.config.ts` for why a permissive one would be worse than none. |
-| Dependency scanning | Dependabot alerts, security updates, secret scanning and push protection are enabled. Actions are pinned by commit SHA. |
+| Dependency scanning | Dependabot alerts, security updates, secret scanning and push protection are enabled. Actions are pinned by commit SHA. `npm audit` is at 0. |
+| Daily backups | `flume_rows` and `config_windows` dumped to a 90-day artifact. Turso's free plan gives only a 24-hour PITR window, so for anything older this is the only recovery path — which is why it fails loudly on an empty or undersized dump rather than reporting success. See `docs/RUNBOOK.md`. |
 
 **Not covered: rate limiting.** Per-instance counters are meaningless on serverless
 (each cold start gets its own memory), and a shared store means adding infrastructure.

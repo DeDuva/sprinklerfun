@@ -24,29 +24,52 @@ only fix is a restore.
 2. Find the last known-good production deployment → **⋯** → **Instant Rollback**
 3. Confirm with `curl -s https://sprinklerfun.vercel.app/api/health` → expect
    `{"ok":true,"database":"reachable","rows":…}`
-4. Fix forward on a branch. `main` is protected: PR, green `types + tests` and `lint`,
-   and an up-to-date branch. There is no bypass, deliberately.
+4. Fix forward on a branch. `main` is protected: PR, green `types + tests`, `lint`
+   and `e2e`, and an up-to-date branch. There is no bypass, deliberately.
 
 If the rollback itself is what you need to undo, redeploy `main` with
 `vercel --prod` from a linked checkout.
 
 ## Restoring data
 
-**Verify these before you need them.** *(⚠️ The retention window and PITR
-availability depend on the Turso plan and have not yet been confirmed for this
-project — do that and fill in the blanks below.)*
+Two independent paths, with very different reach:
 
-- Turso point-in-time restore window: `TODO — confirm on the current plan`
-- Latest logical backup: `TODO — see "Backups" below`
+| | Window | Good for |
+|---|---|---|
+| **Turso PITR** (free plan) | **24 hours** | An incident you catch the same day |
+| **Backup artifacts** | **90 days** | Everything else |
 
-Procedure once confirmed:
+The free plan's 24-hour window is the reason the artifacts exist. An unnoticed
+wipe is unrecoverable through PITR after a day, so for anything older the
+artifact is the only path.
 
-1. `turso db shell <db> ".tables"` — confirm you are pointed at the right database.
-2. Restore to a **new** database, never over the live one:
-   `turso db create sprinklerfun-restore --from-db sprinklerfun --timestamp <ISO>`
-3. Compare before switching: row count, min/max date, and per-station totals for a
-   known day (`GET /api/day/2026-08-28` against each).
+### From a backup artifact (the usual case)
+
+1. **Actions → Backup →** pick a run → download the artifact → `gunzip` it.
+2. Restore into a **new** database, never over the live one:
+   ```bash
+   turso db create sprinklerfun-restore
+   turso db shell sprinklerfun-restore < sprinklerfun-<date>.sql
+   ```
+3. Compare before switching anything:
+   ```bash
+   turso db shell sprinklerfun-restore "SELECT COUNT(*), MIN(datetime), MAX(datetime) FROM flume_rows"
+   ```
 4. Repoint `TURSO_DATABASE_URL` in Vercel → **Production** → redeploy.
+5. Save any config change in the app to force a rollup and stats recompute — the
+   dump deliberately carries only `flume_rows` and `config_windows`.
+
+The dump is plain SQL, so it restores with `turso db shell` and needs nothing
+from this repository. That is the point: recovery tooling that depends on the
+thing being recovered is a bad trade.
+
+### From Turso PITR (same-day only)
+
+```bash
+turso db create sprinklerfun-restore --from-db sprinklerfun --timestamp <ISO>
+```
+
+Then compare and repoint exactly as above.
 
 `flume_rows` is the only irreplaceable table. Everything else — `daily_rollup`,
 `station_stats`, `station_warnings` — is derived and rebuilds from a single write, so
@@ -54,15 +77,48 @@ a restore only needs to get the raw rows back.
 
 ## Backups
 
-**Not yet implemented.** This is the highest-priority operational gap: the app is
-publicly writable by design, so recovery is the primary control, and it currently
-rests entirely on whatever Turso's plan provides.
+`.github/workflows/backup.yml` runs daily at 09:15 UTC (≈02:15 local) and on
+demand via **Actions → Backup → Run workflow**. It dumps `flume_rows` and
+`config_windows` to gzipped SQL and uploads it as an artifact kept for 90 days.
 
-Planned: a scheduled GitHub Actions job dumping the DB via the Turso HTTP API and
-uploading it as a workflow artifact with 90-day retention. Deliberately **not**
-committed to the repo — it is the same household data the fixtures were scrubbed of.
+Deliberately **not** committed: this is the household water data the fixtures were
+scrubbed of in #41, and the repository is public.
 
-Blocked on: a Turso token stored as a repo secret, and confirmation of the PITR window.
+**Only two tables are dumped.** `flume_rows` is irreplaceable and
+`config_windows` is hand-tuned; `daily_rollup`, `station_stats` and
+`station_warnings` are derived and rebuild from a single write, so backing them up
+would be archiving a cache.
+
+**It fails loudly rather than quietly succeeding.** `scripts/backup.ts` exits
+non-zero if the database returns no rows or the file comes out implausibly small,
+and the upload is set to `if-no-files-found: error`. A backup that silently
+contains nothing is worse than one that failed, because it looks like success
+right up until someone needs it.
+
+Run it locally against production with:
+
+```bash
+TURSO_DATABASE_URL=... TURSO_AUTH_TOKEN=... npm run backup
+```
+
+### Credentials
+
+The workflow uses two repository secrets. The token is a **read-only database
+token**, scoped to the one database:
+
+```bash
+turso db tokens create <database> --read-only
+```
+
+Not a platform token. `turso db export` would produce a truer SNAPSHOT, but it
+authenticates with a credential that can create and destroy every database in the
+account — far too much reach for a job that only reads one table. The read-only
+database token also grants nothing an anonymous visitor does not already have,
+since reads are public by choice.
+
+Expiration is `never` on purpose: a dated token means the backup stops silently
+when it lapses, which is the worst possible failure for the thing that *is* the
+recovery plan.
 
 ## Clearing data deliberately
 
