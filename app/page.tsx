@@ -14,6 +14,7 @@ import {
   stationTimerMap,
   activeWindowForDate,
   currentConfig,
+  localDateKey,
 } from "@/lib/analyze"
 import { fetchRollups, fetchStats, fetchDayRows } from "@/lib/backend"
 import type { FlumeRow, RollupRow, StatsPayload } from "@/lib/types"
@@ -110,8 +111,8 @@ export default function DashboardPage() {
 
     const [y, m] = selectedMonth.split("-").map(Number)
     const monthStart   = `${selectedMonth}-01`
-    const monthLastDay = new Date(y, m, 0).toISOString().slice(0, 10)
-    const todayStr     = today.toISOString().slice(0, 10)
+    const monthLastDay = localDateKey(new Date(y, m, 0))
+    const todayStr     = localDateKey(today)
     const effectiveEnd = selectedMonth === currentMonth ? todayStr : monthLastDay
 
     const monthly  = derived.allDaily.filter((d) => d.date >= monthStart && d.date <= effectiveEnd)

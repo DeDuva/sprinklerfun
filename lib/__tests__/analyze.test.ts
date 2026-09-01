@@ -15,6 +15,8 @@ import {
   buildDaySchedule,
   buildDayMinuteSeries,
   reconcileDay,
+  localDateKey,
+  windowCutoff,
   inferStationDelay,
   recommendStationDelays,
   findProgramRun,
@@ -838,6 +840,54 @@ describe("activeWindowForDate", () => {
   it("works regardless of input order", () => {
     const shuffled = [windows[2], windows[0], windows[1]]
     expect(activeWindowForDate(shuffled, "2024-04-01")?.notes).toBe("B")
+  })
+})
+
+describe("localDateKey and the date helpers", () => {
+  // These are the helpers that were quietly timezone-dependent. The suite passed
+  // under UTC and under America/Los_Angeles and failed under Pacific/Kiritimati
+  // (UTC+14) — which meant UTC passing was luck, not coverage. The root cause was
+  // the same everywhere: anchor a Date at LOCAL noon to dodge DST, then format it
+  // with toISOString(), which converts to UTC.
+
+  it("formats a Date as its LOCAL calendar day", () => {
+    // 23:30 local on the 28th. In any timezone west of UTC this instant is
+    // already the 29th in UTC, which is exactly what toISOString() would return.
+    expect(localDateKey(new Date(2026, 7, 28, 23, 30))).toBe("2026-08-28")
+    // 00:30 local on the 28th — the mirror case, east of UTC.
+    expect(localDateKey(new Date(2026, 7, 28, 0, 30))).toBe("2026-08-28")
+  })
+
+  it("pads single-digit months and days", () => {
+    expect(localDateKey(new Date(2026, 0, 5, 12, 0))).toBe("2026-01-05")
+  })
+
+  it("addDays crosses month, year and leap boundaries", () => {
+    expect(addDays("2026-08-28", 1)).toBe("2026-08-29")
+    expect(addDays("2026-08-31", 1)).toBe("2026-09-01")
+    expect(addDays("2026-01-01", -1)).toBe("2025-12-31")
+    expect(addDays("2024-02-28", 1)).toBe("2024-02-29") // leap year
+    expect(addDays("2026-08-28", 0)).toBe("2026-08-28")
+  })
+
+  it("addDays round-trips", () => {
+    expect(addDays(addDays("2026-08-28", 37), -37)).toBe("2026-08-28")
+  })
+
+  it("windowCutoff subtracts whole days without drifting", () => {
+    expect(windowCutoff("2w", "2026-08-28")).toBe("2026-08-14")
+    expect(windowCutoff("1m", "2026-08-28")).toBe("2026-07-29")
+    expect(windowCutoff("all", "2026-08-28")).toBe("0000-00-00")
+  })
+
+  it("buildWeeklyRows puts a Monday, not a Sunday, in weekStart", () => {
+    // isoWeek computes the Monday in local time and used to emit it via
+    // toISOString(), so east of UTC+12 it reported the Sunday before.
+    const [week] = buildWeeklyRows([
+      { date: "2026-08-28", isSprinklerDay: true, totalGallons: 10, byStation: { "T1-01": 10 } },
+    ])
+    expect(week.weekStart).toBe("2026-08-24") // the Monday of that week
+    expect(new Date(week.weekStart + "T12:00:00").getDay()).toBe(1)
   })
 })
 
