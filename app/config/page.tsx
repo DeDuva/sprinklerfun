@@ -1,6 +1,6 @@
 "use client"
 
-import { Suspense, useEffect, useMemo, useRef, useState } from "react"
+import { Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import { useSearchParams } from "next/navigation"
 import { useStore } from "@/lib/store"
 import { sortWindows, toWindows } from "@/lib/types"
@@ -236,7 +236,8 @@ function TimerSection({
     const stations = timer.stations.filter((s) => s.id !== id)
     const programs = { ...timer.programs } as typeof timer.programs
     for (const pid of PROGRAM_IDS) {
-      const { [id]: _, ...rest } = programs[pid].stations
+      const rest = { ...programs[pid].stations }
+      delete rest[id]
       programs[pid] = { ...programs[pid], stations: rest }
     }
     onChange({ ...timer, stations, programs })
@@ -881,11 +882,17 @@ function ConfigPageInner() {
   }, [serverVersion])
 
   // Track persist hydration so we can distinguish "loading" from "no config yet".
-  const [hydrated, setHydrated] = useState(false)
-  useEffect(() => {
-    setHydrated(useStore.persist.hasHydrated())
-    return useStore.persist.onFinishHydration(() => setHydrated(true))
-  }, [])
+  //
+  // This is a subscription to an external store, which is exactly what
+  // useSyncExternalStore is for. The previous version set state synchronously
+  // inside an effect, which costs an extra render pass on every mount; the
+  // server snapshot below keeps SSR rendering the "loading" branch, so the
+  // markup still matches on hydration.
+  const hydrated = useSyncExternalStore(
+    (onChange) => useStore.persist.onFinishHydration(onChange),
+    () => useStore.persist.hasHydrated(),
+    () => false
+  )
 
   const sorted = useMemo(() => sortWindows(windows), [windows])
   const currentId = useMemo(() => activeWindowForDate(windows, todayStr())?.id ?? null, [windows])

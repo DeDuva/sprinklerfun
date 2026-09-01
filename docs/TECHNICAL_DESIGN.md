@@ -372,9 +372,9 @@ PR ──→ types + tests ──→ [ruleset on main] ──→ merge ──→
             └─ red ⇒ merge blocked ⇒ main unchanged ⇒ nothing deploys
 ```
 
-A repository ruleset on `main` requires the `types + tests` check, requires a PR,
-requires the branch to be up to date before merging, and forbids deletion and
-force-pushes. Since production only ever builds from `main`, and nothing red can
+A repository ruleset on `main` requires the `types + tests` and `lint` checks,
+requires a PR, requires the branch to be up to date before merging, and forbids
+deletion and force-pushes. Since production only ever builds from `main`, and nothing red can
 reach `main`, production only ever runs green code.
 
 Two consequences worth knowing:
@@ -386,12 +386,12 @@ Two consequences worth knowing:
 - **"Up to date before merging" is not optional.** Without it, two PRs can each
   pass CI independently and then merge in sequence, leaving `main` in a state
   neither one tested.
-- `lint` runs but is advisory (`continue-on-error`) and is **not** a required
-  check — it fails on 6 pre-existing React errors. Fixing those is what unblocks
-  promoting it to a gate.
+- `lint` is a required check. `react-hooks/rules-of-hooks` is the only thing in
+  the suite that catches an early return drifting back above a hook — a bug that
+  surfaces as a crash on a user interaction, not at build time.
 
-If the `test` job is ever renamed, the ruleset's required check must be renamed
-with it, or the gate silently stops requiring anything.
+If the `test` or `lint` job is ever renamed, the ruleset's required checks must be
+renamed with it, or the gate silently stops requiring anything.
 
 Preview deployments (every PR, once Git integration is on) get no `TURSO_*` env
 vars, since those are set only for the `production` environment. They therefore

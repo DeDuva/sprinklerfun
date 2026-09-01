@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useRef, useState } from "react"
+import { useMemo, useState } from "react"
 import {
   ComposedChart,
   Area,
@@ -106,10 +106,17 @@ export default function FlowTimelineChart({
   }, [series, schedule, recon])
 
   // Brush-controlled zoom window (indices into `data`).
+  //
+  // A zoom is a range of indices into `data`, so it becomes meaningless the
+  // moment `data` changes length (a different day, a config edit). Reset it
+  // during render rather than in an effect, so the chart never paints a frame
+  // with the old window applied to the new series — this is React's documented
+  // "adjust state when a prop changes" pattern, tracked with state rather than a
+  // ref because refs must not be read or written while rendering.
   const [zoom, setZoom] = useState<{ start: number; end: number } | null>(null)
-  const prevDataLen = useRef(data.length)
-  if (data.length !== prevDataLen.current) {
-    prevDataLen.current = data.length
+  const [prevDataLen, setPrevDataLen] = useState(data.length)
+  if (data.length !== prevDataLen) {
+    setPrevDataLen(data.length)
     if (zoom) setZoom(null)
   }
 
@@ -142,10 +149,6 @@ export default function FlowTimelineChart({
   const reset = () => {
     onSelectStation(null)
     setZoom(null)
-  }
-
-  if (series.length === 0) {
-    return <div className="flex items-center justify-center h-64 text-gray-400">No flow data for this day</div>
   }
 
   // Group stations by timer → program, deduped within each group.
@@ -184,6 +187,14 @@ export default function FlowTimelineChart({
       if (next.has(key)) next.delete(key); else next.add(key)
       return next
     })
+
+  // Every hook above runs unconditionally. This early return used to sit higher
+  // up, above the two hooks that follow it — so a day with no flow rendered a
+  // different number of hooks than a day with flow, and stepping between them
+  // (which the day navigation does constantly) misaligned React's hook state.
+  if (series.length === 0) {
+    return <div className="flex items-center justify-center h-64 text-gray-400">No flow data for this day</div>
+  }
 
   const reconById = Object.fromEntries(recon.map((r) => [r.stationId, r]))
 

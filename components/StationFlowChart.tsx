@@ -24,8 +24,27 @@ interface Props {
 const WARN_THRESHOLD = 0.20
 
 // Custom bar shape: draws the bar + a per-row orange tick at the baseline x-position.
-const BarWithBaselineTick = (props: any) => {
-  const { x, y, width, height, fill, baseline, gpm } = props
+// Recharts injects the geometry and the row's own fields by cloning the element,
+// so nothing is passed at the call site and every prop is optional here.
+interface BarWithBaselineTickProps {
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  fill?: string
+  baseline?: number | null
+  gpm?: number
+}
+
+const BarWithBaselineTick = ({
+  x = 0,
+  y = 0,
+  width = 0,
+  height = 0,
+  fill,
+  baseline,
+  gpm = 0,
+}: BarWithBaselineTickProps) => {
   if (!width || width <= 0) return null
 
   const tickX =
@@ -111,13 +130,11 @@ function FlowTooltip({
   active,
   payload,
   configVersionLabel,
-  baselineLookup,
 }: {
   active?: boolean
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   payload?: any[]
   configVersionLabel?: string | null
-  baselineLookup: Record<string, number>
 }) {
   if (!active || !payload?.length) return null
   const entry = payload[0]?.payload as { name: string; gpm: number; baseline: number | null; isAbove: boolean }
@@ -210,10 +227,7 @@ export default function StationFlowChart({ stats, config, selectedDay, sprinkler
           <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={52} />
           <Tooltip
             content={
-              <FlowTooltip
-                configVersionLabel={configVersionLabel}
-                baselineLookup={baselineLookup}
-              />
+              <FlowTooltip configVersionLabel={configVersionLabel} />
             }
           />
           <Bar dataKey="gpm" name="Avg gpm" shape={<BarWithBaselineTick />}>
