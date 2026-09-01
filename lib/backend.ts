@@ -96,14 +96,6 @@ export async function fetchDayRows(date: string): Promise<FlumeRow[]> {
   return data.rows
 }
 
-// Clear all rows + rollups on the server.
-export async function clearAllRows(): Promise<PushResult> {
-  try {
-    const res = await fetch("/api/rows", { method: "DELETE", headers: authHeaders() })
-    const data = (await res.json()) as PushResult
-    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` }
-    return { ...data, ok: true }
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
-  }
-}
+// There is deliberately no clearAllRows(). DELETE /api/rows was removed: it
+// dropped four tables in one batch behind a header whose value is published in
+// this very bundle. See SECURITY.md and docs/RUNBOOK.md.
