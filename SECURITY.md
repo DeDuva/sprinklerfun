@@ -1,60 +1,69 @@
 # Security
 
-SprinklerFun is a single-household hobby app. It is deployed publicly and, by
-deliberate choice, is **readable and writable by anyone who can reach it**. This
-file records that decision so nobody — including a future version of the author —
-mistakes the shared-secret header for authentication.
+SprinklerFun is a single-household hobby app, deployed publicly and protected by a
+single shared password. This file records what that does and does not buy, so
+nobody — including a future version of the author — has to infer it from the code.
 
 ## Reporting
 
 Open a GitHub issue. There is no bounty and no SLA.
 
+## The password
+
+Every page and every API route sits behind `proxy.ts`, which requires a session
+cookie. The only exclusions are the login page, `POST /api/login`, `GET /api/health`
+and Next's static output. Because the guard is one matcher rather than a check
+inside each handler, a new route is protected by virtue of being new — the failure
+mode where someone adds an endpoint and forgets the credential check is not
+available.
+
+**The password never reaches the browser.** `APP_PASSWORD` is server-side only; the
+cookie carries an HMAC of a fixed string under it, is `httpOnly` so page scripts
+cannot read it, and is `SameSite=Lax`.
+
+This replaced an `x-sprinkler-secret` header compared against a value that had to
+ship to the client as `NEXT_PUBLIC_APP_SHARED_SECRET` — inlined into a static chunk
+at build time, readable by anyone who loaded the site, and replayable. That was
+obfuscation, and this file used to say so. This is not.
+
+A deployment with no `APP_PASSWORD` serves nothing: every request is refused with a
+503, rather than falling open to the internet.
+
 ## What is not protected
 
 These are accepted risks, not oversights.
 
-### Reads are public
-
-`GET /api/rollup`, `/api/day/[date]`, `/api/stats`, `/api/delay` and `/api/health`
-require no credential. Anyone can retrieve the full history of metered water use for
-this property at per-day and per-minute resolution.
-
-### Writes are effectively public
-
-`POST /api/rows` compares an `x-sprinkler-secret` header against `APP_SHARED_SECRET`.
-**This is obfuscation, not authentication.** The browser must send that header to use
-the app, so the value ships to the client as `NEXT_PUBLIC_APP_SHARED_SECRET`, which
-Next.js inlines into the JavaScript bundle at build time. Anyone who loads the site
-can read it out of a static chunk and replay it.
-
-It stops a drive-by script that has not read the bundle. It stops nothing else.
-
-Closing this properly needs one of: an app-level login with a server-side session;
-Vercel Deployment Protection on a plan that covers production domains (Hobby's
-Standard Protection explicitly does **not**); or removing the write path from the
-browser entirely. None is in place, by choice.
+- **One password, no accounts.** Everyone who has it has everything, and there is
+  no record of who did what, because there is no "who".
+- **A stolen cookie stays valid until the password changes.** Sessions are not
+  tracked server-side, so an individual one cannot be revoked. Rotating
+  `APP_PASSWORD` invalidates all of them at once — that is the log-out-everywhere
+  lever, and the answer to a lost phone. See `docs/RUNBOOK.md`.
+- **No rate limiting on the login.** Per-instance counters are meaningless on
+  serverless (each cold start gets its own memory), and a shared store means
+  adding infrastructure. The mitigation is a long random password rather than a
+  lockout; Vercel's edge firewall is the realistic control if that ever changes.
+- **No CSP.** See `next.config.ts` for why a permissive one would be worse than
+  none.
 
 ## What is protected
 
-Since prevention is out of scope, the controls are blast-radius reduction and
-recovery.
+The password is the front door. The controls below are what stands behind it:
+blast-radius reduction and recovery, because a single credential is one mistake
+away from being someone else's.
 
 | Control | Why |
 |---|---|
+| One guard, applied by default | `proxy.ts` covers every route except four explicit exclusions, so protection is not a thing each new handler has to remember. |
 | `DELETE /api/rows` removed | Dropped `flume_rows`, `daily_rollup`, `station_stats` and `station_warnings` in one batch. One request from unrecoverable loss, for a convenience button. |
 | `GET /api/rows` removed | An unauthenticated full-database export with no date range, no limit, and no caller in the app. |
 | `windows: []` no longer wipes the config timeline | `replaceWindows` is delete-all-then-insert, so `{"rows":[],"windows":[]}` destroyed months of tuning via a request that looked like a no-op. An empty array now means "no window update". |
 | Ingest validated and bounded | `datetime` must match the date format the `flume_rows` index and `rowDateBounds()` depend on; `gallons` is range-checked; `rows` is capped at 200,000. Uncapped bodies amplified the full-table statistics recompute. |
-| Auth fails closed in production | Previously an unset or blank `APP_SHARED_SECRET` returned `true`, making the database anonymously writable with no symptom at all. |
+| Auth fails closed on a deployment | No `APP_PASSWORD` means every request gets a 503. The previous guard returned `true` when its secret was unset, making the database anonymously writable with no symptom at all — nothing logged, nothing 500ing, the app looking perfectly healthy. |
 | Missing `TURSO_DATABASE_URL` throws in production | It used to fall back to an ephemeral local file, serving an empty dataset as if it were real and discarding writes on recycle. |
 | Security headers | `frame-ancestors 'none'`, `nosniff`, `strict-origin-when-cross-origin`, HSTS, `Permissions-Policy`. No CSP yet — see `next.config.ts` for why a permissive one would be worse than none. |
 | Dependency scanning | Dependabot alerts, security updates, secret scanning and push protection are enabled. Actions are pinned by commit SHA. `npm audit` is at 0. |
 | Daily backups | `flume_rows` and `config_windows` dumped to a 90-day artifact. Turso's free plan gives only a 24-hour PITR window, so for anything older this is the only recovery path — which is why it fails loudly on an empty or undersized dump rather than reporting success. See `docs/RUNBOOK.md`. |
-
-**Not covered: rate limiting.** Per-instance counters are meaningless on serverless
-(each cold start gets its own memory), and a shared store means adding infrastructure.
-The realistic control is Vercel's edge firewall, configured in the dashboard rather
-than in this repo.
 
 ## Historical data in git
 

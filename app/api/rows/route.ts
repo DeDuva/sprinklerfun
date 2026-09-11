@@ -1,5 +1,4 @@
 import type { NextRequest } from "next/server"
-import { isAuthorized } from "@/lib/server/auth"
 import {
   insertRows,
   replaceWindows,
@@ -14,11 +13,14 @@ import type { ConfigWindow, FlumeRow } from "@/lib/types"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-// This deployment is public and, by decision, writable — see SECURITY.md. The
-// header check is obfuscation, not authentication, because the value is
-// published in the client bundle. Everything below is therefore blast-radius
+// Authentication happens in proxy.ts, before this handler runs, for every route
+// that is not explicitly excluded there — so there is no auth check in this file
+// and no way to add a route that forgets one.
+//
+// The validation below is not authentication and never was. It is blast-radius
 // reduction: bound what a single request can do, and refuse the shapes that
-// destroy data rather than add it.
+// destroy data rather than add it. It stays because the caller being logged in
+// says nothing about the body being well formed.
 
 // One upload is a CSV export, not a firehose. At 1-minute resolution 200k rows
 // is ~139 days. The cap matters because recomputeStats() re-reads and re-enriches
@@ -65,10 +67,6 @@ function isConfigWindow(v: unknown): v is ConfigWindow {
 // Ingests raw rows (dedup by datetime), mirrors the client's window set, and
 // recomputes daily rollups.
 export async function POST(req: NextRequest) {
-  if (!isAuthorized(req)) {
-    return Response.json({ error: "unauthorized" }, { status: 401 })
-  }
-
   let body: unknown
   try {
     body = await req.json()
