@@ -373,8 +373,8 @@ PR ──→ types + tests ──→ [ruleset on main] ──→ merge ──→
             └─ red ⇒ merge blocked ⇒ main unchanged ⇒ nothing deploys
 ```
 
-A repository ruleset on `main` requires the `types + tests` and `lint` checks,
-requires a PR, requires the branch to be up to date before merging, and forbids
+A repository ruleset on `main` requires the `types + tests`, `lint`, `e2e` and
+`audit` checks, requires a PR, requires the branch to be up to date before merging, and forbids
 deletion and force-pushes. Since production only ever builds from `main`, and nothing red can
 reach `main`, production only ever runs green code.
 
@@ -391,15 +391,14 @@ Two consequences worth knowing:
   the suite that catches an early return drifting back above a hook — a bug that
   surfaces as a crash on a user interaction, not at build time.
 
-If the `test` or `lint` job is ever renamed, the ruleset's required checks must be
+If any of those jobs is ever renamed, the ruleset's required checks must be
 renamed with it, or the gate silently stops requiring anything.
 
-Preview deployments (every PR, once Git integration is on) get no `TURSO_*` env
-vars, since those are set only for the `production` environment. They therefore
-fall back to the `file:` branch of `lib/db.ts` on a read-only filesystem and
-their API routes error. That is intentional for now — previews cannot reach
-production data — but it means a preview is not a usable review environment
-until it is given its own database.
+Preview deployments are **off**: `vercel.json` sets `git.deploymentEnabled` so
+only `main` deploys. Previews never had `TURSO_*` env vars (those are set only
+for `production`), so every one was a build whose API routes errored, and each
+arrived with a bot comment. The `e2e` job — a real `next build` served locally
+against a throwaway SQLite file — is the pre-merge check of the built app.
 
 ### Migration rollout (incremental, each phase shippable)
 
