@@ -5,31 +5,38 @@ version: 2
 # itself, and no signal anywhere that they existed.
 #
 # Security updates are separate from this config — those are enabled at the repo
-# level and open immediately, ignoring the schedule below. This file governs the
-# routine version drift.
+# level and open as soon as an advisory lands, whatever the schedule below. They
+# DO obey any `ignore` rule in this file, though, which is why majors are grouped
+# below rather than ignored: ignoring majors would also block a security fix that
+# happens to need one. This file governs the routine version drift.
 
 updates:
   - package-ecosystem: npm
     directory: /
+    # Monthly. A single-household app gains nothing from a weekly stream of
+    # version bumps, and security updates cover anything urgent in between.
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     open-pull-requests-limit: 5
-    # Minor and patch bumps land as one PR per week rather than a dozen. Majors
-    # stay separate because they need reading, not just a green check.
+    # At most two PRs a month: minor + patch together, and majors together.
+    # Majors stay apart from the rest because they need reading, not just a
+    # green check — but as one PR, not one per package. #50–#53 were four
+    # separate PRs for upgrades #40 had already deliberately deferred.
     groups:
       minor-and-patch:
         update-types:
           - minor
           - patch
+      majors:
+        update-types:
+          - major
     commit-message:
       prefix: "deps"
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     # The workflow pins actions by commit SHA; Dependabot understands that form
     # and updates both the SHA and the trailing version comment together.
     groups:

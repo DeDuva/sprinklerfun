@@ -24,8 +24,8 @@ only fix is a restore.
 2. Find the last known-good production deployment → **⋯** → **Instant Rollback**
 3. Confirm with `curl -s https://sprinklerfun.vercel.app/api/health` → expect
    `{"ok":true,"database":"reachable","rows":…}`
-4. Fix forward on a branch. `main` is protected: PR, green `types + tests`, `lint`
-   and `e2e`, and an up-to-date branch. There is no bypass, deliberately.
+4. Fix forward on a branch. `main` is protected: PR, green `types + tests`, `lint`,
+   `e2e` and `audit`, and an up-to-date branch. There is no bypass, deliberately.
 
 If the rollback itself is what you need to undo, redeploy `main` with
 `vercel --prod` from a linked checkout.
@@ -143,6 +143,27 @@ Any schema change therefore needs an explicit `ALTER TABLE` run against the live
 database as part of the deploy, and a rolled-back build will still be running against
 the forward-migrated schema. Treat schema changes as one-way.
 
+## Settings that live outside this repository
+
+Some of how this project behaves is set in a dashboard, not a file, and a dashboard
+setting has no diff and no review. When you change one of these, change this table
+in the same sitting.
+
+| Where | Setting | Why |
+|---|---|---|
+| Vercel → project → Settings → Git | **Silence GitHub comments** on | The bot commented on every PR, including every Dependabot PR. The `github.silent` key in `vercel.json` does the same thing but is deprecated in favour of this toggle. |
+| Vercel → project → Settings → Environment Variables | Production only: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `APP_SHARED_SECRET`, `NEXT_PUBLIC_APP_SHARED_SECRET` | Nothing is set for Preview or Development. `APP_TIMEZONE` is not set — see *Known operational limits*. Check with `vercel env ls production` from a linked checkout. |
+| GitHub → Settings → Rules → ruleset `main` | PR required, squash only, branch up to date; required checks `types + tests`, `lint`, `e2e`, `audit` | Rename a CI job without renaming it here and the gate silently stops requiring it. |
+| GitHub → Settings → Secrets → Actions | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (read-only database token) | Used only by `backup.yml`. |
+| GitHub → Settings → Advanced Security | Dependabot alerts and security updates, secret scanning, push protection | Security updates open as soon as an advisory lands, whatever the schedule in `.github/dependabot.yml` — but they do obey its `ignore` rules, which is why majors there are grouped, not ignored. |
+
+**Preview deployments are off, and that one *is* in the repo.** `vercel.json` sets
+`git.deploymentEnabled` so only `main` deploys. Previews never had database
+variables, so each one was a build whose API routes failed, announced by a bot
+comment. The `e2e` job, which runs a real `next build` against a throwaway SQLite
+file, checks the built app before merge instead. To get previews back for one
+branch, add `"<branch>": true` under `deploymentEnabled` in that branch's commit.
+
 ## Known operational limits
 
 - **No rate limiting.** Per-instance counters are meaningless on serverless. The
@@ -150,9 +171,6 @@ the forward-migrated schema. Treat schema changes as one-way.
 - **`recomputeStats()` re-reads the entire `flume_rows` table on every write.** This
   is the scaling cliff. At the current ~175k rows it is fine; it is superlinear in
   accumulated history.
-- **Preview deployments have no database.** No `TURSO_*` variables are set for the
-  preview environment, so preview API routes now fail loudly (they previously failed
-  silently against an ephemeral file). Previews are for UI review only.
 - **`APP_TIMEZONE` is not set in production.** Currently harmless only because Flume
   timestamps are timezone-naive and are parsed as local time either way. If the export
   format ever gains an offset or a `Z`, every rollup shifts. `.env.example` and
