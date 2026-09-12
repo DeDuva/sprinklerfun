@@ -150,8 +150,19 @@ recovery plan.
 
 ## Clearing data deliberately
 
-There is no longer an endpoint or a button for this — see `SECURITY.md`. Do it against
-the database:
+**Config → Stored data → type `DELETE` → Clear all data.** The button is behind the
+login, and inert until the word is typed; it clears the metered rows and the three
+derived tables in one request and recomputes nothing, because there is nothing left
+to compute.
+
+**It does not touch your config windows or maintenance flags.** "I want to re-upload
+my meter history" should not cost you a season of hand-tuned config, so clearing is
+deliberately the narrower of the two things it could mean.
+
+There is no undo. Recovery is a restore from the daily backup (see *Restoring data*),
+so if you are unsure, take an export from the same card first.
+
+Against the database directly, if the app is not reachable:
 
 ```bash
 turso db shell sprinklerfun "DELETE FROM flume_rows"
@@ -159,6 +170,37 @@ turso db shell sprinklerfun "DELETE FROM flume_rows"
 
 Then trigger a recompute by saving any config change in the app, or the derived tables
 will keep describing rows that no longer exist.
+
+## When the config looks wrong
+
+The server holds the only copy of the config, so "wrong on this device" is no longer
+a thing that can happen — if it looks wrong, it *is* wrong, for everyone.
+
+1. **Export what you see.** Config → Export JSON. Do this first, even if it is the
+   bad version: it costs nothing and it is the only record of what the app currently
+   believes.
+2. **Compare against the latest backup.** Download the most recent artifact (Actions
+   → Backup), `gunzip` it, and read the `config_windows` inserts. That is what the
+   config looked like at 09:15 UTC on that day.
+3. **Import the good one.** Config → Import from file. An import is a whole-document
+   replace written straight to the server, so it takes effect everywhere at once.
+
+An empty timeline is refused by the API: the earliest window also covers every row
+before it, so a config with no windows would leave the entire history unattributable.
+
+## Local development
+
+No environment variables are needed. `lib/db.ts` falls back to a local SQLite file
+and `APP_PASSWORD` is unset, so the guard runs in open mode:
+
+```bash
+npm run dev       # http://localhost:3000
+npm run seed:dev  # in another terminal: seeds config + one fixture day through the API
+```
+
+`seed:dev` goes through HTTP rather than writing the database, so it exercises the
+same validation and recompute path a real save does. Nothing seeds itself any more —
+a fresh install shows its empty state until you seed it or create a window.
 
 ## Schema changes
 

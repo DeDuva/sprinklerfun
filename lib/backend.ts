@@ -1,4 +1,11 @@
-import type { ConfigWindow, DelayRecommendation, FlumeRow, RollupRow, StatsPayload } from "./types"
+import type {
+  ConfigDocument,
+  ConfigPayload,
+  DelayRecommendation,
+  FlumeRow,
+  RollupRow,
+  StatsPayload,
+} from "./types"
 
 // ---------------------------------------------------------------------------
 // Client-side bridge to the Turso backend.
@@ -36,15 +43,15 @@ function toLogin(): never {
   throw new Error("unauthorized — session expired")
 }
 
-export async function pushRows(
-  rows: FlumeRow[],
-  windows: ConfigWindow[]
-): Promise<PushResult> {
+// Ingest raw rows. Rows only: config travels through PUT /api/config now, and
+// sending `windows` here is rejected with a 400 rather than ignored, so an old
+// client fails loudly instead of appearing to save a config that went nowhere.
+export async function pushRows(rows: FlumeRow[]): Promise<PushResult> {
   try {
     const res = await fetch("/api/rows", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ rows, windows }),
+      body: JSON.stringify({ rows }),
     })
     if (res.status === 401) toLogin()
     const data = (await res.json()) as PushResult
@@ -55,14 +62,42 @@ export async function pushRows(
   }
 }
 
-// Mirror the current window set to the server and trigger a rollup + stats
-// recompute, WITHOUT ingesting any new rows. Config windows are client-owned
-// (localStorage), but the server computes rollups/stats from its own mirror of
-// them — so every window edit must resync or the dashboard's server-derived
-// reads go stale. Reuses POST /api/rows (rows: []), which already mirrors
-// windows + recomputes. Best-effort; returns the same PushResult shape.
-export async function syncWindows(windows: ConfigWindow[]): Promise<PushResult> {
-  return pushRows([], windows)
+// ---------------------------------------------------------------------------
+// Config: read and write the server's copy, which is now the only copy.
+//
+// syncWindows() used to live here — a best-effort, debounced mirror of
+// localStorage into a table nothing read back. It is gone along with the second
+// source of truth. These two are ordinary request/response instead: the page
+// cannot render config it has not fetched, and a failed save is an error the
+// user sees rather than a silent divergence between two devices.
+// ---------------------------------------------------------------------------
+
+export async function fetchConfig(): Promise<ConfigPayload> {
+  const res = await fetch("/api/config")
+  if (res.status === 401) toLogin()
+  if (!res.ok) throw new Error(`GET /api/config → HTTP ${res.status}`)
+  return (await res.json()) as ConfigPayload
+}
+
+// Throws on failure — deliberately. Every caller is a user action with a save
+// button behind it, and the store leaves its state untouched when this rejects,
+// so a failed write shows the previous config rather than a local edit that
+// exists nowhere but this tab.
+export async function saveConfig(doc: ConfigDocument): Promise<ConfigPayload> {
+  const res = await fetch("/api/config", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(doc),
+  })
+  if (res.status === 401) toLogin()
+  if (!res.ok) {
+    const detail = await res
+      .json()
+      .then((d: { error?: string }) => d.error)
+      .catch(() => null)
+    throw new Error(detail ?? `PUT /api/config → HTTP ${res.status}`)
+  }
+  return (await res.json()) as ConfigPayload
 }
 
 // The dashboard's consumption chart + monthly summary read these per-day/
@@ -114,8 +149,15 @@ export async function logout(): Promise<void> {
   await fetch("/api/login", { method: "DELETE" })
 }
 
-// There is deliberately no clearAllRows(). DELETE /api/rows was removed: it
-// dropped four tables in one batch behind a header whose value was published in
-// the client bundle. Now that there is a real login, restoring it is a decision
-// to make on its own merits rather than a leftover. See SECURITY.md and
-// docs/RUNBOOK.md.
+// Clear the metered data (rows + the three derived tables). The config timeline
+// and maintenance flags are untouched — see the route for why.
+//
+// This helper was removed when the endpoint was, because the endpoint was
+// guarded by a secret published in this very bundle. It comes back now that the
+// guard is a real session rather than a decoration. The typed confirmation in
+// the UI is the second lock, not the first.
+export async function clearAllRows(): Promise<void> {
+  const res = await fetch("/api/rows", { method: "DELETE" })
+  if (res.status === 401) toLogin()
+  if (!res.ok) throw new Error(`DELETE /api/rows → HTTP ${res.status}`)
+}

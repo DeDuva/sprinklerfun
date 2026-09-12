@@ -1,130 +1,52 @@
 "use client"
 
 import { useEffect } from "react"
-import Papa from "papaparse"
 import { useStore } from "@/lib/store"
-import { toWindows } from "@/lib/types"
-import { fetchStats, pushRows, syncWindows } from "@/lib/backend"
-import { parseFlumeCsvRows } from "@/lib/csvImport"
+import { fetchConfig, fetchStats } from "@/lib/backend"
 
-// Rows per seed request. Keeps each POST body an order of magnitude under
-// Vercel's ~4.5 MB limit regardless of how much history accumulates.
-const SEED_CHUNK = 20_000
+// ---------------------------------------------------------------------------
+// Load the server's config and row stats once, on mount.
+//
+// This used to be the most complicated file in the app: rehydrate localStorage,
+// seed windows from a bundled default-config.json, seed rows from a bundled CSV
+// in 20k-row batches, then subscribe to the store and debounce a fire-and-forget
+// mirror of every window change back to a table nothing read. All of it existed
+// to keep two copies of the config in step, and none of it succeeded — which is
+// why the config kept coming back wrong on a second device.
+//
+// There is one copy now, so this is two fetches and nothing else. No seeding: a
+// fresh install shows its empty state and the user creates a window, or runs
+// `npm run seed:dev` locally.
+// ---------------------------------------------------------------------------
 
 export default function StoreProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
-    // The login page is inside this layout but outside the session, so every
-    // fetch below would 401 and the seed would bounce off the guard. Nothing
-    // here is useful to someone who is not logged in yet.
+    // The login page renders inside this layout but outside the session, so both
+    // fetches would 401 and bounce the visitor back to where they already are.
     if (window.location.pathname === "/login") return
 
-    // 1. Rehydrate the small client state (windows + maintenance) from localStorage.
-    //    Migration runs in migrate/onRehydrateStorage.
-    useStore.persist.rehydrate()
+    let cancelled = false
 
-    // Guards the windows→server sync (below) so it never fires during the initial
-    // hydration/seed — only on genuine user edits after we've settled.
-    let ready = false
-
-    const refreshRowCount = async () => {
+    void (async () => {
       try {
-        const stats = await fetchStats()
-        useStore.getState().setRowCount(stats.rowCount)
-        useStore.getState().setLastRowDate(stats.lastDate)
-      } catch {
-        /* server unreachable — leave rowCount at 0 */
+        // Both are independent reads; there is no reason to serialise them.
+        const [config, stats] = await Promise.all([fetchConfig(), fetchStats()])
+        if (cancelled) return
+        useStore.getState().hydrate(config)
+        useStore.setState({ rowCount: stats.rowCount, lastRowDate: stats.lastDate })
+      } catch (err) {
+        if (cancelled) return
+        // A 401 has already redirected to /login inside the fetch helpers, so
+        // reaching here means something else went wrong. Record it instead of
+        // leaving `loaded` false forever: the pages show the error, and
+        // crucially do NOT show the "no config yet" empty state, which would
+        // invite the user to create a window that replaces their real timeline.
+        useStore.getState().setLoadError(err instanceof Error ? err.message : String(err))
       }
-    }
-
-    const afterRehydrate = async () => {
-      const state = useStore.getState()
-
-      // 2. Fresh install: seed config windows from the baked-in defaults.
-      if (state.windows.length === 0) {
-        try {
-          const bundle = await fetch("/default-config.json").then((r) => (r.ok ? r.json() : null))
-          if (bundle) {
-            const windows = toWindows({
-              windows: bundle.windows,
-              config: bundle.config,
-              configHistory: bundle.configHistory,
-            })
-            if (windows.length > 0) useStore.setState({ windows })
-          }
-        } catch {
-          /* no defaults bundled — fine */
-        }
-      }
-
-      // 3. Rows live entirely on the server now (Phase 3). The pages read
-      //    rollups + precomputed stats + single days on demand — we no longer
-      //    pull the full per-minute series into the browser. Hydrate only the
-      //    lightweight row count for status labels.
-      await refreshRowCount()
-
-      // 4. Fresh-install demo seed: if the server has no rows yet, seed it from
-      //    the baked-in default-data.csv (if present) so the demo works. The
-      //    POST recomputes rollups + stats server-side; bump serverVersion so
-      //    the pages fetch the freshly-derived data.
-      if (useStore.getState().rowCount === 0) {
-        try {
-          const text = await fetch("/default-data.csv").then((r) => (r.ok ? r.text() : null))
-          if (text) {
-            Papa.parse<Record<string, string>>(text, {
-              header: true,
-              skipEmptyLines: true,
-              complete: async (results) => {
-                const rows = parseFlumeCsvRows(results.data)
-                if (rows.length === 0) return
-                // Seed in batches. A single POST of the whole file was ~4.2 MB of
-                // JSON against Vercel's ~4.5 MB body limit — it fit only by
-                // luck, and one more month of data would have turned the
-                // fresh-install path into an opaque 413. Windows ride along with
-                // the first batch only; the rest are pure row inserts.
-                let seeded = false
-                for (let i = 0; i < rows.length; i += SEED_CHUNK) {
-                  const batch = rows.slice(i, i + SEED_CHUNK)
-                  const r = await pushRows(batch, i === 0 ? useStore.getState().windows : [])
-                  if (!r.ok) break
-                  seeded = true
-                }
-                if (seeded) {
-                  await refreshRowCount()
-                  useStore.getState().bumpServerVersion()
-                }
-              },
-            })
-          }
-        } catch {
-          /* no default data — fine */
-        }
-      }
-
-      ready = true
-    }
-
-    // Give rehydrate a tick to complete before checking state.
-    setTimeout(afterRehydrate, 0)
-
-    // 5. Windows are client-owned but the server computes rollups/stats from its
-    //    own mirror of them, so every window edit must resync the server (else
-    //    the dashboard's server-derived views go stale). Subscribe once and
-    //    debounce; bump serverVersion after each successful resync so the pages
-    //    refetch. Skipped until `ready` so it doesn't fire on the initial seed.
-    let debounce: ReturnType<typeof setTimeout> | null = null
-    const unsub = useStore.subscribe((s, prev) => {
-      if (!ready || s.windows === prev.windows) return
-      if (debounce) clearTimeout(debounce)
-      const windows = s.windows
-      debounce = setTimeout(async () => {
-        const r = await syncWindows(windows)
-        if (r.ok) useStore.getState().bumpServerVersion()
-      }, 400)
-    })
+    })()
 
     return () => {
-      unsub()
-      if (debounce) clearTimeout(debounce)
+      cancelled = true
     }
   }, [])
 

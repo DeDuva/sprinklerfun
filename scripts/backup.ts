@@ -33,11 +33,16 @@ if (!url) {
   process.exit(1)
 }
 
-// Only these two matter. flume_rows is the irreplaceable one; config_windows is
-// the hand-tuned one. daily_rollup, station_stats and station_warnings are all
-// derived and rebuild from a single write, so backing them up would be storing a
-// cache.
-const TABLES = ["flume_rows", "config_windows"] as const
+// Only these three matter. flume_rows is the irreplaceable one; config_windows
+// and maintenance are the hand-tuned ones. daily_rollup, station_stats and
+// station_warnings are all derived and rebuild from a single write, so backing
+// them up would be storing a cache.
+//
+// `maintenance` joined this list when the flags stopped living in a browser's
+// localStorage and became server-owned state. Until then the database copy was
+// a table nothing wrote; now it is the only copy, which is exactly the property
+// that makes something worth backing up.
+const TABLES = ["flume_rows", "config_windows", "maintenance"] as const
 
 const ROWS_PER_INSERT = 500
 

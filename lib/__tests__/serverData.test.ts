@@ -5,6 +5,9 @@ import {
   countRows,
   replaceWindows,
   readWindows,
+  readMaintenance,
+  replaceMaintenance,
+  replaceConfig,
   readDayRows,
   readAllRows,
   rowDateBounds,
@@ -268,11 +271,64 @@ describe("recomputeStats", () => {
   })
 })
 
+describe("readMaintenance / replaceMaintenance", () => {
+  it("round-trips a flag with and without a note", async () => {
+    await replaceMaintenance({
+      "T1-01": { flaggedAt: "2026-05-01T00:00:00.000Z", note: "leaking head" },
+      "T1-02": { flaggedAt: "2026-05-02T00:00:00.000Z" },
+    })
+    const got = await readMaintenance()
+    expect(got["T1-01"]).toEqual({ flaggedAt: "2026-05-01T00:00:00.000Z", note: "leaking head" })
+    // The column is nullable and the field optional — a missing note must come
+    // back absent, not as an empty string that renders as a blank annotation.
+    expect(got["T1-02"]).toEqual({ flaggedAt: "2026-05-02T00:00:00.000Z" })
+    expect("note" in got["T1-02"]).toBe(false)
+  })
+
+  it("REPLACES rather than merges, so clearing a flag actually clears it", async () => {
+    await replaceMaintenance({ "T1-01": { flaggedAt: "2026-05-01T00:00:00.000Z" } })
+    await replaceMaintenance({ "T1-02": { flaggedAt: "2026-05-02T00:00:00.000Z" } })
+    expect(Object.keys(await readMaintenance())).toEqual(["T1-02"])
+  })
+
+  it("returns an empty object when nothing is flagged", async () => {
+    expect(await readMaintenance()).toEqual({})
+  })
+})
+
+describe("replaceConfig", () => {
+  it("writes windows and maintenance together", async () => {
+    await replaceConfig({
+      windows: [win("w1", "2026-07-01")],
+      maintenance: { "T1-01": { flaggedAt: "2026-05-01T00:00:00.000Z" } },
+    })
+    expect((await readWindows()).map((w) => w.id)).toEqual(["w1"])
+    expect(Object.keys(await readMaintenance())).toEqual(["T1-01"])
+  })
+
+  it("replaces both halves, leaving nothing behind from the previous document", async () => {
+    await replaceConfig({
+      windows: [win("old", "2026-06-01")],
+      maintenance: { "T1-09": { flaggedAt: "2026-05-01T00:00:00.000Z" } },
+    })
+    await replaceConfig({ windows: [win("new", "2026-07-01")], maintenance: {} })
+
+    expect((await readWindows()).map((w) => w.id)).toEqual(["new"])
+    // A stale flag surviving a config replace would be a maintenance warning
+    // for a station the current config may not even define.
+    expect(await readMaintenance()).toEqual({})
+  })
+})
+
 describe("clearAllData", () => {
   it("drops rows and derived tables but leaves the config timeline", async () => {
-    // The config windows are the hand-tuned part and are client-owned; losing
-    // them to a data wipe would be the worse half of the loss.
-    await replaceWindows([win("w1", "2026-01-01")])
+    // The config windows are the hand-tuned part, and since this change they are
+    // also the only copy — losing them to a data wipe would be the worse half of
+    // the loss, and unlike the rows they cannot be re-uploaded from Flume.
+    await replaceConfig({
+      windows: [win("w1", "2026-01-01")],
+      maintenance: { "T1-01": { flaggedAt: "2026-05-01T00:00:00.000Z" } },
+    })
     await insertRows(dayRows("2026-08-28"))
     await recomputeRollups("2026-08-28", "2026-08-28")
     await recomputeStats()
@@ -283,5 +339,6 @@ describe("clearAllData", () => {
     expect(await readRollups()).toEqual([])
     expect(await readStationStats()).toEqual([])
     expect(await readWindows()).toHaveLength(1)
+    expect(Object.keys(await readMaintenance())).toEqual(["T1-01"])
   })
 })

@@ -47,7 +47,7 @@ sprinkler-app/
 │       └── stats/route.ts      # GET precomputed fleet gpm stats + baseline warnings
 ├── components/
 │   ├── Navbar.tsx
-│   ├── StoreProvider.tsx       # Client-only Zustand rehydration + default-config.json load
+│   ├── StoreProvider.tsx       # Client-only: fetches /api/config + /api/stats once on mount
 │   ├── UploadModal.tsx         # CSV file + URL loader
 │   ├── SummaryCards.tsx
 │   ├── ConsumptionChart.tsx    # Unified time-series chart
@@ -559,17 +559,27 @@ instead; a single day is fetched on demand.
 the `QuotaExceededError` at the root. The Analysis tab's config-edit actions reuse
 `updateWindow`; only maintenance flags need `setStationMaintenance`.
 
-**Server is authoritative; pages fetch aggregates.** On load, `StoreProvider`
-rehydrates `{ windows, maintenance }`, seeds defaults on a fresh install, and
-fetches `/api/stats` for `rowCount`/`lastDate` (seeding `default-data.csv` to the
-server if it's empty). Each page fetches `/api/rollup` + `/api/stats` (and
-`/api/day/[date]` for per-minute views) in an effect keyed on `serverVersion`.
-Uploads `POST /api/rows`; "Clear all data" issues `DELETE /api/rows`; both bump
-`serverVersion`. **Config windows are client-owned but the server computes
-rollups/stats from its own mirror**, so every window edit must resync — a
-debounced `useStore.subscribe` in `StoreProvider` calls `syncWindows` (POST
-`/api/rows` with `rows: []`) on any `windows` change, then bumps `serverVersion`
-so the derived views refetch.
+**The server owns the config; the browser holds a copy.** On mount,
+`StoreProvider` fetches `/api/config` (windows + maintenance + authMode) and
+`/api/stats` (`rowCount`/`lastDate`) and sets `loaded`. Nothing is persisted in
+the browser and nothing is seeded from the bundle. Each page fetches
+`/api/rollup` + `/api/stats` (and `/api/day/[date]` for per-minute views) in an
+effect keyed on `serverVersion`, and every page gates on `loaded` rather than
+rendering against an empty window list.
+
+Every config mutation goes through one path: the store's `commit` helper calls
+`PUT /api/config`, which validates the document, writes windows and maintenance
+in a **single** `db.batch`, recomputes rollups and stats, and returns what it
+stored — which the store then adopts in place of its own optimistic value. A
+failed save rejects and leaves state untouched. Uploads `POST /api/rows` (rows
+only; a `windows` field is a 400), and "Clear all data" issues `DELETE
+/api/rows`, which clears rows and derived tables but never the config.
+
+This replaced a debounced `useStore.subscribe` that mirrored localStorage into a
+`config_windows` table nothing ever read back. That arrangement is what broke the
+config: a second browser started from a stale bundled snapshot and its first edit
+pushed that snapshot over the real timeline. There is one copy now, and one
+writer.
 
 ### SSR Safety
 - Storage adapter no-ops when `typeof window === "undefined"`
@@ -608,9 +618,12 @@ in `lib/types.ts` accepts any of: new `{ windows }`, legacy `{ config, configHis
 `"03:45:00:00"` start-time bug).
 
 Both migrations are applied:
-- In `store.ts` persist `migrate` (v1→v2) and `onRehydrateStorage` — for localStorage data
-- In `StoreProvider.tsx` — when loading `public/default-config.json` on fresh install
+- In `readWindows()` — defensive normalisation of whatever shape is already stored
 - In `ExportImportCard.applyBundle` — when importing a JSON file or URL (old exports still load)
+
+The localStorage paths that used to apply them (`store.ts` persist `migrate` and
+`onRehydrateStorage`, and the `default-config.json` load in `StoreProvider.tsx`)
+are gone with the persistence itself.
 
 ---
 

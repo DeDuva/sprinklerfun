@@ -1,6 +1,6 @@
 "use client"
 
-import { Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
+import { Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { useStore } from "@/lib/store"
 import { sortWindows, toWindows } from "@/lib/types"
@@ -21,7 +21,7 @@ import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import Papa from "papaparse"
 import type { FlumeRow } from "@/lib/types"
-import { pushRows, fetchRollups } from "@/lib/backend"
+import { pushRows, fetchRollups, clearAllRows } from "@/lib/backend"
 import type { RollupRow } from "@/lib/types"
 import { parseFlumeCsvRows, buildFlumeExportUrl } from "@/lib/csvImport"
 
@@ -614,7 +614,7 @@ function UploadCsvCard() {
     // rows, recomputes rollups + stats, and returns the new inserted count. Bump
     // serverVersion so the dashboard/analysis refetch their server-derived views.
     const t = toast.loading(`Saving ${parsed.length.toLocaleString()} rows from ${label}…`)
-    const r = await pushRows(parsed, useStore.getState().windows)
+    const r = await pushRows(parsed)
     toast.dismiss(t)
     if (r.ok) {
       setRowCount(rowCount + (r.inserted ?? 0))
@@ -740,12 +740,17 @@ function UploadCsvCard() {
 
 function ExportImportCard() {
   const windows = useStore((s) => s.windows)
+  const maintenance = useStore((s) => s.maintenance)
+  const replaceAll = useStore((s) => s.replaceAll)
   const fileRef = useRef<HTMLInputElement>(null)
   const [urlInput, setUrlInput] = useState("")
   const [loadingUrl, setLoadingUrl] = useState(false)
 
   function doExport() {
-    const bundle = { version: 2, exportedAt: new Date().toISOString(), windows }
+    // v3 carries the maintenance flags too, now that they are server-owned
+    // rather than a per-browser scribble. v1/v2 files still import — toWindows
+    // handles both shapes, and a missing `maintenance` key reads as none.
+    const bundle = { version: 3, exportedAt: new Date().toISOString(), windows, maintenance }
     const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" })
     const a = document.createElement("a")
     a.href = URL.createObjectURL(blob)
@@ -755,8 +760,11 @@ function ExportImportCard() {
     toast.success("Config exported")
   }
 
+  // An import is a whole-document replace, written straight to the server — it
+  // is the recovery path when the stored config is wrong, so it must land
+  // somewhere durable rather than in this tab's memory.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function applyBundle(bundle: any) {
+  async function applyBundle(bundle: any) {
     const next = toWindows({
       windows: bundle?.windows,
       config: bundle?.config,
@@ -766,8 +774,12 @@ function ExportImportCard() {
       toast.error("No config found in this file")
       return
     }
-    useStore.setState({ windows: next })
-    toast.success(`Config loaded — ${next.length} window${next.length !== 1 ? "s" : ""}`)
+    try {
+      await replaceAll(next, bundle?.maintenance ?? {})
+      toast.success(`Config loaded — ${next.length} window${next.length !== 1 ? "s" : ""}`)
+    } catch (e) {
+      toast.error(`Could not save the imported config: ${e instanceof Error ? e.message : e}`)
+    }
   }
 
   function handleFile(file: File) {
@@ -810,9 +822,10 @@ function ExportImportCard() {
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium">Export</p>
             <p className="text-xs text-gray-400 mt-0.5">
-              Downloads a JSON file with all your config windows. Commit it to your repo as{" "}
-              <code className="bg-gray-100 px-1 rounded text-xs">public/default-config.json</code>{" "}
-              to make it the default for new installs. Old-format exports still import fine.
+              Downloads a JSON file with all your config windows and maintenance flags.
+              This is for your own records — the app reads its config from the server, not
+              from a file in the repo. Keep one before a big change and you have a way back.
+              Old-format exports still import fine.
             </p>
           </div>
           <Button size="sm" variant="outline" onClick={doExport} className="shrink-0">
@@ -841,7 +854,7 @@ function ExportImportCard() {
           <p className="text-xs text-gray-400 mb-1.5">Paste a GitHub URL to your config file</p>
           <div className="flex gap-2">
             <Input
-              placeholder="https://github.com/you/repo/blob/main/public/default-config.json"
+              placeholder="https://github.com/you/repo/blob/main/sprinkler-config.json"
               value={urlInput}
               onChange={(e) => setUrlInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && loadFromUrl()}
@@ -857,12 +870,75 @@ function ExportImportCard() {
   )
 }
 
+// ---- Stored data ----------------------------------------------------------
+
+function StoredDataCard() {
+  const rowCount = useStore((s) => s.rowCount)
+  const setRowCount = useStore((s) => s.setRowCount)
+  const setLastRowDate = useStore((s) => s.setLastRowDate)
+  const bumpServerVersion = useStore((s) => s.bumpServerVersion)
+  const [confirmText, setConfirmText] = useState("")
+  const [busy, setBusy] = useState(false)
+
+  // Typing the word is the point. A confirm() dialog is dismissed by reflex; this
+  // cannot be done by accident, and it is the only irreversible button in the app.
+  const armed = confirmText === "DELETE"
+
+  async function doClear() {
+    if (!armed || busy) return
+    setBusy(true)
+    try {
+      await clearAllRows()
+      setRowCount(0)
+      setLastRowDate(null)
+      bumpServerVersion()
+      setConfirmText("")
+      toast.success("All metered data cleared. Your config windows were kept.")
+    } catch (e) {
+      toast.error(`Could not clear data: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-base">Stored data</CardTitle></CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-sm text-gray-500">{rowCount.toLocaleString()} rows currently stored.</p>
+        <p className="text-xs text-gray-400">
+          Clearing removes every metered row and the figures derived from them. Your config
+          windows and maintenance flags are kept. There is no undo in the app &mdash; recovery
+          means restoring a backup, so take an export first if you are unsure.
+        </p>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Input
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            placeholder="Type DELETE to confirm"
+            className="h-8 w-56 text-sm"
+            aria-label="Type DELETE to confirm"
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 text-red-600 hover:text-red-700 disabled:opacity-40"
+            disabled={!armed || busy}
+            onClick={doClear}
+          >
+            {busy ? "Clearing…" : "Clear all data"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 // ---- Main page ------------------------------------------------------------
 
 function ConfigPageInner() {
   const searchParams = useSearchParams()
   const windows = useStore((s) => s.windows)
-  const rowCount = useStore((s) => s.rowCount)
   const addWindowFromDate = useStore((s) => s.addWindowFromDate)
   const updateWindow = useStore((s) => s.updateWindow)
   const deleteWindow = useStore((s) => s.deleteWindow)
@@ -880,18 +956,11 @@ function ConfigPageInner() {
     return () => { cancelled = true }
   }, [serverVersion])
 
-  // Track persist hydration so we can distinguish "loading" from "no config yet".
-  //
-  // This is a subscription to an external store, which is exactly what
-  // useSyncExternalStore is for. The previous version set state synchronously
-  // inside an effect, which costs an extra render pass on every mount; the
-  // server snapshot below keeps SSR rendering the "loading" branch, so the
-  // markup still matches on hydration.
-  const hydrated = useSyncExternalStore(
-    (onChange) => useStore.persist.onFinishHydration(onChange),
-    () => useStore.persist.hasHydrated(),
-    () => false
-  )
+  // "Loading" vs "no config yet" is a plain store field now: StoreProvider sets
+  // `loaded` once GET /api/config has answered. There is no localStorage
+  // rehydration left to subscribe to, so useSyncExternalStore went with it.
+  const loaded = useStore((s) => s.loaded)
+  const loadError = useStore((s) => s.loadError)
 
   const sorted = useMemo(() => sortWindows(windows), [windows])
   const currentId = useMemo(() => activeWindowForDate(windows, todayStr())?.id ?? null, [windows])
@@ -945,8 +1014,34 @@ function ConfigPageInner() {
 
   const [showNew, setShowNew] = useState(false)
 
+  // Declared up here with the other hooks on purpose: everything below this
+  // point sits after early returns for the loading, error and empty states, and
+  // a hook called after one of those returns changes hook order between renders.
+  const [saving, setSaving] = useState(false)
+
   // ---- Empty / loading states ----
-  if (!hydrated) {
+  // A failed read must NOT fall through to the "no config yet" state below.
+  // That state invites the user to create a first window, and creating one
+  // replaces the timeline — so a transient server error would become a
+  // destructive edit made in good faith.
+  if (loadError) {
+    return (
+      <div className="space-y-6 max-w-3xl">
+        <h1 className="text-2xl font-semibold text-[#143049]" style={{ fontFamily: "var(--font-fredoka)" }}>Configuration</h1>
+        <Card>
+          <CardContent className="py-10 text-center space-y-2">
+            <p className="text-gray-700 font-medium">Could not load your configuration.</p>
+            <p className="text-sm text-gray-500">{loadError}</p>
+            <p className="text-xs text-gray-400">
+              Nothing has been changed. Reload the page — the config is stored on the server,
+              not in this browser.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+  if (!loaded) {
     return <div className="max-w-3xl"><div className="h-40 rounded-lg bg-gray-100 animate-pulse" /></div>
   }
   if (windows.length === 0) {
@@ -956,7 +1051,17 @@ function ConfigPageInner() {
         <Card>
           <CardContent className="py-10 text-center space-y-3">
             <p className="text-gray-500">No config yet. Create your first config window to start tracking schedule changes over time.</p>
-            <Button onClick={() => { const id = addWindowFromDate(todayStr(), "Initial config"); setSelectedId(id); toast.success("First config created") }}>
+            <Button
+              onClick={async () => {
+                try {
+                  const id = await addWindowFromDate(todayStr(), "Initial config")
+                  setSelectedId(id)
+                  toast.success("First config created")
+                } catch (e) {
+                  toast.error(`Could not save: ${e instanceof Error ? e.message : e}`)
+                }
+              }}
+            >
               Create first config
             </Button>
           </CardContent>
@@ -983,18 +1088,36 @@ function ConfigPageInner() {
   const dupDate = !!selectedWindow && windows.some((w) => w.id !== selectedWindow.id && w.effectiveFrom === draft.effectiveFrom)
   const canSave = dirty && validDate && !dupDate
 
-  const handleSave = () => {
-    if (!selectedWindow || !draft.config || !canSave) return
-    updateWindow(selectedWindow.id, { config: draft.config, notes: draft.notes, effectiveFrom: draft.effectiveFrom })
-    toast.success("Window saved")
+  // Saving is a round trip now, so it can fail. On failure the store leaves the
+  // windows untouched and the draft stays on screen with its edits intact —
+  // the user can retry rather than retype.
+  const handleSave = async () => {
+    if (!selectedWindow || !draft.config || !canSave || saving) return
+    setSaving(true)
+    try {
+      await updateWindow(selectedWindow.id, {
+        config: draft.config,
+        notes: draft.notes,
+        effectiveFrom: draft.effectiveFrom,
+      })
+      toast.success("Window saved")
+    } catch (e) {
+      toast.error(`Could not save: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      setSaving(false)
+    }
   }
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!selectedWindow || windows.length <= 1) return
     if (!confirm(`Delete the config window starting ${fmtDate(selectedWindow.effectiveFrom)}? Data in its range will fall back to the adjacent window.`)) return
-    deleteWindow(selectedWindow.id)
-    setSelectedId(null)
-    toast.success("Window deleted")
+    try {
+      await deleteWindow(selectedWindow.id)
+      setSelectedId(null)
+      toast.success("Window deleted")
+    } catch (e) {
+      toast.error(`Could not delete: ${e instanceof Error ? e.message : e}`)
+    }
   }
 
   const setConfig = (c: AppConfig) => setDraft((d) => ({ ...d, config: c }))
@@ -1024,11 +1147,15 @@ function ConfigPageInner() {
       {showNew && (
         <NewWindowForm
           existingDates={windows.map((w) => w.effectiveFrom)}
-          onCreate={(date, notes) => {
-            const id = addWindowFromDate(date, notes)
-            setSelectedId(id)
-            setShowNew(false)
-            toast.success(`New window effective ${fmtDate(date)}`)
+          onCreate={async (date, notes) => {
+            try {
+              const id = await addWindowFromDate(date, notes)
+              setSelectedId(id)
+              setShowNew(false)
+              toast.success(`New window effective ${fmtDate(date)}`)
+            } catch (e) {
+              toast.error(`Could not save: ${e instanceof Error ? e.message : e}`)
+            }
           }}
           onCancel={() => setShowNew(false)}
         />
@@ -1092,7 +1219,9 @@ function ConfigPageInner() {
                   <Button variant="outline" size="sm" disabled={!dirty} onClick={() => setDraft(makeDraft(selectedWindow))}>
                     Reset
                   </Button>
-                  <Button size="sm" disabled={!canSave} onClick={handleSave}>Save window</Button>
+                  <Button size="sm" disabled={!canSave || saving} onClick={handleSave}>
+                    {saving ? "Saving…" : "Save window"}
+                  </Button>
                 </div>
               </div>
             </CardContent>
@@ -1120,7 +1249,14 @@ function ConfigPageInner() {
                 size="sm"
                 className="h-7 text-xs"
                 disabled={dirty}
-                onClick={() => { copyBaselinesForward(selectedWindow.id); toast.success("Baselines copied to later windows") }}
+                onClick={async () => {
+                  try {
+                    await copyBaselinesForward(selectedWindow.id)
+                    toast.success("Baselines copied to later windows")
+                  } catch (e) {
+                    toast.error(`Could not save: ${e instanceof Error ? e.message : e}`)
+                  }
+                }}
                 title={dirty ? "Save changes first" : "Apply this window's baselines to all later windows"}
               >
                 Copy baselines to later windows
@@ -1145,18 +1281,7 @@ function ConfigPageInner() {
 
       <ExportImportCard />
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">Stored data</CardTitle></CardHeader>
-        <CardContent>
-          <p className="text-sm text-gray-500">{rowCount.toLocaleString()} rows currently stored.</p>
-          <p className="text-xs text-gray-400 mt-2">
-            The &ldquo;clear all data&rdquo; button was removed. It called an endpoint that
-            dropped every table in one request, guarded only by a secret published in
-            this page&rsquo;s JavaScript. Clearing data is now a deliberate action against
-            the database &mdash; see docs/RUNBOOK.md.
-          </p>
-        </CardContent>
-      </Card>
+      <StoredDataCard />
     </div>
   )
 }

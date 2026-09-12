@@ -42,6 +42,7 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
   const { date } = use(params)
   const windows       = useStore((s) => s.windows)
   const serverVersion = useStore((s) => s.serverVersion)
+  const loaded        = useStore((s) => s.loaded)
 
   // Billing comes from the config window active on this day.
   const dayConfig = useMemo(
@@ -102,7 +103,10 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
     year: "numeric",
   })
 
-  if (dayRows === null) {
+  // `loaded` matters as much as the rows here: this day's billing and station
+  // names come from the window active on it, so rendering before the config
+  // arrives would attribute the day under DEFAULT_CONFIG.
+  if (!loaded || dayRows === null) {
     return <div className="text-center py-24 text-gray-400 animate-pulse">Loading…</div>
   }
 

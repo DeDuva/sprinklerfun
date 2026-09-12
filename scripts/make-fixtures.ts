@@ -6,11 +6,12 @@
  * Why this exists
  * ---------------
  * The fixtures used to be real exports: ~50 continuous days of one household's
- * water use at one-minute resolution, committed to a public repo and served at
- * /default-data.csv. At that resolution the data is an occupancy signal — sleep
- * and wake times, showers, and multi-day absences are all legible. This script
- * replaces it with data that encodes the same *phenomena* and none of the
- * household.
+ * water use at one-minute resolution, committed to a public repo and served
+ * publicly from `public/`. At that resolution the data is an occupancy signal —
+ * sleep and wake times, showers, and multi-day absences are all legible. This
+ * script replaces it with data that encodes the same *phenomena* and none of the
+ * household. Nothing is served from `public/` any more; this writes only the
+ * single-day regression fixture under `data/`.
  *
  * What the output has to preserve
  * -------------------------------
@@ -121,12 +122,6 @@ function buildDay(cfg: AppConfig, date: string, seed: number): Array<{ datetime:
   return rows
 }
 
-const addDays = (date: string, n: number) => {
-  const d = new Date(date + "T12:00:00")
-  d.setDate(d.getDate() + n)
-  return d.toISOString().slice(0, 10)
-}
-
 function main() {
   const cfg: AppConfig = JSON.parse(readFileSync(CONFIG, "utf8")).windows[0].config
 
@@ -136,20 +131,10 @@ function main() {
   writeFileSync(dayPath, JSON.stringify({ date: FIXTURE_DATE, synthetic: true, rows: day }))
   console.log(`wrote ${dayPath}  (${day.length} minutes)`)
 
-  // 2. A week of demo seed data, so a fresh install has something to render.
-  const seedRows: Array<{ datetime: string; gallons: number }> = []
-  const start = addDays(FIXTURE_DATE, -6)
-  for (let i = 0; i < 7; i++) {
-    const d = addDays(start, i)
-    seedRows.push(...buildDay(cfg, d, 1000 + i))
-  }
-  const csv = ["datetime,gallons", ...seedRows.map((r) => `${r.datetime},${r.gallons}`)].join("\n") + "\n"
-  const csvPath = join(ROOT, "public", "default-data.csv")
-  writeFileSync(csvPath, csv)
-  const sprinklerDays = new Set(
-    seedRows.filter((r) => r.gallons > 1).map((r) => r.datetime.slice(0, 10))
-  )
-  console.log(`wrote ${csvPath}  (${seedRows.length} minutes, ${sprinklerDays.size} sprinkler days)`)
+  // There used to be a step 2 here: a week of demo data written to
+  // public/default-data.csv, which the app fetched and POSTed to itself on a
+  // fresh install. Nothing seeds itself from the bundle any more — the server
+  // owns the data, and `npm run seed:dev` fills a local database on demand.
 }
 
 main()
