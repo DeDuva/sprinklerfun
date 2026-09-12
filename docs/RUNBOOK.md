@@ -222,7 +222,7 @@ in the same sitting.
 | Where | Setting | Why |
 |---|---|---|
 | Vercel → project → Settings → Git | Under *Connected Git Repository*: **Pull Request Comments** off, **Commit Comments** off | The bot commented on every PR, including every Dependabot PR. Vercel has replaced the single *Silence GitHub comments* switch with these two toggles, so look for them by name — the old one no longer exists. The `github.silent` key in `vercel.json` does the same thing but is deprecated; if it was ever set, Vercel migrates it to these toggles for you. |
-| Vercel → project → Settings → Environment Variables | Production only: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `APP_PASSWORD` | Nothing is set for Preview or Development. `APP_TIMEZONE` is not set — see *Known operational limits*. Check with `vercel env ls production` from a linked checkout. |
+| Vercel → project → Settings → Environment Variables | Production only: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `APP_PASSWORD` | Nothing is set for Preview or Development. These three are the whole list. Check with `vercel env ls production` from a linked checkout. |
 | GitHub → Settings → Rules → ruleset `main` | PR required, squash only, branch up to date; required checks `types + tests`, `lint`, `e2e`, `audit` | Rename a CI job without renaming it here and the gate silently stops requiring it. |
 | GitHub → Settings → Secrets → Actions | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (read-only database token) | Used only by `backup.yml`. |
 | GitHub → Settings → Advanced Security | Dependabot alerts and security updates, secret scanning, push protection | Security updates open as soon as an advisory lands, whatever the schedule in `.github/dependabot.yml` — but they do obey its `ignore` rules, which is why majors there are grouped, not ignored. |
@@ -243,7 +243,9 @@ branch, add `"<branch>": true` under `deploymentEnabled` in that branch's commit
 - **`recomputeStats()` re-reads the entire `flume_rows` table on every write.** This
   is the scaling cliff. At the current ~175k rows it is fine; it is superlinear in
   accumulated history.
-- **`APP_TIMEZONE` is not set in production.** Currently harmless only because Flume
-  timestamps are timezone-naive and are parsed as local time either way. If the export
-  format ever gains an offset or a `Z`, every rollup shifts. `.env.example` and
-  `TECHNICAL_DESIGN.md` both describe it as mandatory; that drift is unresolved.
+- **Ingest refuses any timestamp carrying a timezone.** Flume's export is
+  timezone-naive and is read as local wall-clock time, so a trailing `Z` or
+  `+HH:MM` would be ignored rather than honoured and every rollup would shift
+  silently. `app/api/rows/route.ts` rejects it instead, which turns a format
+  change at Flume's end into a failed upload with a message rather than months of
+  quietly wrong numbers.

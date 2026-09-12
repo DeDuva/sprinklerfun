@@ -159,6 +159,30 @@ describe("POST /api/rows — body validation", () => {
     expect((await post({ rows: [row(1, Number.NaN)] })).status).toBe(400)
   })
 
+  it("rejects a timestamp carrying a timezone, rather than silently ignoring it", async () => {
+    // Everything downstream reads these as local wall-clock time, so an offset
+    // would not be honoured — it would be dropped, and every rollup would shift
+    // by that amount with nothing to show why. If Flume ever changes format,
+    // this is what turns a silent corruption into a failed upload.
+    for (const dt of [
+      "2026-08-28T06:00:00Z",
+      "2026-08-28 06:00:00Z",
+      "2026-08-28T06:00:00+05:30",
+      "2026-08-28T06:00:00-07:00",
+    ]) {
+      const res = await post({ rows: [{ datetime: dt, gallons: 1 }] })
+      expect(res.status, dt).toBe(400)
+    }
+    expect(await countRows()).toBe(0)
+  })
+
+  it("still accepts the naive shapes Flume actually exports", async () => {
+    for (const dt of ["2026-08-28 06:00:00", "2026-08-28T06:00:00", "2026-08-28 06:00"]) {
+      const res = await post({ rows: [{ datetime: dt, gallons: 1 }] })
+      expect(res.status, dt).toBe(200)
+    }
+  })
+
 })
 
 describe("POST /api/rows — config no longer rides along", () => {

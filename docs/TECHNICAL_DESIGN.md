@@ -70,7 +70,7 @@ sprinkler-app/
 │       ├── analyze.test.ts     # Vitest unit tests
 │       └── staging.test.ts     # Staged-edit logic tests
 ├── .github/workflows/ci.yml    # typecheck + tests + lint; required checks on main
-├── .env.example                # TURSO_*, APP_TIMEZONE, APP_SHARED_SECRET
+├── .env.example                # TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, APP_PASSWORD
 ├── vitest.config.ts
 └── vercel.json
 ```
@@ -280,16 +280,25 @@ functions the browser used — and upserts one rollup row per `(date, station)`.
 
 ### ⚠️ Timezone constraint (critical)
 
-`enrichRows` intentionally converts Flume's UTC timestamps to **local** time so
-minute-of-day aligns with the configured start times (`lib/analyze.ts`, the
-`localDateAndMin` path). Because rollups are now computed **server-side**, the
-server process must run in the homeowner's timezone or its rollups won't match
-what the browser computes (Vercel defaults to UTC). Set **`APP_TIMEZONE`** (e.g.
-`America/Los_Angeles`) in the deployment env — `lib/db.ts` applies it to
-`process.env.TZ` at startup. We can't use `TZ` directly because Vercel reserves
-that env var; Node honors a runtime `TZ` assignment for subsequent `Date` calls.
-A future refactor may thread an explicit timezone through the pure functions
-instead of relying on process `TZ`.
+Flume's export is **timezone-naive** (`2026-08-22 00:00:00`) and everything
+downstream wants "minute of the local day", so `localDateAndMin` in
+`lib/analyze.ts` parses the string with a regex rather than constructing a
+`Date`. The result does not depend on the process timezone, so the server (UTC on
+Vercel) and the browser (Pacific) cannot disagree about which day a row belongs
+to.
+
+This replaced a `new Date()` round trip plus an `APP_TIMEZONE` variable that
+`lib/db.ts` assigned to `process.env.TZ` at import. That arrangement was wrong in
+two ways. It was never actually in effect — production never set the variable —
+and even when set it could not fix the spring-forward case: a naive `02:30` does
+not exist locally, so `new Date()` moved it to `03:30` and the browser's day view
+attributed that hour differently from the server's rollups. A lexical parse is
+identical in every zone and on every date.
+
+Ingest enforces the assumption: `DATETIME_RE` in `app/api/rows/route.ts` is
+anchored at both ends, so a `Z` or `±HH:MM` suffix is a 400. An offset would be
+ignored rather than honoured, and a silent shift in every rollup is a worse
+outcome than a rejected upload.
 
 ### Auth (single-user)
 
@@ -344,9 +353,7 @@ vercel link                              # select the "sprinklerfun" project
 # 2nd arg is the ENVIRONMENT (production | preview | development), not the project:
 vercel env add TURSO_DATABASE_URL production
 vercel env add TURSO_AUTH_TOKEN production
-vercel env add APP_TIMEZONE production             # e.g. America/Los_Angeles (NOT `TZ` — reserved)
-vercel env add APP_SHARED_SECRET production
-vercel env add NEXT_PUBLIC_APP_SHARED_SECRET production   # same value as APP_SHARED_SECRET
+vercel env add APP_PASSWORD production             # long + random, from a password manager
 ```
 
 - Run these in the same shell/working directory the app builds from (for WSL
@@ -366,17 +373,17 @@ vercel env add NEXT_PUBLIC_APP_SHARED_SECRET production   # same value as APP_SH
   `[name] [environment] [gitBranch]`. Passing the value as a 4th token makes
   Vercel read it as a git branch and fail. Enter it at the `? Value?` prompt, or
   pipe it: `printf '%s' '<value>' | vercel env add NAME production`.
-- Use **`APP_TIMEZONE`**, never `TZ` — `TZ` is a Vercel-reserved variable and is
-  rejected.
+- There is **no timezone variable at all** any more. Timestamps are parsed
+  lexically, so the process timezone is irrelevant and there is nothing to set.
 - `vercel link` creating the project and **connecting the Git repo are separate
   steps**; Git-connect can fail (e.g. the Vercel GitHub app lacks access to the
   repo's owner) without affecting env setup or CLI deploys. Wire Git later via
   the dashboard or `vercel git connect`.
 
-> **`APP_TIMEZONE` is not optional in production.** Rollups are computed
-> server-side and enrichment is timezone-local (see the timezone constraint
-> above). Vercel defaults to UTC; set `APP_TIMEZONE` to the property's zone or
-> rollups will be wrong.
+> **No timezone configuration is required.** This used to warn that
+> `APP_TIMEZONE` was mandatory in production. It never was set there, and the
+> warning mattered only because enrichment parsed through `Date`. It parses
+> lexically now, so there is nothing to configure and nothing to get wrong.
 
 ### CI/CD — where the gate actually is
 
@@ -773,7 +780,7 @@ A lightweight overlay (same pattern as `UploadModal`) listing staged `StagedItem
 | ~~Full row series loads into browser memory~~ | **Resolved (Phase 3).** The browser never loads the full series: dashboard/analysis read `/api/rollup` + `/api/stats`, and per-minute views fetch a single day via `/api/day/[date]`. `GET /api/rows` is retained for debugging only |
 | Precomputed stats freeze `currentConfig`/"today" at last write | `station_stats` / `station_warnings` (and the warning 21-day lookback) are computed with `currentConfig(windows)` at recompute time. Since recompute runs on every upload **and** every window edit, they're fresh as of the last write; the only drift is "today" crossing into a future-dated window with no intervening write (rare for this app). A future phase could recompute on a schedule or thread the reference date |
 | Stats recompute over the whole series on every write | `recomputeStats()` re-enriches all rows each write (in addition to `recomputeRollups`), so two full enrichment passes per upload. Fine for a single-home dataset; Phase 4 can make both incremental/targeted |
-| Server rollups depend on process `TZ` | Enrichment is timezone-local; set `APP_TIMEZONE` (applied to `process.env.TZ` in `lib/db.ts`, since Vercel reserves `TZ`). A future refactor may thread tz explicitly |
+| ~~Server rollups depend on process `TZ`~~ | **Resolved.** `localDateAndMin` parses Flume's naive timestamps lexically, so enrichment never reads the process timezone. `APP_TIMEZONE` and the `process.env.TZ` assignment are gone, and CI's four-timezone loop proves the output is identical in every zone rather than assuming it |
 | Full-range recompute per write | A config-window change can affect any date, so the whole range is recomputed (rollups) / whole series re-enriched (stats). Phase 4 makes this targeted |
 | No row validation beyond column names | Malformed timestamps silently dropped |
 | Config `effectiveFrom` resolution is 1 day | Two windows can't share a date (enforced in the editor); sub-day changes aren't representable |
