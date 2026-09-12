@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { NextRequest } from "next/server"
 import { resetDbForTests } from "../db"
-import { insertRows, replaceWindows, readWindows, countRows } from "../server/data"
+import { insertRows, replaceWindows, readWindows, readRollups, countRows } from "../server/data"
 import type { ConfigWindow, FlumeRow } from "../types"
 
-import { POST } from "@/app/api/rows/route"
+import { POST, DELETE as deleteRows } from "@/app/api/rows/route"
+import { GET as getConfig, PUT as putConfig } from "@/app/api/config/route"
 import { POST as login } from "@/app/api/login/route"
 import { GET as getDay } from "@/app/api/day/[date]/route"
 import { GET as getRollup } from "@/app/api/rollup/route"
@@ -158,46 +159,136 @@ describe("POST /api/rows — body validation", () => {
     expect((await post({ rows: [row(1, Number.NaN)] })).status).toBe(400)
   })
 
-  it("rejects a window that is not shaped like a window", async () => {
-    const res = await post({ rows: [], windows: [{ id: "x" }] })
-    expect(res.status).toBe(400)
-    expect((await res.json()).error).toContain("body.windows[0]")
-  })
 })
 
-describe("POST /api/rows — the empty-windows footgun", () => {
-  it("does NOT wipe the config timeline", async () => {
-    // This exact body used to run DELETE FROM config_windows and insert nothing,
-    // destroying the entire config history through a request that reads as a
-    // no-op. An empty array now means "no window update".
+describe("POST /api/rows — config no longer rides along", () => {
+  it("rejects a windows field instead of silently ignoring it", async () => {
+    // A tab left open across the deploy that moved config to the server would
+    // otherwise keep sending windows and keep appearing to save them. Failing
+    // loudly is what stops two sources of truth re-establishing themselves.
     await replaceWindows([win("keep-me")])
-    const res = await post({ rows: [], windows: [] })
-    expect(res.status).toBe(200)
+    const res = await post({ rows: [], windows: [win("new")] })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain("PUT /api/config")
     expect((await readWindows()).map((w) => w.id)).toEqual(["keep-me"])
   })
 
-  it("still replaces the timeline when given real windows", async () => {
-    await replaceWindows([win("old")])
-    expect((await post({ rows: [], windows: [win("new")] })).status).toBe(200)
-    expect((await readWindows()).map((w) => w.id)).toEqual(["new"])
+  it("rejects even an empty windows array", async () => {
+    // The shape that used to wipe the whole timeline. It is not a no-op here,
+    // it is a 400 — there is no reading of it that this route should accept.
+    await replaceWindows([win("keep-me")])
+    expect((await post({ rows: [], windows: [] })).status).toBe(400)
+    expect((await readWindows()).map((w) => w.id)).toEqual(["keep-me"])
   })
 
-  it("leaves windows alone when the key is omitted entirely", async () => {
+  it("leaves windows alone on an ordinary ingest", async () => {
     await replaceWindows([win("keep-me")])
-    await post({ rows: [row(1)] })
-    expect((await readWindows())).toHaveLength(1)
+    expect((await post({ rows: [row(1)] })).status).toBe(200)
+    expect(await readWindows()).toHaveLength(1)
   })
 })
 
 describe("POST /api/rows — success", () => {
   it("reports received and inserted separately, and dedupes on re-post", async () => {
+    await replaceWindows([win("w1")])
     const rows = [row(1), row(2), row(3)]
-    const first = await (await post({ rows, windows: [win("w1")] })).json()
+    const first = await (await post({ rows })).json()
     expect(first).toMatchObject({ ok: true, received: 3, inserted: 3 })
 
     const second = await (await post({ rows })).json()
     expect(second).toMatchObject({ received: 3, inserted: 0 })
     expect(await countRows()).toBe(3)
+  })
+})
+
+describe("DELETE /api/rows", () => {
+  it("clears the metered data but keeps the config", async () => {
+    await replaceWindows([win("keep-me")])
+    await insertRows([row(1), row(2)])
+
+    const res = await deleteRows()
+    expect(res.status).toBe(200)
+
+    expect(await countRows()).toBe(0)
+    // The button that calls this is one typed word away from irreversible; the
+    // config surviving it is the property that makes that acceptable.
+    expect((await readWindows()).map((w) => w.id)).toEqual(["keep-me"])
+  })
+})
+
+describe("GET/PUT /api/config", () => {
+  const put = (body: unknown) =>
+    putConfig(
+      new NextRequest("https://x.test/api/config", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      })
+    )
+
+  const doc = (windows = [win("w1")], maintenance: Record<string, unknown> = {}) => ({
+    windows,
+    maintenance,
+  })
+
+  it("round-trips a config document", async () => {
+    expect((await put(doc())).status).toBe(200)
+    const body = await (await getConfig()).json()
+    expect(body.windows.map((w: { id: string }) => w.id)).toEqual(["w1"])
+    expect(body.maintenance).toEqual({})
+    expect(body.authMode).toBe("open")
+  })
+
+  it("stores maintenance flags alongside the windows", async () => {
+    const flags = { "T1-01": { flaggedAt: "2026-05-01T00:00:00.000Z", note: "leak" } }
+    expect((await put(doc([win("w1")], flags))).status).toBe(200)
+    expect((await (await getConfig()).json()).maintenance).toEqual(flags)
+  })
+
+  it("returns what was stored, not what was sent", async () => {
+    const res = await put(doc())
+    const returned = await res.json()
+    const fetched = await (await getConfig()).json()
+    expect(returned.windows).toEqual(fetched.windows)
+  })
+
+  it("refuses to empty the timeline", async () => {
+    await put(doc())
+    const res = await put(doc([]))
+    expect(res.status).toBe(400)
+    // Refused means unchanged, not partially applied.
+    expect((await readWindows()).map((w) => w.id)).toEqual(["w1"])
+  })
+
+  it("rejects a malformed window and names the offending index", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res = await put(doc([win("ok"), { id: "x" } as any]))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain("body.windows[1]")
+  })
+
+  it("requires maintenance rather than defaulting it, so a forgotten key cannot clear flags", async () => {
+    await put(doc([win("w1")], { "T1-01": { flaggedAt: "2026-05-01T00:00:00.000Z" } }))
+    // Omitted entirely.
+    expect((await put({ windows: [win("w2")] })).status).toBe(400)
+    // Present but wrong shape.
+    expect((await put(doc([win("w2")], { "T1-01": { note: "no timestamp" } }))).status).toBe(400)
+    // The flags survived both refusals.
+    expect(Object.keys((await (await getConfig()).json()).maintenance)).toEqual(["T1-01"])
+  })
+
+  it("400s on malformed JSON", async () => {
+    expect((await put("{nope")).status).toBe(400)
+  })
+
+  it("recomputes the rollups against the new config", async () => {
+    // A config write changes how stored rows are attributed, so the derived
+    // tables have to move with it — otherwise the dashboard keeps showing
+    // numbers computed under the previous timeline.
+    await replaceWindows([win("w1")])
+    await insertRows([row(360), row(361), row(362)])
+    await put(doc([win("w1")]))
+    expect((await readRollups()).length).toBeGreaterThan(0)
   })
 })
 

@@ -4,6 +4,7 @@ import type {
   ConfigWindow,
   FlumeRow,
   DailyRow,
+  MaintenanceFlag,
   RollupRow,
   StationStats,
   StationWarning,
@@ -57,13 +58,11 @@ export async function countRows(): Promise<number> {
   return Number(res.rows[0]?.n ?? 0)
 }
 
-// Replace the stored window set with the client's current windows. Windows are
-// small and edited as a whole; a delete-all + insert keeps the server an exact
-// mirror of the client during Phase 1 dual-write (no orphaned windows).
-export async function replaceWindows(windows: ConfigWindow[]): Promise<void> {
-  await ensureSchema()
-  const db = getDb()
-  const stmts = [
+// Replace the stored window set. Windows are small and edited as a whole, so a
+// delete-all + insert expresses the edit exactly; there is no partial update of
+// a timeline that would mean anything.
+function windowStatements(windows: ConfigWindow[]): { sql: string; args: InArgs }[] {
+  return [
     { sql: "DELETE FROM config_windows", args: [] as InArgs },
     ...windows.map((w) => ({
       sql: `INSERT INTO config_windows
@@ -79,7 +78,11 @@ export async function replaceWindows(windows: ConfigWindow[]): Promise<void> {
       ] as InArgs,
     })),
   ]
-  await db.batch(stmts, "write")
+}
+
+export async function replaceWindows(windows: ConfigWindow[]): Promise<void> {
+  await ensureSchema()
+  await getDb().batch(windowStatements(windows), "write")
 }
 
 export async function readWindows(): Promise<ConfigWindow[]> {
@@ -96,6 +99,75 @@ export async function readWindows(): Promise<ConfigWindow[]> {
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
   }))
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance flags
+//
+// The `maintenance` table has existed in ensureSchema since the schema was first
+// written, but nothing ever read or wrote it: the flags lived in localStorage
+// alongside the windows. They move here for the same reason the windows did —
+// a flag raised on the phone was invisible on the laptop, which is the whole
+// bug class this change exists to close.
+//
+// Stored as one row per station rather than a JSON blob so a single flag can be
+// cleared without rewriting the set, and so a backup of this table is legible.
+// ---------------------------------------------------------------------------
+
+export async function readMaintenance(): Promise<Record<string, MaintenanceFlag>> {
+  await ensureSchema()
+  const db = getDb()
+  const res = await db.execute("SELECT station_id, flagged_at, note FROM maintenance")
+  const out: Record<string, MaintenanceFlag> = {}
+  for (const r of res.rows) {
+    const note = r.note
+    out[String(r.station_id)] = {
+      flaggedAt: String(r.flagged_at),
+      // The column is nullable and the field is optional; don't invent a "" note.
+      ...(note === null || note === undefined ? {} : { note: String(note) }),
+    }
+  }
+  return out
+}
+
+// Whole-map replace, mirroring replaceWindows. The map is a handful of entries
+// edited as a unit, and an absent key means "not flagged" — so a partial update
+// has no meaning here that a replace doesn't express more simply.
+function maintenanceStatements(
+  maintenance: Record<string, MaintenanceFlag>
+): { sql: string; args: InArgs }[] {
+  return [
+    { sql: "DELETE FROM maintenance", args: [] as InArgs },
+    ...Object.entries(maintenance).map(([stationId, flag]) => ({
+      sql: "INSERT INTO maintenance (station_id, flagged_at, note) VALUES (?, ?, ?)",
+      args: [stationId, flag.flaggedAt, flag.note ?? null] as InArgs,
+    })),
+  ]
+}
+
+export async function replaceMaintenance(
+  maintenance: Record<string, MaintenanceFlag>
+): Promise<void> {
+  await ensureSchema()
+  await getDb().batch(maintenanceStatements(maintenance), "write")
+}
+
+// Write the whole config document in ONE batch.
+//
+// The two halves are saved together or not at all. Doing them as two batches
+// leaves a window in which the windows are new and the maintenance flags are
+// still the old ones — and since a config write also triggers a full rollup and
+// stats recompute, a recompute landing inside that window would derive its
+// numbers from a config that never existed.
+export async function replaceConfig(doc: {
+  windows: ConfigWindow[]
+  maintenance: Record<string, MaintenanceFlag>
+}): Promise<void> {
+  await ensureSchema()
+  await getDb().batch(
+    [...windowStatements(doc.windows), ...maintenanceStatements(doc.maintenance)],
+    "write"
+  )
 }
 
 // All raw rows, ascending by datetime. Used to hydrate the in-memory store on

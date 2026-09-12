@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "fixtures": "jiti scripts/make-fixtures.ts",
+    "seed:dev": "jiti scripts/seed-dev.ts",
     "verify:prod": "jiti scripts/verify-prod.ts",
     "backup": "jiti scripts/backup.ts"
   },

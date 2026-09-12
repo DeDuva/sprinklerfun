@@ -41,7 +41,7 @@ export default function UploadModal({ open, onClose }: Props) {
       // Persist durably to the server — it ingests the rows and recomputes
       // rollups + stats. Bump serverVersion so the pages refetch their views.
       const state = useStore.getState()
-      pushRows(rows, state.windows).then((r) => {
+      pushRows(rows).then((r) => {
         if (!r.ok) {
           toast.error(`Saving to the server failed: ${r.error}`)
           return

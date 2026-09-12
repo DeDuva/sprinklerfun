@@ -25,7 +25,7 @@ export default function RefreshDataCard() {
     }
     setBusy(true)
     const t = toast.loading(`Saving ${parsed.length.toLocaleString()} rows from ${label}…`)
-    const r = await pushRows(parsed, useStore.getState().windows)
+    const r = await pushRows(parsed)
     toast.dismiss(t)
     setBusy(false)
     if (r.ok) {

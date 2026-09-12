@@ -55,9 +55,9 @@ npm run dev        # http://localhost:3000
 
 ## Saving your config to git
 
-The app stores config in `localStorage`. To back it up, export it from the Config page and save the JSON to `data/`. Naming convention: `config-YYYY-MM-DD-notes.json`. Commit after each seasonal audit so your baseline gpm history is version-controlled alongside the code.
+The app stores config on the server, in Turso — not in your browser. It is read back by every device, so there is nothing to keep in sync and nothing to commit for the app's benefit. Exporting from the Config page is for *your* records: a file to keep before a big change, and the way back if the stored config ever looks wrong. Daily backups cover the same ground automatically (see `docs/RUNBOOK.md`).
 
-**Config only — never metered data.** The config snapshots hold station names, durations and baseline gpm, none of which identify anything. A CSV export is different: at one-minute resolution it reveals when the house wakes, showers and sits empty, and this repository is public. The fixtures under `data/` and the demo seed at `public/default-data.csv` are generated:
+**Config only — never metered data.** The config snapshots hold station names, durations and baseline gpm, none of which identify anything. A CSV export is different: at one-minute resolution it reveals when the house wakes, showers and sits empty, and this repository is public. The fixtures under `data/` are generated:
 
 ```bash
 npm run fixtures     # regenerate the synthetic fixtures

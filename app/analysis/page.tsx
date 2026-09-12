@@ -72,6 +72,7 @@ export default function AnalysisPage() {
   const windows      = useStore((s) => s.windows)
   const serverVersion = useStore((s) => s.serverVersion)
   const maintenance  = useStore((s) => s.maintenance)
+  const loaded       = useStore((s) => s.loaded)
   const updateWindow = useStore((s) => s.updateWindow)
   const setStationMaintenance = useStore((s) => s.setStationMaintenance)
 
@@ -221,22 +222,28 @@ export default function AnalysisPage() {
     setStage((s) => ({ ...s, map: new Map(proposed.map((c) => [c.key, c])), review: true }))
   }
 
-  const saveStaged = () => {
+  const saveStaged = async () => {
     if (!dayCalc?.activeWin || staged.size === 0) return
     const next = applyStagedChanges(dayCalc.activeWin.config, staged.values())
-    updateWindow(dayCalc.activeWin.id, { config: next })
     const n = staged.size
-    discardStaged()
-    toast.success(`Saved ${n} config change${n !== 1 ? "s" : ""} to the ${configLabel ?? "active"} window`)
+    try {
+      // Only clear the staged edits once the server has them. Discarding first
+      // would throw the user's work away on a failed save.
+      await updateWindow(dayCalc.activeWin.id, { config: next })
+      discardStaged()
+      toast.success(`Saved ${n} config change${n !== 1 ? "s" : ""} to the ${configLabel ?? "active"} window`)
+    } catch (e) {
+      toast.error(`Could not save: ${e instanceof Error ? e.message : e}`)
+    }
   }
 
-  const toggleMaintenance = (r: SegmentReconciliation) => {
-    if (maintenance[r.stationId]) {
-      setStationMaintenance(r.stationId, null)
-      toast.success(`${r.name} maintenance flag cleared`)
-    } else {
-      setStationMaintenance(r.stationId, { flaggedAt: new Date().toISOString() })
-      toast.success(`${r.name} flagged for maintenance`)
+  const toggleMaintenance = async (r: SegmentReconciliation) => {
+    const clearing = Boolean(maintenance[r.stationId])
+    try {
+      await setStationMaintenance(r.stationId, clearing ? null : { flaggedAt: new Date().toISOString() })
+      toast.success(clearing ? `${r.name} maintenance flag cleared` : `${r.name} flagged for maintenance`)
+    } catch (e) {
+      toast.error(`Could not save: ${e instanceof Error ? e.message : e}`)
     }
   }
 
@@ -244,6 +251,13 @@ export default function AnalysisPage() {
   const sprinklerDates = derived?.sprinklerDates ?? []
   const prevDay = day ? [...sprinklerDates].filter((d) => d < day).pop() ?? null : null
   const nextDay = day ? sprinklerDates.find((d) => d > day) ?? null : null
+
+  // This page reconciles measured flow against the *configured* schedule, so it
+  // is meaningless until the config has arrived. Rendering early would compare
+  // the real day against DEFAULT_CONFIG and report drift that does not exist.
+  if (!loaded) {
+    return <div className="text-center py-24 text-gray-400 animate-pulse">Loading…</div>
+  }
 
   if (rollups !== null && rollups.length === 0) {
     return <div className="text-center py-24 text-gray-400">No data — go to Config to upload a CSV</div>

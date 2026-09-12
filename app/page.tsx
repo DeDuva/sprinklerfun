@@ -45,6 +45,7 @@ export default function DashboardPage() {
   const windows       = useStore((s) => s.windows)
   const serverVersion = useStore((s) => s.serverVersion)
   const maintenance   = useStore((s) => s.maintenance)
+  const loaded        = useStore((s) => s.loaded)
 
   // "Current" config (today's window) — for billing, names, and warning baselines.
   const config = useMemo(() => currentConfig(windows), [windows])
@@ -190,6 +191,13 @@ export default function DashboardPage() {
     new Date(d + "T12:00:00").toLocaleDateString(undefined, {
       month: "short", day: "numeric", year: "numeric",
     })
+
+  // Config arrives over the network now, so there is a moment where `windows` is
+  // [] simply because the fetch has not landed. Rendering through that would
+  // bill and label the page against DEFAULT_CONFIG rather than the real one.
+  if (!loaded) {
+    return <div className="h-64 rounded-2xl bg-white/60 animate-pulse" />
+  }
 
   // Empty state only once we've loaded and confirmed there's genuinely no data.
   if (rollups !== null && rollups.length === 0) {

@@ -26,10 +26,19 @@ async function login(request: APIRequestContext) {
   expect(res.status(), await res.text()).toBe(200)
 }
 
+async function seedConfig(request: APIRequestContext) {
+  const { windows } = JSON.parse(readFileSync(CONFIG, "utf8"))
+  const res = await request.put("/api/config", { data: { windows, maintenance: {} } })
+  expect(res.status(), await res.text()).toBe(200)
+}
+
+// Config first, then rows: a row is attributed to a station using the window
+// active on its date, so ingesting before the timeline exists would roll the
+// whole day up as "house".
 async function seed(request: APIRequestContext) {
   const { rows } = JSON.parse(readFileSync(FIXTURE, "utf8"))
-  const { windows } = JSON.parse(readFileSync(CONFIG, "utf8"))
-  const res = await request.post("/api/rows", { data: { rows, windows } })
+  await seedConfig(request)
+  const res = await request.post("/api/rows", { data: { rows } })
   expect(res.status(), await res.text()).toBe(200)
   return (await res.json()) as { inserted: number }
 }
@@ -102,25 +111,68 @@ test.describe("smoke", () => {
     expect(t2.delaySec).toBe(60)
   })
 
-  test("the removed endpoints stay removed", async ({ request }) => {
+  test("the bulk export stays removed", async ({ request }) => {
     await login(request)
     // Logged in, so a 405 here is the route saying the method is gone rather
-    // than the guard turning everyone away.
+    // than the guard turning everyone away. DELETE is deliberately NOT in this
+    // list any more — it came back behind the login, with a typed confirmation.
     expect((await request.get("/api/rows")).status()).toBe(405)
-    expect((await request.delete("/api/rows")).status()).toBe(405)
   })
 
-  test("an empty windows array does not wipe the config timeline", async ({ request }) => {
+  test("clearing data removes rows but keeps the config timeline", async ({ request }) => {
     await login(request)
     await seed(request)
-    const before = await (await request.get("/api/delay")).json()
-    expect(before.recommendations.length).toBeGreaterThan(0)
+    expect((await (await request.get("/api/stats")).json()).rowCount).toBeGreaterThan(0)
 
-    const res = await request.post("/api/rows", { data: { rows: [], windows: [] } })
-    expect(res.status()).toBe(200)
+    expect((await request.delete("/api/rows")).status()).toBe(200)
 
-    const after = await (await request.get("/api/delay")).json()
-    expect(after.recommendations.length).toBe(before.recommendations.length)
+    expect((await (await request.get("/api/stats")).json()).rowCount).toBe(0)
+    // The part that matters: a season of hand-tuned config is not collateral
+    // damage of "I want to re-upload my meter history".
+    const config = await (await request.get("/api/config")).json()
+    expect(config.windows.length).toBeGreaterThan(0)
+  })
+
+  test("the config timeline cannot be emptied, or smuggled in through an ingest", async ({ request }) => {
+    await login(request)
+    await seed(request)
+    const before = await (await request.get("/api/config")).json()
+    expect(before.windows.length).toBeGreaterThan(0)
+
+    // An empty timeline leaves every stored row unattributable, so it is refused
+    // outright rather than accepted as a no-op.
+    const emptied = await request.put("/api/config", { data: { windows: [], maintenance: {} } })
+    expect(emptied.status()).toBe(400)
+
+    // And config no longer rides along with an ingest: a stale client that still
+    // sends windows here is told so, rather than having them silently dropped.
+    const smuggled = await request.post("/api/rows", { data: { rows: [], windows: [] } })
+    expect(smuggled.status()).toBe(400)
+
+    const after = await (await request.get("/api/config")).json()
+    expect(after.windows.length).toBe(before.windows.length)
+  })
+
+  test("a second browser sees the config the first one saved", async ({ browser, request }) => {
+    // This is the bug this whole change exists to fix. Config used to live in
+    // localStorage, so a config saved on one device was simply absent on the
+    // next one — and that browser would then push its own stale snapshot over
+    // the real timeline. A fresh context shares no storage with anything.
+    await login(request)
+    await seedConfig(request)
+
+    const context = await browser.newContext()
+    try {
+      const page = await context.newPage()
+      await page.request.post("/api/login", { data: { password: PASSWORD } })
+      const config = await (await page.request.get("/api/config")).json()
+      expect(config.windows.length).toBeGreaterThan(0)
+
+      await page.goto("/config")
+      await expect(page.getByText(/Timer 1/i).first()).toBeVisible({ timeout: 15_000 })
+    } finally {
+      await context.close()
+    }
   })
 
   test("security headers are served", async ({ request }) => {
@@ -155,11 +207,18 @@ test.describe("smoke", () => {
     await expect(page.getByText(/Station Delay/i).first()).toBeVisible()
   })
 
-  test("config renders and no longer offers a clear-all button", async ({ page }) => {
+  test("config renders from the server, and the clear button is armed by typing", async ({ page }) => {
     await login(page.request)
+    await seedConfig(page.request)
     await page.goto("/config")
+    // Rendered from GET /api/config — nothing was seeded into this browser.
     await expect(page.getByText(/Timer 1/i).first()).toBeVisible({ timeout: 15_000 })
-    // Removed in the attack-surface work; this is the assertion that keeps it gone.
-    await expect(page.getByRole("button", { name: /clear all data/i })).toHaveCount(0)
+
+    // The button is back, but inert until the word is typed. That is the whole
+    // safety property, so it is what gets asserted.
+    const clear = page.getByRole("button", { name: /clear all data/i })
+    await expect(clear).toBeDisabled()
+    await page.getByLabel("Type DELETE to confirm").fill("DELETE")
+    await expect(clear).toBeEnabled()
   })
 })

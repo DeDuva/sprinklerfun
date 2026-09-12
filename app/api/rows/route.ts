@@ -1,12 +1,12 @@
 import type { NextRequest } from "next/server"
 import {
+  clearAllData,
   insertRows,
-  replaceWindows,
   recomputeRollups,
   recomputeStats,
   rowDateBounds,
 } from "@/lib/server/data"
-import type { ConfigWindow, FlumeRow } from "@/lib/types"
+import type { FlumeRow } from "@/lib/types"
 
 // libSQL's node client uses native bindings — must run on the Node.js runtime,
 // not edge. Never cache: this is a write endpoint.
@@ -50,22 +50,14 @@ function isFlumeRow(v: unknown): v is FlumeRow {
   )
 }
 
-function isConfigWindow(v: unknown): v is ConfigWindow {
-  if (typeof v !== "object" || v === null) return false
-  const w = v as ConfigWindow
-  return (
-    typeof w.id === "string" && w.id.length > 0 &&
-    typeof w.effectiveFrom === "string" && /^\d{4}-\d{2}-\d{2}$/.test(w.effectiveFrom) &&
-    typeof w.createdAt === "string" &&
-    typeof w.updatedAt === "string" &&
-    typeof w.config === "object" && w.config !== null
-  )
-}
+// isConfigWindow moved to lib/server/validate.ts when config got its own route.
+// This handler no longer accepts windows at all, so the check is not duplicated
+// here — it lives where the only writer of config now is.
 
 // POST /api/rows
-// Body: { rows: FlumeRow[], windows?: ConfigWindow[] }
-// Ingests raw rows (dedup by datetime), mirrors the client's window set, and
-// recomputes daily rollups.
+// Body: { rows: FlumeRow[] }
+// Ingests raw rows (dedup by datetime) and recomputes daily rollups + stats
+// against whatever config timeline the server already holds.
 export async function POST(req: NextRequest) {
   let body: unknown
   try {
@@ -75,7 +67,18 @@ export async function POST(req: NextRequest) {
   }
 
   const rawRows = (body as { rows?: unknown }).rows
-  const rawWindows = (body as { windows?: unknown }).windows
+
+  // Config no longer travels with an ingest. It is rejected rather than ignored
+  // so that a stale client — a tab left open across the deploy that moved config
+  // to the server — fails visibly instead of appearing to save a config that
+  // went nowhere. Silently dropping the field is how two sources of truth get
+  // re-established by accident.
+  if ("windows" in (body as object)) {
+    return Response.json(
+      { error: "body.windows is no longer accepted here — use PUT /api/config" },
+      { status: 400 }
+    )
+  }
 
   if (!Array.isArray(rawRows)) {
     return Response.json({ error: "body.rows must be an array" }, { status: 400 })
@@ -99,31 +102,12 @@ export async function POST(req: NextRequest) {
   }
   const rows = rawRows as FlumeRow[]
 
-  // An empty array used to mean "delete every config window": replaceWindows is
-  // DELETE-all-then-insert, so `{"rows":[],"windows":[]}` destroyed the entire
-  // config timeline through a request that looked like a no-op. It now means
-  // "no window update", which is the only reading that isn't a footgun — and it
-  // leaves no way to wipe the timeline through this API at all.
-  let windows: ConfigWindow[] | null = null
-  if (Array.isArray(rawWindows) && rawWindows.length > 0) {
-    const badWindow = rawWindows.findIndex((w) => !isConfigWindow(w))
-    if (badWindow !== -1) {
-      return Response.json(
-        { error: `body.windows[${badWindow}] is not a valid config window` },
-        { status: 400 }
-      )
-    }
-    windows = rawWindows as ConfigWindow[]
-  }
-
   try {
-    // Mirror windows first so rollup recompute uses the current config timeline.
-    if (windows) await replaceWindows(windows)
     const inserted = await insertRows(rows)
 
-    // Phase 1 simplification: a config-window change can affect any date, so we
-    // recompute the whole range rather than just the newly-inserted dates. A
-    // later phase makes this targeted to the affected span.
+    // A config-window change can affect any date, so we recompute the whole
+    // range rather than just the newly-inserted dates. Making this targeted to
+    // the affected span is deferred deliberately — see the plan's "Deferred".
     const bounds = await rowDateBounds()
     const days = bounds ? await recomputeRollups(bounds.min, bounds.max) : 0
 
@@ -138,14 +122,29 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// GET and DELETE used to live here and are deliberately gone.
+// DELETE /api/rows — clear the metered data.
 //
-// GET returned every row in the database — an unauthenticated bulk export of the
-// full metered history, with no date range, no limit and no caller anywhere in
-// the app. The dashboard reads /api/rollup, /api/stats and /api/day/[date].
+// This was removed once, and for a good reason: it dropped four tables in one
+// batch behind a header whose value shipped inside the client bundle, which on a
+// public deployment is one request away from unrecoverable loss. What changed is
+// not the blast radius but who can reach it — the guard in proxy.ts now requires
+// a real session, and the UI puts a typed confirmation in front of it. That is
+// what the login bought, and this is the feature that was being held hostage.
 //
-// DELETE dropped flume_rows, daily_rollup, station_stats and station_warnings in
-// a single batch, guarded only by a header whose value is published in the client
-// bundle. On a public deployment that is one request away from unrecoverable
-// data loss, in exchange for a convenience button. Clearing data is now a
-// deliberate action against the database itself; see docs/RUNBOOK.md.
+// It clears rows and the three derived tables. It deliberately does NOT touch
+// config_windows or maintenance: "I want to re-upload my meter history" should
+// not silently discard a hand-tuned config timeline that took a season to build.
+export async function DELETE() {
+  try {
+    await clearAllData()
+    return Response.json({ ok: true })
+  } catch (err) {
+    console.error("[api/rows] DELETE failed:", err)
+    return Response.json({ error: "server error" }, { status: 500 })
+  }
+}
+
+// GET used to live here and is deliberately gone: it returned every row in the
+// database — a bulk export of the full metered history, with no date range, no
+// limit and no caller anywhere in the app. The dashboard reads /api/rollup,
+// /api/stats and /api/day/[date].

@@ -250,6 +250,24 @@ export interface StatsPayload {
   lastDate: string | null // latest stored row date "YYYY-MM-DD" (for incremental export)
 }
 
+// The whole of the server-owned configuration, as GET/PUT /api/config exchange
+// it. Config used to live in localStorage with a write-only mirror in Turso that
+// nothing ever read back; this payload is what replaced that arrangement, and
+// the server is now the only copy.
+//
+// `authMode` is reported, never sent: the client uses it to decide whether to
+// offer a "Log out" control at all. "refuse" is deliberately not in the union —
+// a deployment in that state answers 503 at the guard, so no client can observe
+// it from here.
+export interface ConfigPayload {
+  windows: ConfigWindow[]
+  maintenance: Record<string, MaintenanceFlag>
+  authMode: "open" | "enforced"
+}
+
+// What a PUT carries: the document itself, without the server-reported fields.
+export type ConfigDocument = Pick<ConfigPayload, "windows" | "maintenance">
+
 // Baseline-drift warning for a station (mirror of computeStationWarnings'
 // StationWarning; declared here so client + server share the wire shape).
 export interface StationWarning {
@@ -445,8 +463,8 @@ export function migrateConfig(raw: any): AppConfig {
 
 // ---------------------------------------------------------------------------
 // Window helpers — time normalization, id generation, and migration to the
-// ConfigWindow model. Used by the store (persist migrate / rehydrate), the
-// config import flow, and the StoreProvider default-config loader.
+// ConfigWindow model. Used by the config import flow and by readWindows(), as
+// defensive normalisation of whatever shape is already in the table.
 // ---------------------------------------------------------------------------
 
 /** Normalize a time string to "HH:MM:SS". Fixes malformed values like
