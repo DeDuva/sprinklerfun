@@ -6,9 +6,8 @@ import { isDeployed } from "./server/env"
 // ---------------------------------------------------------------------------
 // libSQL / Turso client (server-only)
 //
-// Phase 1 of the localStorage → Turso migration. This module is imported only
-// by route handlers and server-side data-access code — never by client
-// components (it reads secrets from the environment).
+// Imported only by route handlers and server-side data-access code — never by
+// client components, since it reads secrets from the environment.
 //
 // Configuration (see .env.example):
 //   TURSO_DATABASE_URL  libsql://<db>.turso.io  (or file:… for local dev)

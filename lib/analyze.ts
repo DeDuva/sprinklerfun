@@ -311,7 +311,7 @@ export function enrichRowsMultiConfig(
 }
 
 // ---------------------------------------------------------------------------
-// Rollup reconstruction (Phase 3)
+// Rollup reconstruction
 //
 // The dashboard no longer loads the full per-minute series. Instead it reads the
 // server's `daily_rollup` (one gallon sum per date+station) via GET /api/rollup

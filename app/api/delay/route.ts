@@ -24,7 +24,7 @@ const MAX_DAYS = 40
 // and the browser deliberately holds one at a time (the Analysis page fetches a
 // single day). Each day is fitted against the config window that was actually
 // active on it, so a fit is never scored against settings that had not taken
-// effect yet. Read-only, so no auth guard (Phase 1 convention).
+// effect yet. No auth check here — proxy.ts guards every route in front of it.
 export async function GET(req: NextRequest) {
   const raw = Number(req.nextUrl.searchParams.get("days"))
   const days = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), MAX_DAYS) : DEFAULT_DAYS

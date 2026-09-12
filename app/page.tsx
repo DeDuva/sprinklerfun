@@ -51,7 +51,7 @@ export default function DashboardPage() {
   const config = useMemo(() => currentConfig(windows), [windows])
 
   // ---- Server-derived data (rollups + precomputed stats) -----------------
-  // Phase 3: the browser no longer loads the full per-minute series. The chart
+  // The browser never loads the full per-minute series. The chart
   // and monthly summary come from GET /api/rollup; the warnings come from the
   // precomputed GET /api/stats feed. Refetched whenever the server data changes.
   const [rollups, setRollups] = useState<RollupRow[] | null>(null)

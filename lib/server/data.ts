@@ -18,7 +18,7 @@ import {
 } from "@/lib/analyze"
 
 // ---------------------------------------------------------------------------
-// Server-side data access for the Turso backend (Phase 1).
+// Server-side data access for the Turso backend.
 //
 // The raw + rollup model: raw minute rows live in `flume_rows`, and the derived
 // per-day/per-station aggregates the dashboard reads live in `daily_rollup`,
@@ -182,7 +182,9 @@ export async function readAllRows(): Promise<FlumeRow[]> {
 }
 
 // Clear all data (rows + rollups + precomputed stats/warnings). Windows and
-// maintenance are untouched — they are still client-owned in this phase.
+// maintenance are untouched on purpose: "I want to re-upload my meter history"
+// should not cost a season of hand-tuned config, and unlike the rows, the config
+// cannot be re-downloaded from Flume.
 export async function clearAllData(): Promise<void> {
   await ensureSchema()
   const db = getDb()
