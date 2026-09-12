@@ -19,17 +19,12 @@ import { isDeployed } from "./server/env"
 // via Vercel env vars.
 // ---------------------------------------------------------------------------
 
-// Pin the process timezone from APP_TIMEZONE. Enrichment converts Flume's UTC
-// timestamps to LOCAL time (see lib/analyze.ts), and rollups are computed
-// server-side, so the server must run in the homeowner's zone or rollups won't
-// match the browser. We can't use the `TZ` env var directly — Vercel reserves
-// it — so we read a non-reserved var and assign process.env.TZ at module load
-// (before any Date is constructed during enrichment). Node honors a runtime TZ
-// assignment for subsequent Date operations. This module is imported on every
-// server data path, so the assignment runs once per cold start.
-if (process.env.APP_TIMEZONE) {
-  process.env.TZ = process.env.APP_TIMEZONE
-}
+// This module used to mutate `process.env.TZ` from an `APP_TIMEZONE` variable at
+// import time, so that enrichment's `new Date()` calls would resolve to the
+// homeowner's zone. Both halves are gone: timestamps are now parsed lexically
+// (lib/analyze.ts `localDateAndMin`), so nothing downstream depends on the
+// process timezone at all, and production never set the variable anyway — the
+// behaviour it was supposed to guarantee was never actually in effect.
 
 const LOCAL_FALLBACK_URL = "file:.data/sprinkler.db"
 

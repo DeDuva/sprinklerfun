@@ -89,14 +89,23 @@ function monthKey(dateStr: string): string {
  * For timezone-naive strings (no Z/offset), JS treats them as local time —
  * so test data and manually-entered datetimes are handled correctly too.
  */
+// Flume's export is timezone-naive ("2026-08-22 00:00:00") and everything
+// downstream wants "minute of the local day", so parse the string rather than
+// round-tripping it through Date.
+//
+// The round trip was not merely wasteful, it was wrong in two ways. The server
+// runs UTC on Vercel and the browser runs Pacific, so the same row could land on
+// different days depending on who parsed it. And on the spring-forward day a
+// naive 02:30 does not exist locally — `new Date()` silently moves it to 03:30,
+// so the client's day view attributed that hour differently from the server's
+// rollups. A lexical parse is identical everywhere, on every date.
 function localDateAndMin(datetime: string): { date: string; rowMin: number } {
-  const d = new Date(datetime)
-  const y  = d.getFullYear()
-  const mo = d.getMonth() + 1
-  const dy = d.getDate()
-  const date = `${y}-${String(mo).padStart(2, "0")}-${String(dy).padStart(2, "0")}`
-  const rowMin = d.getHours() * 60 + d.getMinutes()
-  return { date, rowMin }
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/.exec(datetime)
+  // Ingest rejects anything this cannot match (app/api/rows/route.ts), so this
+  // is a floor rather than a path: take the date prefix and midnight instead of
+  // the NaN cascade the old Date parse produced for malformed input.
+  if (!m) return { date: datetime.slice(0, 10), rowMin: 0 }
+  return { date: m[1], rowMin: Number(m[2]) * 60 + Number(m[3]) }
 }
 
 /**

@@ -29,14 +29,12 @@ concurrency:
   # post-merge signal on the merged result.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  # Enrichment converts timestamps to LOCAL time so minute-of-day lines up with
-  # configured start times, and rollups are computed server-side from that — so
-  # the suite is timezone-sensitive by design. Runners default to UTC; pin the
-  # property's zone (the same value production sets as APP_TIMEZONE) so CI
-  # exercises the conditions the app actually runs in. Without this the suite
-  # still passes under UTC, but only by luck: it fails under UTC+14.
-  TZ: America/Los_Angeles
+# There is deliberately no top-level `TZ` pin any more. It existed to make CI
+# match a production timezone that production never actually set, and pinning one
+# zone hid exactly the bug it was meant to catch. Timestamps are parsed lexically
+# now (lib/analyze.ts), so results are identical in every zone — and the `test`
+# job's four-timezone loop (UTC, UTC+14, UTC−11, UTC+5:30, from #47) is what
+# proves it rather than assuming it.
 
 jobs:
   test:

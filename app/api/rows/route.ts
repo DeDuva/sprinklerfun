@@ -32,10 +32,18 @@ const MAX_ROWS = 200_000
 // hostile payload, and either way it would poison avg/std/warnings downstream.
 const MAX_GALLONS_PER_MINUTE = 1_000
 
-// "YYYY-MM-DD HH:MM:SS" or ISO. The date prefix is what matters: `flume_rows`
-// is indexed on substr(datetime, 1, 10) and rowDateBounds() takes a lexicographic
-// MIN/MAX over the raw string, so a malformed prefix silently corrupts both.
-const DATETIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?/
+// "YYYY-MM-DD HH:MM[:SS]", timezone-NAIVE. The date prefix is what matters:
+// `flume_rows` is indexed on substr(datetime, 1, 10) and rowDateBounds() takes a
+// lexicographic MIN/MAX over the raw string, so a malformed prefix silently
+// corrupts both.
+//
+// Anchored at the end on purpose, which is what rejects a `Z` or a `±HH:MM`
+// offset. Everything downstream reads these strings as local wall-clock time
+// (lib/analyze.ts parses them lexically), so an offset would not be honoured —
+// it would be ignored, and every rollup would shift by that offset with nothing
+// to indicate why. If Flume ever changes its export format, ingest says so
+// instead.
+const DATETIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/
 
 function isFlumeRow(v: unknown): v is FlumeRow {
   if (typeof v !== "object" || v === null) return false
@@ -94,7 +102,9 @@ export async function POST(req: NextRequest) {
     return Response.json(
       {
         error:
-          `body.rows[${badRow}] is invalid — expected { datetime: "YYYY-MM-DD HH:MM", ` +
+          `body.rows[${badRow}] is invalid — expected { datetime: "YYYY-MM-DD HH:MM" ` +
+          `with no timezone suffix (a trailing "Z" or "+HH:MM" is rejected: these ` +
+          `timestamps are read as local wall-clock time), ` +
           `gallons: number between 0 and ${MAX_GALLONS_PER_MINUTE} }`,
       },
       { status: 400 }
