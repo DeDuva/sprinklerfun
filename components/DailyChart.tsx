@@ -92,7 +92,7 @@ export default function DailyChart({ dailyRows }: Props) {
         <Tooltip
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           formatter={(value: any, name: any) => [`${Number(value).toFixed(1)} gal`, name]}
-          labelFormatter={(label) => formatDate(label)}
+          labelFormatter={(label) => formatDate(String(label))}
         />
         <Legend wrapperStyle={{ fontSize: 11 }} />
 
