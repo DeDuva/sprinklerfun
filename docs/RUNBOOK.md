@@ -151,7 +151,7 @@ in the same sitting.
 
 | Where | Setting | Why |
 |---|---|---|
-| Vercel → project → Settings → Git | **Silence GitHub comments** on | The bot commented on every PR, including every Dependabot PR. The `github.silent` key in `vercel.json` does the same thing but is deprecated in favour of this toggle. |
+| Vercel → project → Settings → Git | Under *Connected Git Repository*: **Pull Request Comments** off, **Commit Comments** off | The bot commented on every PR, including every Dependabot PR. Vercel has replaced the single *Silence GitHub comments* switch with these two toggles, so look for them by name — the old one no longer exists. The `github.silent` key in `vercel.json` does the same thing but is deprecated; if it was ever set, Vercel migrates it to these toggles for you. |
 | Vercel → project → Settings → Environment Variables | Production only: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `APP_SHARED_SECRET`, `NEXT_PUBLIC_APP_SHARED_SECRET` | Nothing is set for Preview or Development. `APP_TIMEZONE` is not set — see *Known operational limits*. Check with `vercel env ls production` from a linked checkout. |
 | GitHub → Settings → Rules → ruleset `main` | PR required, squash only, branch up to date; required checks `types + tests`, `lint`, `e2e`, `audit` | Rename a CI job without renaming it here and the gate silently stops requiring it. |
 | GitHub → Settings → Secrets → Actions | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (read-only database token) | Used only by `backup.yml`. |
