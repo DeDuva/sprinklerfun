@@ -293,10 +293,28 @@ instead of relying on process `TZ`.
 
 ### Auth (single-user)
 
-Writes are gated by a shared secret (`x-sprinkler-secret` vs `APP_SHARED_SECRET`)
-in `lib/server/auth.ts`. Unset ⇒ allowed (local dev). Reads are open at the app
-layer; production relies on Vercel deployment protection. This is deliberately
-minimal — it's a single-house personal app, not multi-tenant.
+One password, `APP_PASSWORD`, and one guard: `proxy.ts` (Next 16's renamed
+`middleware`, which always runs on the Node runtime). It requires a session
+cookie on every route except the login page, `POST /api/login`, `GET /api/health`
+and static output — so a route is protected by existing, not by remembering.
+
+`lib/server/session.ts` holds the three decisions:
+
+| Mode | When | Behaviour |
+|---|---|---|
+| `open` | no password, not a deployment | everything allowed — local dev and both test suites, zero setup |
+| `enforced` | `APP_PASSWORD` set | valid cookie required; API gets 401, pages redirect to `/login?next=…` |
+| `refuse` | no password, on a deployment | every request 503s |
+
+The cookie value is `HMAC(APP_PASSWORD, "sprinklerfun-session-v1")` — httpOnly,
+SameSite=Lax, 30 days. There is no session table: the token is a pure function of
+the password, which is what makes rotating it a global logout, and equally means
+an individual session cannot be revoked. For one household, that trade is the
+point. The mode keys off `VERCEL`, not `NODE_ENV`, for the reason in
+`lib/server/env.ts` — `next start` sets `NODE_ENV=production` locally too.
+
+This replaced a shared header whose value shipped to the browser as
+`NEXT_PUBLIC_APP_SHARED_SECRET`; see `SECURITY.md`.
 
 ### Local development
 

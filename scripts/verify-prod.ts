@@ -1,7 +1,7 @@
 /**
  * Re-run the delay estimator against LIVE production data.
  *
- * Run with:  npm run verify:prod
+ * Run with:  SPRINKLER_PASSWORD=… npm run verify:prod
  *
  * Why this exists
  * ---------------
@@ -30,12 +30,42 @@ import {
   recommendStationDelays,
 } from "../lib/analyze"
 import type { ConfigWindow, DelayFit, FlumeRow, RollupRow } from "../lib/types"
+import { COOKIE } from "../lib/server/session"
 
 const BASE = process.env.SPRINKLER_URL ?? "https://sprinklerfun.vercel.app"
 const DAYS = Number(process.env.DAYS ?? 12)
+const PASSWORD = process.env.SPRINKLER_PASSWORD
+
+// fetch() keeps no cookie jar, so the session is carried by hand.
+let session: string | null = null
+
+/**
+ * Log in, if a password was supplied. Production requires one for every route
+ * except /api/health; a local server started without APP_PASSWORD requires none,
+ * which is why this is optional rather than an argument check.
+ */
+async function login(): Promise<void> {
+  if (!PASSWORD) return
+  const res = await fetch(`${BASE}/api/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password: PASSWORD }),
+  })
+  if (!res.ok) throw new Error(`POST /api/login → HTTP ${res.status} (wrong SPRINKLER_PASSWORD?)`)
+  const setCookie = res.headers.getSetCookie().find((c) => c.startsWith(`${COOKIE}=`))
+  if (!setCookie) throw new Error("login succeeded but set no session cookie")
+  session = setCookie.split(";")[0]
+}
 
 async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`)
+  const res = await fetch(`${BASE}${path}`, {
+    headers: session ? { cookie: session } : {},
+  })
+  if (res.status === 401) {
+    throw new Error(
+      `GET ${path} → 401. This deployment needs a password: run with SPRINKLER_PASSWORD=… set.`
+    )
+  }
   if (!res.ok) throw new Error(`GET ${path} → HTTP ${res.status}`)
   return (await res.json()) as T
 }
@@ -50,6 +80,7 @@ const fmt = (r: Record<string, unknown>) =>
 
 async function main() {
   console.log(`Verifying against ${BASE}\n`)
+  await login()
 
   const health = await getJson<{ ok: boolean; rows: number }>("/api/health")
   console.log(`health: ${health.ok ? "ok" : "DEGRADED"}, ${health.rows.toLocaleString()} rows\n`)
