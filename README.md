@@ -1,6 +1,6 @@
 # SprinklerFun
 
-A client-side web app for analyzing [Flume smart meter](https://flumewater.com) data to understand and optimize residential sprinkler water usage. No backend, no accounts — everything runs in the browser.
+A web app for analyzing [Flume smart meter](https://flumewater.com) data to understand and optimize residential sprinkler water usage. It runs on Vercel, keeps its data in Turso, and is behind a single password — so the same numbers and the same config show up on every device you open it on.
 
 ## What it does
 
@@ -19,13 +19,13 @@ npm run dev        # http://localhost:3000
 ```
 
 ### First-time setup
-1. Open the app → click **Upload CSV** and load your Flume export.
+1. Log in with the app password, then go to **Config** → **Upload CSV** and load your Flume export.
 2. Go to **Config** → **Create first config** (or **＋ New config**), set its effective date, and verify your timer start times and station list.
 3. Enter baseline gpm per station (or skip until your next seasonal audit).
 4. **Save window** → return to Dashboard.
 
 ### Weekly check-in (< 2 min)
-1. Upload your new CSV → data appends, duplicates skipped.
+1. Log in → **Config** → upload your new CSV. Data appends, duplicates skipped.
 2. Scan **Station Alerts** for red warnings.
 3. Review the **Consumption Chart** (1M window) for anomaly markers (⚠) or unexpected step-changes.
 4. Click a suspicious bar → **Per-Station Flow Rate** chart updates to that day; hover a bar to see gpm vs. baseline and the active config version.
@@ -74,10 +74,12 @@ See [SECURITY.md](SECURITY.md) for what is and isn't protected.
 | Language | TypeScript |
 | Styling | Tailwind CSS v4 |
 | Charts | Recharts 3 |
-| State | Zustand + `persist` (localStorage) |
+| State | Zustand (in-memory; the server owns the data) |
+| Database | Turso (libSQL / SQLite) |
+| Auth | One password → signed httpOnly cookie, enforced in `proxy.ts` |
 | UI components | shadcn/ui |
 | CSV parsing | Papa Parse |
-| Testing | Vitest |
+| Testing | Vitest + Playwright |
 | Hosting | Vercel |
 
 ## Running tests

@@ -50,8 +50,8 @@ export default function DayDetailPage({ params }: { params: Promise<{ date: stri
     [windows, date]
   )
 
-  // Phase 3: fetch just this ONE day's raw rows and enrich them client-side,
-  // instead of loading (and enriching) the entire per-minute series.
+  // Fetch just this ONE day's raw rows and enrich them client-side, instead of
+  // loading (and enriching) the entire per-minute series.
   const [dayRows, setDayRows] = useState<FlumeRow[] | null>(null)
   useEffect(() => {
     let cancelled = false

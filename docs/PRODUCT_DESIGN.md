@@ -243,12 +243,14 @@ access from multiple devices, and set-based SQL aggregation. The database is now
 the source of truth: raw minutes and all derived aggregates (daily rollups, fleet
 gpm stats, baseline warnings) live server-side, and **the browser no longer loads
 the full per-minute series** — it reads compact aggregate feeds and fetches a
-single day only when a minute-level view needs it (Phase 3 complete). Only the
-small config/maintenance state persists locally. See TECHNICAL_DESIGN.md for phase
-status. It remains a single-user, single-property app.
+single day only when a minute-level view needs it. **Nothing persists in the
+browser at all** — the config windows and maintenance flags moved to the server
+too, which is what makes every device show the same settings instead of whatever
+that particular browser last remembered. It remains a single-user,
+single-property app.
 
 ## Out of Scope (V1)
-- Multi-user / multi-tenant accounts (the DB is single-user; writes gated by a shared secret)
+- Multi-user / multi-tenant accounts (the DB is single-user; the whole app sits behind one password, with no per-user identity)
 - Direct Flume API integration
 - Email / SMS alerts
 - Weather data integration
@@ -259,4 +261,4 @@ status. It remains a single-user, single-property app.
 - Weather-adjusted baselines (ET-based)
 - Seasonal comparison (this spring vs last spring)
 - PWA / offline support
-- Finish the DB migration tail: window/maintenance CRUD via API and targeted (incremental) rollup/stats recompute (reads already come from the API and `rows` no longer live in `localStorage`)
+- Targeted (incremental) rollup/stats recompute — the last piece of the migration. Everything else is done: config and maintenance are server-owned through `GET`/`PUT /api/config`, and nothing persists in the browser

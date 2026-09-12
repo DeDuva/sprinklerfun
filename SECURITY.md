@@ -54,10 +54,11 @@ away from being someone else's.
 
 | Control | Why |
 |---|---|
-| One guard, applied by default | `proxy.ts` covers every route except four explicit exclusions, so protection is not a thing each new handler has to remember. |
-| `DELETE /api/rows` removed | Dropped `flume_rows`, `daily_rollup`, `station_stats` and `station_warnings` in one batch. One request from unrecoverable loss, for a convenience button. |
+| One guard, applied by default | `proxy.ts` covers every route except the login page, `POST /api/login` and `GET /api/health`, so protection is not a thing each new handler has to remember. Reads are guarded exactly as writes are. |
+| The config has one owner | It lives in Turso and is read and written only through `GET`/`PUT /api/config`. It used to live in `localStorage` with a write-only mirror nothing read back, so a second browser could overwrite the real timeline with a stale bundled snapshot. |
+| `DELETE /api/rows` is behind the login **and** a typed confirmation | It drops `flume_rows` and the three derived tables in one batch. It was removed outright while the only thing guarding it was a secret published in this page's own JavaScript; it came back once the guard was a real session, and the button stays inert until you type `DELETE`. It leaves `config_windows` and `maintenance` alone — re-uploading meter history should not cost a season of tuning. |
 | `GET /api/rows` removed | An unauthenticated full-database export with no date range, no limit, and no caller in the app. |
-| `windows: []` no longer wipes the config timeline | `replaceWindows` is delete-all-then-insert, so `{"rows":[],"windows":[]}` destroyed months of tuning via a request that looked like a no-op. An empty array now means "no window update". |
+| The config timeline cannot be emptied through the API | `replaceWindows` is delete-all-then-insert, so `{"rows":[],"windows":[]}` once destroyed months of tuning through a request that read as a no-op. `POST /api/rows` now rejects a `windows` field outright, and `PUT /api/config` refuses an empty timeline: the earliest window also covers every row before it, so an empty one would leave the entire history unattributable. |
 | Ingest validated and bounded | `datetime` must match the date format the `flume_rows` index and `rowDateBounds()` depend on; `gallons` is range-checked; `rows` is capped at 200,000. Uncapped bodies amplified the full-table statistics recompute. |
 | Auth fails closed on a deployment | No `APP_PASSWORD` means every request gets a 503. The previous guard returned `true` when its secret was unset, making the database anonymously writable with no symptom at all — nothing logged, nothing 500ing, the app looking perfectly healthy. |
 | Missing `TURSO_DATABASE_URL` throws in production | It used to fall back to an ephemeral local file, serving an empty dataset as if it were real and discarding writes on recycle. |

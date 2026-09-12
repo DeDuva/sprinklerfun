@@ -9,24 +9,30 @@
 | Styling | Tailwind CSS | Utility-first, no CSS files |
 | Charts | Recharts 3 | React-native, good enough for this data scale |
 | CSV parsing | Papa Parse | Handles Flume's datetime format, browser-native |
-| State | Zustand + `persist` | Simple global store; client cache during the DB migration |
+| State | Zustand (in-memory) | Simple global store; holds a copy of the server's config, persists nothing |
+| Auth | One password → HMAC cookie, checked in `proxy.ts` | One household, no user model; every route behind it by default |
 | Database | Turso (libSQL / SQLite) via `@libsql/client` | Durable, multi-device time-series store; SQL-native aggregation |
 | Backend | Next.js Route Handlers (`app/api/*`, Node runtime) | Ingest + rollup endpoints; reuse the pure `analyze.ts` functions server-side |
 | UI components | shadcn/ui | Accessible, unstyled-first components |
 | Testing | Vitest | Zero-config, fast, works with TypeScript path aliases |
 | Hosting | Vercel | Zero-config Next.js deploy; Turso env vars for the DB |
 
-**Storage has migrated from browser-only to a Turso backend** (see
-[Storage & Backend Architecture](#storage--backend-architecture)). The original
-design kept all data and computation in the browser via `localStorage`; at
-per-minute resolution over multiple years the row series exceeded the ~5MB
-`localStorage` quota, so raw rows and derived rollups now live in Turso. The
-analysis functions in `lib/analyze.ts` remain pure and are reused **verbatim**
-on the server to compute rollups and stats. **As of Phase 3 the browser never
-loads the full per-minute series**: the dashboard/analysis read the aggregate
+**The server owns everything; the browser owns nothing** (see
+[Storage & Backend Architecture](#storage--backend-architecture)). Rows, config
+windows, maintenance flags and every derived table live in Turso. The browser
+persists nothing at all — no `localStorage`, no seeding from the bundle — and
+holds only an in-memory copy of what it last fetched.
+
+The analysis functions in `lib/analyze.ts` remain pure and are reused
+**verbatim** on the server to compute rollups and stats. The browser never loads
+the full per-minute series: the dashboard and analysis pages read the aggregate
 feeds (`/api/rollup`, `/api/stats`) and fetch a single day (`/api/day/[date]`)
-only when a per-minute view needs it. Only `windows` + `maintenance` persist in
-`localStorage`.
+only when a per-minute view needs it.
+
+This is the end state of a migration that ran in stages — browser-only, then
+rows on the server, then aggregates, then config. Each stage is described where
+it still matters; the stage numbers themselves have been removed, because "Phase
+3" tells a reader nothing they can act on.
 
 ---
 
@@ -176,7 +182,7 @@ series; **client-side** they run only over reconstructed rollups or a single
 fetched day.
 
 ```
-SERVER (recompute on every write — POST /api/rows, DELETE, syncWindows)
+SERVER (recompute on every write — POST /api/rows, PUT /api/config, DELETE)
   flume_rows (raw minutes)  +  config_windows
       │  enrichRowsMultiConfig(rows, windows)   → EnrichedRow[]  (full series)
       ├─▶ buildDailyRows()                       → daily_rollup   (date, station, gallons, isSprinklerDay)
@@ -231,7 +237,7 @@ at ingest and stored as rollups.
 | Station warnings | `station_warnings (station_id PK, station_name, baseline_gpm, recent_avg_gpm, pct_above_baseline, consecutive_days_above)` | server, `computeStationWarnings` over full enriched series | on upload / config edit |
 | Maintenance flags | `maintenance (station_id PK, flagged_at, note)` | client edits | on edit |
 
-The two `station_*` tables (added in Phase 3) hold the per-minute-only
+The two `station_*` tables hold the per-minute-only
 aggregates the dashboard/analysis need but that daily gallon sums **cannot**
 reconstruct: fleet-wide per-station gpm statistics (avg/std/min/max) and
 baseline-drift warnings. They are recomputed by `recomputeStats()` over the
@@ -243,17 +249,22 @@ Schema is bootstrapped idempotently (`CREATE … IF NOT EXISTS`) by
 
 ### Route Handlers (`app/api/*`, Node runtime)
 
-- **`POST /api/rows`** — body `{ rows, windows }`. Mirrors the window set,
-  `INSERT OR IGNORE`s rows (the `datetime` PK does the dedupe `appendRows` used
-  to do by hand), then recomputes rollups **and** the station stats/warnings.
-  Returns `{ inserted, rollupDays }`. Also used with `rows: []` to resync the
-  window mirror (+ recompute) after a client-side config edit — see
-  `syncWindows` in `lib/backend.ts`.
-- **`GET /api/rows`** — the full row series, ascending by datetime. **No longer
-  used by the app** (Phase 3 removed the full-series hydration); retained for
-  debugging/export only.
-- **`DELETE /api/rows`** — clears all rows + rollups + station stats/warnings
-  ("Clear all data").
+- **`GET` / `PUT /api/config`** — the config document
+  `{ windows, maintenance, authMode }`. `PUT` validates every window, refuses an
+  empty timeline, requires `maintenance` explicitly, writes both halves in a
+  single `db.batch`, recomputes rollups + stats, and returns what it stored.
+  This is the only writer of config.
+- **`POST /api/rows`** — body `{ rows }`. `INSERT OR IGNORE`s rows (the
+  `datetime` PK does the dedupe `appendRows` used to do by hand), then recomputes
+  rollups **and** the station stats/warnings. Returns `{ inserted, rollupDays }`.
+  A `windows` field is rejected with a 400 rather than ignored, so a stale client
+  fails loudly instead of appearing to save a config that went nowhere.
+- **`GET /api/rows`** — **gone.** It returned the entire metered history with no
+  range and no limit, and nothing in the app called it. Requesting it now gets a
+  405.
+- **`DELETE /api/rows`** — clears rows + rollups + station stats/warnings
+  ("Clear all data"), behind the login and a typed confirmation. It deliberately
+  leaves `config_windows` and `maintenance` alone.
 - **`GET /api/day/[date]`** — one day's raw per-minute rows; detail/flow views
   enrich a single day client-side instead of loading the whole series.
 - **`GET /api/rollup?from=&to=`** — the small aggregate feed for the dashboard
@@ -425,12 +436,25 @@ for `production`), so every one was a build whose API routes errored, and each
 arrived with a bot comment. The `e2e` job — a real `next build` served locally
 against a throwaway SQLite file — is the pre-merge check of the built app.
 
-### Migration rollout (incremental, each phase shippable)
+### How it got here
 
-1. **Turso + schema + `/api/rows` + `/api/rollup`, client dual-writes.** ← *implemented (Phase 1).* localStorage was still the source of truth; the client mirrored every upload to the DB (`lib/backend.ts`). This stood up the backend but did **not** relieve the quota error (the localStorage write still ran first).
-2. **Rows become server-authoritative — the quota fix.** ← *implemented (Phase 2).* `persist` is `partialize`d to store only `windows` + `maintenance`, so the per-minute series never touches localStorage (the `QuotaExceededError` is gone at the root). Rows live in Turso and hydrate into memory on load via `GET /api/rows`; uploads `POST` straight to the server; "Clear all data" issues `DELETE /api/rows`; `GET /api/day/[date]` added. The dashboard still *derives* from the in-memory rows this phase.
-3. **Dashboard/analysis read rollups; stop loading the full series in the browser.** ← *implemented (Phase 3).* The consumption chart + monthly summary + per-window counts read `/api/rollup` (reconstructing `DailyRow[]` + synthetic `EnrichedRow[]` client-side); per-day flow/detail/reconciliation fetch `GET /api/day/[date]` and enrich that one day. The per-minute-only widgets (fleet gpm stats, baseline warnings) are precomputed server-side into `station_stats` / `station_warnings` and served by `GET /api/stats`. The full-series `GET /api/rows` hydration is gone from `StoreProvider`; `rows`/`rowsVersion` and the `deriveData` cache were removed, and the `useDeferredValue` scaffolding in the three pages was replaced by server-version-keyed fetches. Window edits resync the server mirror (`syncWindows`, debounced in `StoreProvider`) so server-derived reads stay fresh.
-4. Window/maintenance CRUD via API; targeted rollup recompute on window edits (replace the Phase 1/3 full-range recompute; stats currently recompute over the whole series on every write).
+The migration off browser-only storage ran in stages, each one shippable: stand
+up Turso and the ingest endpoint; move rows to the server so the per-minute
+series stopped touching `localStorage`; move the derived aggregates so the
+browser stopped loading the full series; and finally move the config itself, so
+there was one owner rather than two.
+
+The last stage was the one that mattered most, and the one that was overdue.
+Until it landed, `localStorage` was the source of truth for config while Turso
+held a write-only mirror that nothing read back — so a second browser seeded
+itself from a stale bundled snapshot and its first edit overwrote the real
+timeline. Everything derived from config was then computed against a config that
+had never existed.
+
+Still deferred, deliberately: **targeted recompute.** A config change can affect
+any date, so rollups are recomputed over the whole range and stats over the whole
+series on every write. At ~175k rows that is fast, and making it incremental adds
+state to get wrong. Revisit when a write takes more than a few seconds.
 
 ---
 
@@ -525,7 +549,7 @@ The Analysis tab's per-row / bulk actions translate a `SegmentReconciliation` in
 5. **Decomposition** — `delayExplainedMin = (delay − configuredDelay) × transitions`, `residualMin = elongation − delayExplained`. Both are surfaced; the residual stays visible as duration drift for the per-station proposals.
 6. `recommendStationDelays` — median across the days that passed the gate, rounded to 5 s, with the day count and spread.
 
-Served by `GET /api/delay?days=N` (server-side: the fit needs many days of per-minute flow and the browser holds one), rendered by `StationDelayCard`, staged via `buildDelayChange` through the same review-and-save path as every other proposal. Saving re-attributes stored rollups, since `buildDaySchedule` feeds `enrichRows` — already handled by the existing `syncWindows → POST /api/rows` recompute.
+Served by `GET /api/delay?days=N` (server-side: the fit needs many days of per-minute flow and the browser holds one), rendered by `StationDelayCard`, staged via `buildDelayChange` through the same review-and-save path as every other proposal. Saving re-attributes stored rollups, since `buildDaySchedule` feeds `enrichRows` — already handled by the recompute that `PUT /api/config` runs on every save.
 
 On the reference data this yields **timer 1: no delay** (0 of 26 days; its run tracks configuration to within a minute) and **timer 2: 60 s** (20 of 26 days, range 60–60 s), which pulls timer 2's last station from 16 min of start drift down to 6 min — the remaining 6 min being genuine duration drift. `lib/__tests__/analyze.test.ts` asserts this against committed fixtures (`data/sprinkler-config-2026-08-31.json`, `data/day-2026-08-28.json`).
 
@@ -554,17 +578,19 @@ On the reference data this yields **timer 1: no delay** (0 of 26 days; its run t
 }
 ```
 
-**No `rows` in the store (Phase 3).** The per-minute series is no longer held in
-the browser at all — `rows`, `rowsVersion`, `appendRows`, `setRows`, `clearRows`
-and the `deriveData` memo cache were removed. Pages read the server aggregates
-instead; a single day is fetched on demand.
+**No `rows` in the store.** The per-minute series is not held in the browser at
+all — `rows`, `rowsVersion`, `appendRows`, `setRows`, `clearRows` and the
+`deriveData` memo cache are gone. Pages read the server aggregates instead; a
+single day is fetched on demand. That is what fixed the `QuotaExceededError` at
+the root.
 
-**Persistence (`version: 3`).** `persist` is `partialize`d to write only
-`{ windows, maintenance }` to localStorage — small, client-owned state.
-`serverVersion` / `rowCount` / `lastRowDate` are in-memory only (hydrated from
-`/api/stats` on load). Keeping the per-minute series off the client is what fixed
-the `QuotaExceededError` at the root. The Analysis tab's config-edit actions reuse
-`updateWindow`; only maintenance flags need `setStationMaintenance`.
+**No persistence at all.** `persist`, `createJSONStorage`, `partialize`,
+`migrate`, `onRehydrateStorage` and `skipHydration` were all removed with the
+second source of truth. The store starts empty, `StoreProvider` fills it from
+`/api/config` + `/api/stats`, and `loaded` says whether that has happened.
+Nothing survives a refresh, because nothing needs to. The Analysis tab's
+config-edit actions reuse `updateWindow`; only maintenance flags need
+`setStationMaintenance`.
 
 **The server owns the config; the browser holds a copy.** On mount,
 `StoreProvider` fetches `/api/config` (windows + maintenance + authMode) and
@@ -588,13 +614,27 @@ config: a second browser started from a stale bundled snapshot and its first edi
 pushed that snapshot over the real timeline. There is one copy now, and one
 writer.
 
-### SSR Safety
-- Storage adapter no-ops when `typeof window === "undefined"`
-- `skipHydration: true` + `StoreProvider` calls `rehydrate()` in `useEffect` after mount
-- Server renders with empty/default state; browser loads persisted data after hydration
+### SSR safety
+There is no persisted client state to rehydrate, so the class of hydration
+mismatch this section used to describe cannot occur: the server and the browser
+both start from an empty store. `StoreProvider` fetches after mount and flips
+`loaded`; every page renders a skeleton until then rather than rendering against
+an empty window list, which would silently use `DEFAULT_CONFIG` for billing and
+station names.
 
-### Performance: `useDeferredValue`
-`enrichRowsMultiConfig` is O(n) over all rows. All three analysis pages wrap `rows` and `config` in `useDeferredValue` before the heavy `useMemo`. React commits UI updates (e.g. navigation) first, then runs computation in background. Skeleton loaders shown while stale. This prevents the main thread from blocking on navigation.
+One SSR detail does still matter: `app/layout.tsx` reads the session cookie per
+request to decide whether to show "Log out". Asking the session module alone
+baked the answer in at **build** time, when no password is set — so the deployed
+app showed a logged-in user no way to log out. The e2e suite caught that; nothing
+about the source would have.
+
+### Performance
+The `useDeferredValue` scaffolding that used to live here is gone, along with the
+problem it worked around. It existed because `enrichRowsMultiConfig` ran O(n)
+over the entire series **in the browser**, so navigation blocked on enrichment.
+Enrichment now runs server-side at write time and the pages read precomputed
+aggregates keyed on `serverVersion`, so there is no heavy client-side `useMemo`
+left to defer.
 
 The Dashboard splits computation into two memos:
 - **`derived`** (expensive, deferred) — runs `enrichRowsMultiConfig` + `buildDailyRows` + warnings once per data/config change; memoises `enriched`, `allDaily`, `sprinklerDates`, `defaultFlowDay`.
@@ -776,12 +816,13 @@ A lightweight overlay (same pattern as `UploadModal`) listing staged `StagedItem
 | Issue | Notes |
 |---|---|
 | `enrichRows` is O(n) synchronous | OK to ~1M rows; now runs server-side at ingest, off the browser's main thread |
-| ~~localStorage ~5MB limit~~ | **Resolved (Phase 2).** Rows are no longer persisted in localStorage (`partialize` keeps only `windows`+`maintenance`); the per-minute series lives in Turso. See [Storage & Backend Architecture](#storage--backend-architecture) |
-| ~~Full row series loads into browser memory~~ | **Resolved (Phase 3).** The browser never loads the full series: dashboard/analysis read `/api/rollup` + `/api/stats`, and per-minute views fetch a single day via `/api/day/[date]`. `GET /api/rows` is retained for debugging only |
+| ~~localStorage ~5MB limit~~ | **Resolved.** The browser persists nothing at all now — `persist` and its machinery are gone, and every byte lives in Turso. See [Storage & Backend Architecture](#storage--backend-architecture) |
+| ~~Full row series loads into browser memory~~ | **Resolved.** The browser never loads the full series: dashboard/analysis read `/api/rollup` + `/api/stats`, and per-minute views fetch a single day via `/api/day/[date]`. `GET /api/rows` was removed outright |
+| ~~Config has two sources of truth~~ | **Resolved.** The server owns config; `GET`/`PUT /api/config` are the only reader and writer, and the browser holds an in-memory copy it re-fetches on load |
 | Precomputed stats freeze `currentConfig`/"today" at last write | `station_stats` / `station_warnings` (and the warning 21-day lookback) are computed with `currentConfig(windows)` at recompute time. Since recompute runs on every upload **and** every window edit, they're fresh as of the last write; the only drift is "today" crossing into a future-dated window with no intervening write (rare for this app). A future phase could recompute on a schedule or thread the reference date |
-| Stats recompute over the whole series on every write | `recomputeStats()` re-enriches all rows each write (in addition to `recomputeRollups`), so two full enrichment passes per upload. Fine for a single-home dataset; Phase 4 can make both incremental/targeted |
+| Stats recompute over the whole series on every write | `recomputeStats()` re-enriches all rows each write (in addition to `recomputeRollups`), so two full enrichment passes per upload. Fine for a single-home dataset; making both incremental is deferred until a write takes more than a few seconds |
 | ~~Server rollups depend on process `TZ`~~ | **Resolved.** `localDateAndMin` parses Flume's naive timestamps lexically, so enrichment never reads the process timezone. `APP_TIMEZONE` and the `process.env.TZ` assignment are gone, and CI's four-timezone loop proves the output is identical in every zone rather than assuming it |
-| Full-range recompute per write | A config-window change can affect any date, so the whole range is recomputed (rollups) / whole series re-enriched (stats). Phase 4 makes this targeted |
+| Full-range recompute per write | A config-window change can affect any date, so the whole range is recomputed (rollups) / whole series re-enriched (stats). Targeting it adds state to get wrong, and is deliberately deferred |
 | No row validation beyond column names | Malformed timestamps silently dropped |
 | Config `effectiveFrom` resolution is 1 day | Two windows can't share a date (enforced in the editor); sub-day changes aren't representable |
 | IQR anomaly detection is naive | No seasonal adjustment; many weeks of data needed before IQR is meaningful |

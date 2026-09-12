@@ -8,8 +8,10 @@ export const dynamic = "force-dynamic"
 // GET /api/stats — the precomputed per-minute-only aggregates that daily gallon
 // sums can't reconstruct: fleet-wide station gpm stats (avg/std/min/max) and
 // baseline-drift warnings, plus the total row count (for status display). These
-// are recomputed server-side on every write, so this read is cheap. Read-only,
-// so no auth guard (Phase 1 convention) — deployment protection covers reads.
+// are recomputed server-side on every write, so this read is cheap.
+//
+// No auth check here because proxy.ts guards every route in front of it; reads
+// require a session exactly as writes do.
 export async function GET() {
   try {
     const [stationStats, warnings, rowCount, bounds] = await Promise.all([

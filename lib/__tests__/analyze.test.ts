@@ -1160,7 +1160,7 @@ describe("aggregateForChart", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Rollup reconstruction (Phase 3): DailyRow[] and synthetic EnrichedRow[]
+// Rollup reconstruction: DailyRow[] and synthetic EnrichedRow[]
 // rebuilt from persisted rollup rows must reproduce the client's old outputs.
 // ---------------------------------------------------------------------------
 
