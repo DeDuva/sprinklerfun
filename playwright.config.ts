@@ -37,6 +37,11 @@ export default defineConfig({
     env: {
       E2E_DB: "1",
       TURSO_DATABASE_URL: `file:.data/e2e-${PORT}.db`,
+      // The suite runs against a server with auth ENFORCED, so every test logs
+      // in the way a person does. Running it open would leave the guard — the
+      // only thing standing between this deployment and anyone who finds it —
+      // exercised by nothing at all.
+      APP_PASSWORD: "e2e-password",
     },
   },
 })

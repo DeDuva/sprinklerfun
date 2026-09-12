@@ -7,12 +7,24 @@ import { join } from "node:path"
 // bundle boots, that the pages render against a real database through the real
 // route handlers, and that the whole stack agrees with itself.
 //
-// It seeds through the public API rather than writing SQL, so the ingest path
-// gets exercised too. Writes need no secret here because APP_SHARED_SECRET is
-// unset and this is not a Vercel deployment (see lib/server/auth.ts).
+// It seeds through the API rather than writing SQL, so the ingest path gets
+// exercised too. The server runs with APP_PASSWORD set (playwright.config.ts),
+// so these tests log in exactly as a person does — which also means the guard
+// itself is under test rather than switched off for convenience.
 
 const FIXTURE = join(process.cwd(), "data", "fixture-sprinkler-day.json")
 const CONFIG = join(process.cwd(), "data", "sprinkler-config-2026-08-31.json")
+
+const PASSWORD = "e2e-password"
+
+// Playwright gives each test a fresh request context, and `page.request` shares
+// its cookie jar with the page. So logging in through the context a test is
+// about to use is what puts the session cookie where that test needs it — and a
+// test that does not call this one is genuinely anonymous.
+async function login(request: APIRequestContext) {
+  const res = await request.post("/api/login", { data: { password: PASSWORD } })
+  expect(res.status(), await res.text()).toBe(200)
+}
 
 async function seed(request: APIRequestContext) {
   const { rows } = JSON.parse(readFileSync(FIXTURE, "utf8"))
@@ -22,14 +34,56 @@ async function seed(request: APIRequestContext) {
   return (await res.json()) as { inserted: number }
 }
 
-test.describe("smoke", () => {
-  test("the app boots and serves a healthy database", async ({ request }) => {
+test.describe("the login", () => {
+  test("the health probe answers without one — it is the post-deploy check", async ({ request }) => {
     const res = await request.get("/api/health")
     expect(res.status()).toBe(200)
     expect(await res.json()).toMatchObject({ ok: true, database: "reachable" })
   })
 
+  test("an anonymous API request is refused", async ({ request }) => {
+    for (const path of ["/api/rollup", "/api/stats", "/api/delay", "/api/day/2026-08-28"]) {
+      expect((await request.get(path)).status(), path).toBe(401)
+    }
+    expect((await request.post("/api/rows", { data: { rows: [] } })).status()).toBe(401)
+  })
+
+  test("an anonymous page request lands on the login, with a way back", async ({ page }) => {
+    await page.goto("/analysis")
+    await expect(page).toHaveURL(/\/login\?next=%2Fanalysis$/)
+    await expect(page.getByLabel("Password")).toBeVisible()
+  })
+
+  test("the wrong password does not let you in", async ({ request }) => {
+    const res = await request.post("/api/login", { data: { password: "not-it" } })
+    expect(res.status()).toBe(401)
+    expect((await request.get("/api/rollup")).status()).toBe(401)
+  })
+
+  test("logging in through the form reaches the app", async ({ page, request }) => {
+    await login(request)
+    await seed(request)
+
+    await page.goto("/login")
+    await page.getByLabel("Password").fill(PASSWORD)
+    await page.getByRole("button", { name: "Log in" }).click()
+
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByRole("button", { name: /log out/i })).toBeVisible()
+  })
+
+  test("logging out ends the session", async ({ page }) => {
+    await login(page.request)
+    expect((await page.request.get("/api/rollup")).status()).toBe(200)
+
+    await page.request.delete("/api/login")
+    expect((await page.request.get("/api/rollup")).status()).toBe(401)
+  })
+})
+
+test.describe("smoke", () => {
   test("seeding through the API drives the whole derived pipeline", async ({ request }) => {
+    await login(request)
     await seed(request)
 
     // Asserted on stored state, not on the write's return value: insertRows is
@@ -49,11 +103,15 @@ test.describe("smoke", () => {
   })
 
   test("the removed endpoints stay removed", async ({ request }) => {
+    await login(request)
+    // Logged in, so a 405 here is the route saying the method is gone rather
+    // than the guard turning everyone away.
     expect((await request.get("/api/rows")).status()).toBe(405)
     expect((await request.delete("/api/rows")).status()).toBe(405)
   })
 
   test("an empty windows array does not wipe the config timeline", async ({ request }) => {
+    await login(request)
     await seed(request)
     const before = await (await request.get("/api/delay")).json()
     expect(before.recommendations.length).toBeGreaterThan(0)
@@ -66,6 +124,7 @@ test.describe("smoke", () => {
   })
 
   test("security headers are served", async ({ request }) => {
+    await login(request)
     const res = await request.get("/")
     const headers = res.headers()
     expect(headers["x-frame-options"]).toBe("DENY")
@@ -73,8 +132,9 @@ test.describe("smoke", () => {
     expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin")
   })
 
-  test("the dashboard renders with data", async ({ page, request }) => {
-    await seed(request)
+  test("the dashboard renders with data", async ({ page }) => {
+    await login(page.request)
+    await seed(page.request)
     await page.goto("/")
     // The computed headline, not a static title: it renders only once rollups
     // have loaded and the monthly summary has been derived from them, so it
@@ -87,14 +147,16 @@ test.describe("smoke", () => {
     await expect(page.locator("svg").first()).toBeVisible({ timeout: 15_000 })
   })
 
-  test("analysis renders the calibration view", async ({ page, request }) => {
-    await seed(request)
+  test("analysis renders the calibration view", async ({ page }) => {
+    await login(page.request)
+    await seed(page.request)
     await page.goto("/analysis")
     await expect(page.getByText(/Timing & Flow Calibration/i)).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText(/Station Delay/i).first()).toBeVisible()
   })
 
   test("config renders and no longer offers a clear-all button", async ({ page }) => {
+    await login(page.request)
     await page.goto("/config")
     await expect(page.getByText(/Timer 1/i).first()).toBeVisible({ timeout: 15_000 })
     // Removed in the attack-surface work; this is the assertion that keeps it gone.

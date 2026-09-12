@@ -1,21 +1,19 @@
 import type { ConfigWindow, DelayRecommendation, FlumeRow, RollupRow, StatsPayload } from "./types"
 
 // ---------------------------------------------------------------------------
-// Client-side bridge to the Turso backend (Phase 1 dual-write).
+// Client-side bridge to the Turso backend.
 //
-// During Phase 1, localStorage remains the source of truth and the UI reads
-// from it as before. On every CSV upload the client also POSTs the rows (plus
-// the current window set) to /api/rows so the server DB is populated in
-// parallel. This is best-effort: a backend failure must never block the local
-// flow, so callers fire-and-forget and we surface only a soft warning.
+// Nothing here carries a credential. The session is an httpOnly cookie set by
+// POST /api/login and checked in proxy.ts, so the browser attaches it to these
+// requests automatically and JavaScript cannot read it. That is the whole point
+// of the change: the previous version shipped the write secret to the client as
+// NEXT_PUBLIC_APP_SHARED_SECRET, which Next inlined into a static chunk.
 //
-// Note: exposing a secret to the browser isn't real auth — the client is still
-// the source of truth in Phase 1, so this is intentionally lightweight. Real
-// write protection lands once the server becomes authoritative (later phase),
-// via deployment protection / a server-side session rather than this header.
+// What every helper does have to handle is a 401, which here means the cookie
+// expired or the password was rotated. Half a dozen empty charts and a console
+// error is a bad way to learn that; `toLogin()` sends the browser to the login
+// page with a way back instead.
 // ---------------------------------------------------------------------------
-
-const SECRET = process.env.NEXT_PUBLIC_APP_SHARED_SECRET
 
 export interface PushResult {
   ok: boolean
@@ -25,8 +23,17 @@ export interface PushResult {
   error?: string
 }
 
-function authHeaders(): Record<string, string> {
-  return SECRET ? { "x-sprinkler-secret": SECRET } : {}
+function toLogin(): never {
+  if (typeof window !== "undefined") {
+    const login = new URL("/login", window.location.origin)
+    login.searchParams.set("next", window.location.pathname + window.location.search)
+    // A full document load rather than a router push: this is not a component,
+    // there is no router here, and every page's data has just been refused —
+    // starting over is what is wanted. Absolute URL because assign() with a
+    // relative one is ambiguous under a basePath (and ESLint says so).
+    window.location.assign(login.toString())
+  }
+  throw new Error("unauthorized — session expired")
 }
 
 export async function pushRows(
@@ -36,9 +43,10 @@ export async function pushRows(
   try {
     const res = await fetch("/api/rows", {
       method: "POST",
-      headers: { "content-type": "application/json", ...authHeaders() },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ rows, windows }),
     })
+    if (res.status === 401) toLogin()
     const data = (await res.json()) as PushResult
     if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` }
     return { ...data, ok: true }
@@ -65,6 +73,7 @@ export async function fetchRollups(from?: string, to?: string): Promise<RollupRo
   if (to) qs.set("to", to)
   const suffix = qs.toString() ? `?${qs}` : ""
   const res = await fetch(`/api/rollup${suffix}`)
+  if (res.status === 401) toLogin()
   if (!res.ok) throw new Error(`GET /api/rollup → HTTP ${res.status}`)
   const data = (await res.json()) as { rollups: RollupRow[] }
   return data.rollups
@@ -74,6 +83,7 @@ export async function fetchRollups(from?: string, to?: string): Promise<RollupRo
 // warnings + total row count.
 export async function fetchStats(): Promise<StatsPayload> {
   const res = await fetch("/api/stats")
+  if (res.status === 401) toLogin()
   if (!res.ok) throw new Error(`GET /api/stats → HTTP ${res.status}`)
   return (await res.json()) as StatsPayload
 }
@@ -83,6 +93,7 @@ export async function fetchStats(): Promise<StatsPayload> {
 export async function fetchDelayRecommendations(days?: number): Promise<DelayRecommendation[]> {
   const suffix = days ? `?days=${days}` : ""
   const res = await fetch(`/api/delay${suffix}`)
+  if (res.status === 401) toLogin()
   if (!res.ok) throw new Error(`GET /api/delay → HTTP ${res.status}`)
   const data = (await res.json()) as { recommendations: DelayRecommendation[] }
   return data.recommendations
@@ -91,11 +102,20 @@ export async function fetchDelayRecommendations(days?: number): Promise<DelayRec
 // Fetch one day's raw rows (for the day-detail / flow / reconciliation views).
 export async function fetchDayRows(date: string): Promise<FlumeRow[]> {
   const res = await fetch(`/api/day/${date}`)
+  if (res.status === 401) toLogin()
   if (!res.ok) throw new Error(`GET /api/day/${date} → HTTP ${res.status}`)
   const data = (await res.json()) as { rows: FlumeRow[] }
   return data.rows
 }
 
+// Log out: expire the session cookie. The session is not stored server-side, so
+// this is the whole of it.
+export async function logout(): Promise<void> {
+  await fetch("/api/login", { method: "DELETE" })
+}
+
 // There is deliberately no clearAllRows(). DELETE /api/rows was removed: it
-// dropped four tables in one batch behind a header whose value is published in
-// this very bundle. See SECURITY.md and docs/RUNBOOK.md.
+// dropped four tables in one batch behind a header whose value was published in
+// the client bundle. Now that there is a real login, restoring it is a decision
+// to make on its own merits rather than a leftover. See SECURITY.md and
+// docs/RUNBOOK.md.

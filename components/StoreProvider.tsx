@@ -13,6 +13,11 @@ const SEED_CHUNK = 20_000
 
 export default function StoreProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
+    // The login page is inside this layout but outside the session, so every
+    // fetch below would 401 and the seed would bounce off the guard. Nothing
+    // here is useful to someone who is not logged in yet.
+    if (window.location.pathname === "/login") return
+
     // 1. Rehydrate the small client state (windows + maintenance) from localStorage.
     //    Migration runs in migrate/onRehydrateStorage.
     useStore.persist.rehydrate()

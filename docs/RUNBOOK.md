@@ -18,6 +18,29 @@ wholesale:
 So a bad deploy that corrupts data leaves corrupt data behind after the rollback. The
 only fix is a restore.
 
+## Logging in, and rotating the password
+
+The app is behind one password, `APP_PASSWORD`, set in Vercel → Production. Every
+page and API route needs a session cookie obtained by logging in with it; only the
+login page and `GET /api/health` are open.
+
+To rotate it — after a lost phone, or on principle:
+
+```bash
+vercel env rm APP_PASSWORD production
+vercel env add APP_PASSWORD production   # paste a long random value; do not invent one
+vercel --prod                            # a redeploy is required to pick it up
+```
+
+**Rotating logs every device out, including the one you are holding.** The session
+cookie is an HMAC of the password, so changing the password invalidates every
+cookie ever issued. It is also the *only* revocation there is: individual sessions
+cannot be cancelled, because none are stored. Log back in on each device after.
+
+If `APP_PASSWORD` is ever missing from the deployment, every request returns 503
+while `/api/health` keeps answering normally. That exact combination means the
+variable is gone, not that the database is down.
+
 ## Rolling back a bad deploy
 
 1. Vercel dashboard → the project → **Deployments**
@@ -112,9 +135,14 @@ turso db tokens create <database> --read-only
 
 Not a platform token. `turso db export` would produce a truer SNAPSHOT, but it
 authenticates with a credential that can create and destroy every database in the
-account — far too much reach for a job that only reads one table. The read-only
-database token also grants nothing an anonymous visitor does not already have,
-since reads are public by choice.
+account — far too much reach for a job that only reads one table. Read-only is the
+property that matters: the backup job never needs to change anything.
+
+Note that this token became a real secret when the login landed. The original
+argument for it was that it granted nothing an anonymous visitor did not already
+have, because reads were public; reads now require the password, so this token is
+the one remaining way to read the data without it. It lives only in Actions
+secrets.
 
 Expiration is `never` on purpose: a dated token means the backup stops silently
 when it lapses, which is the worst possible failure for the thing that *is* the
@@ -151,8 +179,8 @@ in the same sitting.
 
 | Where | Setting | Why |
 |---|---|---|
-| Vercel → project → Settings → Git | **Silence GitHub comments** on | The bot commented on every PR, including every Dependabot PR. The `github.silent` key in `vercel.json` does the same thing but is deprecated in favour of this toggle. |
-| Vercel → project → Settings → Environment Variables | Production only: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `APP_SHARED_SECRET`, `NEXT_PUBLIC_APP_SHARED_SECRET` | Nothing is set for Preview or Development. `APP_TIMEZONE` is not set — see *Known operational limits*. Check with `vercel env ls production` from a linked checkout. |
+| Vercel → project → Settings → Git | Under *Connected Git Repository*: **Pull Request Comments** off, **Commit Comments** off | The bot commented on every PR, including every Dependabot PR. Vercel has replaced the single *Silence GitHub comments* switch with these two toggles, so look for them by name — the old one no longer exists. The `github.silent` key in `vercel.json` does the same thing but is deprecated; if it was ever set, Vercel migrates it to these toggles for you. |
+| Vercel → project → Settings → Environment Variables | Production only: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `APP_PASSWORD` | Nothing is set for Preview or Development. `APP_TIMEZONE` is not set — see *Known operational limits*. Check with `vercel env ls production` from a linked checkout. |
 | GitHub → Settings → Rules → ruleset `main` | PR required, squash only, branch up to date; required checks `types + tests`, `lint`, `e2e`, `audit` | Rename a CI job without renaming it here and the gate silently stops requiring it. |
 | GitHub → Settings → Secrets → Actions | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (read-only database token) | Used only by `backup.yml`. |
 | GitHub → Settings → Advanced Security | Dependabot alerts and security updates, secret scanning, push protection | Security updates open as soon as an advisory lands, whatever the schedule in `.github/dependabot.yml` — but they do obey its `ignore` rules, which is why majors there are grouped, not ignored. |
@@ -166,8 +194,10 @@ branch, add `"<branch>": true` under `deploymentEnabled` in that branch's commit
 
 ## Known operational limits
 
-- **No rate limiting.** Per-instance counters are meaningless on serverless. The
-  realistic control is Vercel's edge firewall, configured in the dashboard.
+- **No rate limiting, including on the login.** Per-instance counters are
+  meaningless on serverless. The mitigation is a long random password; the
+  realistic control beyond that is Vercel's edge firewall, configured in the
+  dashboard.
 - **`recomputeStats()` re-reads the entire `flume_rows` table on every write.** This
   is the scaling cliff. At the current ~175k rows it is fine; it is superlinear in
   accumulated history.
