@@ -20,7 +20,7 @@ const req = (auth?: string) =>
 
 beforeEach(() => {
   delete process.env.CRON_SECRET
-  for (const k of ["FLUME_CLIENT_ID", "FLUME_CLIENT_SECRET", "FLUME_USERNAME", "FLUME_PASSWORD"]) {
+  for (const k of ["FLUME_CLIENT_ID", "FLUME_CLIENT_SECRET", "FLUME_REFRESH_TOKEN"]) {
     delete process.env[k]
   }
   sync.mockReset()
@@ -37,8 +37,8 @@ afterEach(() => {
 function configureFlume() {
   process.env.FLUME_CLIENT_ID = "c"
   process.env.FLUME_CLIENT_SECRET = "s"
-  process.env.FLUME_USERNAME = "u"
-  process.env.FLUME_PASSWORD = "p"
+  // Client credentials only: flumeConfigured() no longer knows about a
+  // username or password, because neither ever reaches the deployment.
 }
 
 describe("GET /api/cron", () => {

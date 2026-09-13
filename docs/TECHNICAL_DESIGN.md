@@ -373,20 +373,36 @@ Data arrives one of two ways, and the second still works when the first is not
 configured.
 
 **The Flume Personal API**, pulled by a Vercel cron once a day (`0 17 * * *`).
-`lib/server/flume.ts` is a small hand-rolled client: an OAuth2 password grant for
-an access token, the numeric `user_id` decoded out of that token's JWT payload,
-the account's water sensors listed (type 2 — bridges relay, they do not meter),
-then a usage query. `lib/server/sync.ts` feeds the result through the **same**
-write path as an upload — `insertRows` → `recomputeRollups` → `recomputeStats` —
-calling those functions directly, so the route's 200,000-row body cap does not
-apply.
+`lib/server/flume.ts` is a small hand-rolled client: `grant_type=refresh_token`
+for an access token, the numeric `user_id` decoded out of that token's JWT
+payload, the account's water sensors listed (type 2 — bridges relay, they do not
+meter), then a usage query. `lib/server/sync.ts` feeds the result through the
+**same** write path as an upload — `insertRows` → `recomputeRollups` →
+`recomputeStats` — calling those functions directly, so the route's 200,000-row
+body cap does not apply.
 
-Nothing is persisted between syncs: no credentials table, no refresh token at
-rest, no encryption key. Each run does the password grant again, which costs one
-request against a limit of 120 an hour. An earlier version of this feature stored
-a rotating refresh token in an encrypted column and needed a table, a settings
-page and a connect/disconnect flow to manage it; doing without is several hundred
-lines less to be wrong about.
+**The Flume account password never reaches the deployment.** Flume needs it for
+exactly one thing: the initial password grant that mints a refresh token. That
+runs on the operator's machine via `npm run flume:connect`, which prints the
+token and writes nothing. What production holds is `FLUME_CLIENT_ID`,
+`FLUME_CLIENT_SECRET` and a refresh token — a credential scoped to API access,
+revocable by itself, and worthless anywhere else, which an account password is
+not.
+
+The refresh token lives in a one-row `flume_state` table, seeded by
+`FLUME_REFRESH_TOKEN` on a fresh database, with the stored value winning
+thereafter. It is stored rather than kept in the env var because **Flume returns
+a `refresh_token` on every refresh and does not document whether it rotates**. If
+it does, a static env var goes stale and the daily sync dies quietly about a week
+later — the worst failure shape available, since the symptom is data simply
+stopping. `syncFlumeData` compares the returned token against the one it sent and
+persists any difference **before** doing the query work, because the token it
+just spent may already be dead: writing afterwards would mean a mid-sync failure
+stranded the new token and left the next run authenticating with a spent one.
+
+That table is deliberately absent from `scripts/backup.ts`. The dumps become
+90-day GitHub artifacts, and a live credential that can be re-minted in a minute
+does not belong in an archive.
 
 Three details that are load-bearing rather than incidental:
 
