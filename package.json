@@ -50,7 +50,7 @@
     "@types/react-dom": "^19",
     "@vitest/coverage-v8": "^4.1.11",
     "@vitest/ui": "^4.1.8",
-    "eslint": "^9.39.5",
+    "eslint": "^10.10.0",
     "eslint-config-next": "16.3.4",
     "jiti": "^2.7.0",
     "jsdom": "^30.0.1",
