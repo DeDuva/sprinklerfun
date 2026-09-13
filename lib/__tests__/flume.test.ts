@@ -311,6 +311,42 @@ describe("queryUsage", () => {
     ).rejects.toMatchObject({ rateLimited: true, status: 429 })
   })
 
+  it("names the field Flume refused, not just its generic validation message", async () => {
+    // Flume's message for every 400 is "A provided parameter failed
+    // validation"; which parameter, and why, is only in `detailed`.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(
+          {
+            message: "A provided parameter failed validation",
+            detailed: [{ field: "until_datetime", message: "must not be in the future" }],
+          },
+          false,
+          400
+        )
+      )
+    )
+    const err = await queryUsage({
+      userId: "1", deviceId: "d", accessToken: "t", since: new Date(), until: new Date(),
+    }).catch((e) => e)
+    expect(err.message).toMatch(/usage query failed \(HTTP 400\): A provided parameter failed validation/)
+    expect(err.message).toMatch(/until_datetime: must not be in the future/)
+  })
+
+  it("accepts `detailed` as plain strings too, since the docs show no example", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ message: "invalid_grant", detailed: ["Refresh token is invalid"] }, false, 400)
+      )
+    )
+    const err = await queryUsage({
+      userId: "1", deviceId: "d", accessToken: "t", since: new Date(), until: new Date(),
+    }).catch((e) => e)
+    expect(err.message).toMatch(/invalid_grant \(Refresh token is invalid\)/)
+  })
+
   it("wraps other failures as FlumeError", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ message: "boom" }, false, 500)))
     await expect(

@@ -228,7 +228,12 @@ vercel --prod                                # a redeploy is required
 
 Confirm it works with **Config → Flume sync → Sync now** rather than waiting for
 17:00 UTC. The first sync is incremental — it starts from your last stored row,
-so it is a small catch-up, not a year-long backfill.
+so it is a small catch-up. A gap longer than about 25 days is caught up over
+several runs (`"truncated": true` in the response means there is more to fetch);
+press Sync now again, up to twice an hour, or let the daily cron finish it.
+
+If a Flume call is refused, the error names the offending field — Flume puts
+that in its `detailed` field and the sync copies it into the message.
 
 ### Where the token actually lives
 

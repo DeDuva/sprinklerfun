@@ -38,8 +38,14 @@ export function flumeConfigured(): boolean {
   return Boolean(process.env.FLUME_CLIENT_ID && process.env.FLUME_CLIENT_SECRET)
 }
 
+interface FlumeBody {
+  data?: unknown[]
+  message?: string
+  detailed?: unknown
+}
+
 // Flume wraps most responses as { success, data: [...] }. Unwrap defensively.
-async function parseJson(res: Response): Promise<{ data?: unknown[]; message?: string }> {
+async function parseJson(res: Response): Promise<FlumeBody> {
   const text = await res.text()
   try {
     return text ? JSON.parse(text) : {}
@@ -48,7 +54,37 @@ async function parseJson(res: Response): Promise<{ data?: unknown[]; message?: s
   }
 }
 
-function raise(res: Response, body: { message?: string }, context: string): never {
+/**
+ * Flume's `detailed` field, flattened to one line.
+ *
+ * On a 400 it names the fields that failed validation and why — the only part
+ * of the response that says WHAT was wrong; `message` alone is a generic "A
+ * provided parameter failed validation". Otherwise it is an array of strings.
+ * Handled as either shape, since the docs give no example.
+ *
+ * Validation messages describe fields, not echo their values, and the token
+ * endpoint's is a plain sentence ("Refresh token is invalid") — but the result
+ * is still capped so an unexpected response cannot flood the log.
+ */
+function describeDetail(detailed: unknown): string {
+  if (!Array.isArray(detailed)) return ""
+  const parts = detailed
+    .map((d) => {
+      if (typeof d === "string") return d
+      if (d && typeof d === "object") {
+        const { field, message } = d as { field?: unknown; message?: unknown }
+        if (field != null || message != null) {
+          return [field, message].filter((x) => x != null).map(String).join(": ")
+        }
+        return JSON.stringify(d)
+      }
+      return ""
+    })
+    .filter(Boolean)
+  return parts.join("; ").slice(0, 300)
+}
+
+function raise(res: Response, body: FlumeBody, context: string): never {
   if (res.status === 429) {
     throw new FlumeError(
       "Flume API rate limit reached (120 requests/hour). Try again later.",
@@ -57,7 +93,8 @@ function raise(res: Response, body: { message?: string }, context: string): neve
     )
   }
   // This string reaches the logs, so it must never carry the request body.
-  const detail = body.message ? `: ${body.message}` : ""
+  const why = describeDetail(body.detailed)
+  const detail = (body.message ? `: ${body.message}` : "") + (why ? ` (${why})` : "")
   throw new FlumeError(`Flume ${context} failed (HTTP ${res.status})${detail}`, res.status)
 }
 

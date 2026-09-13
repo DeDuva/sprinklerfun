@@ -35,21 +35,45 @@ export interface SyncResult {
   rollupDays: number
   windowFrom?: string
   windowTo?: string
+  /**
+   * True when the window was longer than one sync's query budget and only its
+   * oldest part was fetched. The next run carries on from there by itself.
+   */
+  truncated?: boolean
   /** True when Flume handed back a different refresh token than the one sent. */
   tokenRotated?: boolean
   error?: string
   rateLimited?: boolean
 }
 
-/** How far back to reach when there is nothing stored at all. */
-const INITIAL_BACKFILL_DAYS = 365
+/**
+ * How far back to reach when there is nothing stored at all.
+ *
+ * Kept inside one sync's query budget (below), so an empty database fills in a
+ * single run. Older history comes from the CSV uploader. A longer backfill
+ * would be fetched over several runs — and could stall if its oldest slices
+ * held no data, because the next run starts from the last stored row.
+ */
+const INITIAL_BACKFILL_DAYS = 20
 
 /**
- * Query Flume in slices rather than one enormous range. At per-minute
- * resolution a year is ~525,000 samples; asking for that in one request risks
- * the function's memory or time limit, and Vercel does not retry a failed cron.
+ * Hours of per-minute data per query.
+ *
+ * Production rejected a 14-day MIN query with "A provided parameter failed
+ * validation". Flume documents no maximum range per bucket size, so this is
+ * deliberately well under a day (720 buckets) rather than tuned to a limit
+ * nobody has written down. Each slice is also a small response, which matters
+ * because Vercel does not retry a failed cron.
  */
-const SLICE_DAYS = 14
+const SLICE_HOURS = 12
+
+/**
+ * Most queries one sync may make. Flume allows 120 requests an hour, and a
+ * sync also spends one on the token refresh and one on the device list — so
+ * this leaves room for a "Sync now" click inside the same hour. A daily run
+ * needs about six; a long gap is caught up over several runs.
+ */
+const MAX_QUERIES_PER_SYNC = 50
 
 /**
  * Padding on both ends of the window. Flume reads the query datetimes as
@@ -60,6 +84,7 @@ const SLICE_DAYS = 14
 const PAD_MS = 86_400_000
 
 const dayMs = (n: number) => n * 86_400_000
+const SLICE_MS = SLICE_HOURS * 3_600_000
 
 export async function syncFlumeData(opts: { since?: Date } = {}): Promise<SyncResult> {
   if (!flumeConfigured()) {
@@ -117,12 +142,22 @@ export async function syncFlumeData(opts: { since?: Date } = {}): Promise<SyncRe
       (bounds ? new Date(`${bounds.max}T00:00:00Z`) : new Date(Date.now() - dayMs(INITIAL_BACKFILL_DAYS)))
 
     const from = new Date(start.getTime() - PAD_MS)
-    const to = new Date(Date.now() + PAD_MS)
+    const wantedTo = Date.now() + PAD_MS
+
+    // Over budget: take the OLDEST part. The next run starts from the last row
+    // stored, so it continues exactly where this one stopped. Taking the newest
+    // part instead would leave a hole that no later run ever revisits.
+    const budgetTo = from.getTime() + MAX_QUERIES_PER_SYNC * SLICE_MS
+    const truncated = wantedTo > budgetTo
+    const to = new Date(Math.min(wantedTo, budgetTo))
+    if (truncated) {
+      console.log(`[sync] window exceeds ${MAX_QUERIES_PER_SYNC} queries; fetching the oldest part only`)
+    }
 
     let inserted = 0
-    for (let cursor = from.getTime(); cursor < to.getTime(); cursor += dayMs(SLICE_DAYS)) {
+    for (let cursor = from.getTime(); cursor < to.getTime(); cursor += SLICE_MS) {
       const sliceFrom = new Date(cursor)
-      const sliceTo = new Date(Math.min(cursor + dayMs(SLICE_DAYS), to.getTime()))
+      const sliceTo = new Date(Math.min(cursor + SLICE_MS, to.getTime()))
       const rows: FlumeRow[] = await queryUsage({
         userId,
         deviceId,
@@ -144,6 +179,7 @@ export async function syncFlumeData(opts: { since?: Date } = {}): Promise<SyncRe
       inserted,
       rollupDays,
       tokenRotated,
+      truncated,
       windowFrom: from.toISOString().slice(0, 10),
       windowTo: to.toISOString().slice(0, 10),
     }
