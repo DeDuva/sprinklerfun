@@ -53,11 +53,16 @@ export function proxy(req: NextRequest) {
 
 // Everything except Next's own static output, the sign-in page, the OAuth
 // endpoints (the way in — the callback in particular MUST be reachable
-// anonymously, or Google's redirect back would be bounced by this guard), and
-// the health probe (the deploy check, which reveals only a row count and has to
-// answer before anyone can sign in).
+// anonymously, or Google's redirect back would be bounced by this guard), the
+// health probe (the deploy check, which reveals only a row count and has to
+// answer before anyone can sign in), and the cron path.
+//
+// /api/cron is excluded because Vercel invokes cron jobs with a plain GET
+// carrying no session — this guard would turn every scheduled run into a 401.
+// It is not unguarded: it requires CRON_SECRET as a bearer token and fails
+// closed when that is unset. See app/api/cron/route.ts.
 //
 // Matchers must be static so they can be analysed at build time — no variables.
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|login|api/auth|api/health).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|login|api/auth|api/health|api/cron).*)"],
 }

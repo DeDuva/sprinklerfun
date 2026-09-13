@@ -65,6 +65,26 @@ test.describe("the guard, without a session", () => {
       expect((await request.get(path)).status(), path).toBe(401)
     }
     expect((await request.post("/api/rows", { data: { rows: [] } })).status()).toBe(401)
+    // "Sync now" triggers an ingest and a whole-table recompute, so it stays
+    // behind the guard like everything else a person reaches.
+    expect((await request.post("/api/sync")).status()).toBe(401)
+  })
+
+  test("the cron path is outside the guard but still refuses everyone", async ({ request }) => {
+    // /api/cron has to be reachable without a session — Vercel invokes it with a
+    // plain GET. That makes its own check the only thing standing in front of a
+    // full ingest, so this proves the fail-closed behaviour against the real
+    // built app: CRON_SECRET is unset here, and it refuses regardless of what
+    // the caller claims to be.
+    expect((await request.get("/api/cron")).status()).toBe(401)
+    expect((await request.get("/api/cron", { headers: { authorization: "Bearer guess" } })).status()).toBe(401)
+    expect(
+      (
+        await request.get("/api/cron", {
+          headers: { "user-agent": "vercel-cron/1.0", "x-vercel-cron-schedule": "0 17 * * *" },
+        })
+      ).status()
+    ).toBe(401)
   })
 
   test("an anonymous page request lands on the sign-in, with a way back", async ({ page }) => {

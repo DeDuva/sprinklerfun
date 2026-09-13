@@ -127,13 +127,31 @@ describe("matcher", () => {
     }
   })
 
-  it("excludes the whole OAuth flow, the sign-in page and the health probe", () => {
+  it("excludes the OAuth flow, the sign-in page, the health probe and the cron", () => {
     // The callback in particular MUST be anonymous: it is where Google sends
     // the browser back, and nobody holds a session yet at that moment. Guarding
     // it would bounce every sign-in attempt to the page it just came from.
-    for (const path of ["/login", "/api/auth/login", "/api/auth/callback", "/api/auth/logout", "/api/health"]) {
+    //
+    // /api/cron likewise: Vercel invokes it with a plain GET and no session, so
+    // guarding it here would turn every scheduled sync into a 401. It is not
+    // unprotected — it requires CRON_SECRET and fails closed without it.
+    for (const path of [
+      "/login",
+      "/api/auth/login",
+      "/api/auth/callback",
+      "/api/auth/logout",
+      "/api/health",
+      "/api/cron",
+    ]) {
       expect(matches(path), path).toBe(false)
     }
+  })
+
+  it("still guards the manual sync trigger", () => {
+    // /api/sync does the same work as the cron but is reached by a person in a
+    // browser, so it stays behind the session guard. If it ever drifted into
+    // the exclusion list it would become a public ingest-and-recompute button.
+    expect(matches("/api/sync")).toBe(true)
   })
 
   it("no longer excludes the retired password endpoint", () => {

@@ -267,6 +267,15 @@ Schema is bootstrapped idempotently (`CREATE … IF NOT EXISTS`) by
   leaves `config_windows` and `maintenance` alone.
 - **`GET /api/day/[date]`** — one day's raw per-minute rows; detail/flow views
   enrich a single day client-side instead of loading the whole series.
+- **`GET /api/cron`** — the daily Flume sync. Excluded from `proxy.ts` because a
+  cron request carries no session; guarded by `CRON_SECRET` as a bearer token
+  and refuses everything when that is unset. Always answers 200, with `ok:false`
+  in the body on failure — Vercel does not retry a failed cron, so a non-2xx
+  buys nothing.
+- **`POST /api/sync`** — the same job, triggered by the "Sync now" button. Stays
+  *behind* the session guard, because this one is reached by a person. There is
+  no `GET`: an ingest plus a whole-table recompute is not something a link or a
+  prefetch should set off.
 - **`GET /api/rollup?from=&to=`** — the small aggregate feed for the dashboard
   chart/summary + per-window day counts. Bounds optional.
 - **`GET /api/stats`** — the precomputed per-minute-only aggregates:
@@ -357,6 +366,52 @@ addresses are permitted. The specific reason goes to the server log.
 
 This replaced a shared header whose value shipped to the browser as
 `NEXT_PUBLIC_APP_SHARED_SECRET`; see `SECURITY.md`.
+
+### Getting data in (Flume API, or a CSV)
+
+Data arrives one of two ways, and the second still works when the first is not
+configured.
+
+**The Flume Personal API**, pulled by a Vercel cron once a day (`0 17 * * *`).
+`lib/server/flume.ts` is a small hand-rolled client: an OAuth2 password grant for
+an access token, the numeric `user_id` decoded out of that token's JWT payload,
+the account's water sensors listed (type 2 — bridges relay, they do not meter),
+then a usage query. `lib/server/sync.ts` feeds the result through the **same**
+write path as an upload — `insertRows` → `recomputeRollups` → `recomputeStats` —
+calling those functions directly, so the route's 200,000-row body cap does not
+apply.
+
+Nothing is persisted between syncs: no credentials table, no refresh token at
+rest, no encryption key. Each run does the password grant again, which costs one
+request against a limit of 120 an hour. An earlier version of this feature stored
+a rotating refresh token in an encrypted column and needed a table, a settings
+page and a connect/disconnect flow to manage it; doing without is several hundred
+lines less to be wrong about.
+
+Three details that are load-bearing rather than incidental:
+
+- **The bucket is `MIN`.** Station attribution works on minute-of-day
+  (`localDateAndMin`), so hourly totals would make it meaningless. The real CSV
+  exports are per-minute too — 56,041 rows for five weeks.
+- **Flume's datetime is passed through untouched.** Its format,
+  `YYYY-MM-DD HH:MM:SS`, is exactly what ingest accepts. Converting it to an ISO
+  string with a `Z` — which an earlier version did — is rejected with a 400 by
+  design, because everything downstream reads naive wall-clock time.
+- **The window is padded a day at each end and queried in slices.** Flume reads
+  the query datetimes as *account*-local while we build them from UTC, so the
+  padding absorbs the offset; rows dedupe on their primary key, so over-fetching
+  is free and under-fetching would silently lose a day. Slicing keeps a year of
+  per-minute data (~525,000 samples) from arriving in one response.
+
+The sync is idempotent by construction, which Vercel's cron contract requires
+rather than suggests: delivery is best effort, may skip a run, and may deliver
+the same one twice. Re-querying inserts nothing new, and a missed day is picked
+up by the next run because the window starts from the last stored row rather
+than from "yesterday".
+
+**A CSV upload** remains the fallback, unchanged: it is the recovery path when
+credentials lapse, the API changes, or a gap needs filling that Flume will no
+longer serve.
 
 ### Local development
 

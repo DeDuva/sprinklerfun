@@ -21,7 +21,7 @@ import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import Papa from "papaparse"
 import type { FlumeRow } from "@/lib/types"
-import { pushRows, fetchRollups, clearAllRows } from "@/lib/backend"
+import { pushRows, fetchRollups, clearAllRows, fetchStats, syncFlumeNow } from "@/lib/backend"
 import type { RollupRow } from "@/lib/types"
 import { parseFlumeCsvRows, buildFlumeExportUrl } from "@/lib/csvImport"
 
@@ -870,6 +870,66 @@ function ExportImportCard() {
   )
 }
 
+// ---- Flume sync -----------------------------------------------------------
+
+function SyncCard() {
+  const lastRowDate = useStore((s) => s.lastRowDate)
+  const setRowCount = useStore((s) => s.setRowCount)
+  const setLastRowDate = useStore((s) => s.setLastRowDate)
+  const bumpServerVersion = useStore((s) => s.bumpServerVersion)
+  const [busy, setBusy] = useState(false)
+
+  // There is no stored "last sync" state to read: the last row's date already
+  // says how current the data is, which is the question anyone actually has.
+  async function syncNow() {
+    if (busy) return
+    setBusy(true)
+    const t = toast.loading("Asking Flume for new data…")
+    try {
+      const r = await syncFlumeNow()
+      toast.dismiss(t)
+      if (r.ok) {
+        bumpServerVersion()
+        const stats = await fetchStats()
+        setRowCount(stats.rowCount)
+        setLastRowDate(stats.lastDate)
+        toast.success(
+          r.inserted > 0
+            ? `Synced ${r.inserted.toLocaleString()} new rows from Flume`
+            : "Already up to date — Flume had nothing new"
+        )
+      } else {
+        toast.error(r.error ?? "The sync failed")
+      }
+    } catch (e) {
+      toast.dismiss(t)
+      toast.error(`Could not sync: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-base">Flume sync</CardTitle></CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-sm text-gray-500">
+          {lastRowDate ? `Data stored through ${fmtDate(lastRowDate)}.` : "No data stored yet."}
+        </p>
+        <p className="text-xs text-gray-400">
+          When Flume credentials are configured, the app pulls new readings once a day on its
+          own. This button asks immediately — useful after a watering change you want to see
+          now. Re-running is harmless: readings are matched on their timestamp, so nothing is
+          double-counted.
+        </p>
+        <Button size="sm" variant="outline" className="h-8" disabled={busy} onClick={syncNow}>
+          {busy ? "Syncing…" : "Sync now"}
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
 // ---- Stored data ----------------------------------------------------------
 
 function StoredDataCard() {
@@ -1276,6 +1336,8 @@ function ConfigPageInner() {
           </Card>
         </>
       )}
+
+      <SyncCard />
 
       <UploadCsvCard />
 
