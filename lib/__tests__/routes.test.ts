@@ -6,7 +6,6 @@ import type { ConfigWindow, FlumeRow } from "../types"
 
 import { POST, DELETE as deleteRows } from "@/app/api/rows/route"
 import { GET as getConfig, PUT as putConfig } from "@/app/api/config/route"
-import { POST as login } from "@/app/api/login/route"
 import { GET as getDay } from "@/app/api/day/[date]/route"
 import { GET as getRollup } from "@/app/api/rollup/route"
 import { GET as getStats } from "@/app/api/stats/route"
@@ -20,7 +19,10 @@ import { GET as getHealth } from "@/app/api/health/route"
 
 beforeEach(() => resetDbForTests())
 afterEach(() => {
-  delete process.env.APP_PASSWORD
+  delete process.env.GOOGLE_CLIENT_ID
+  delete process.env.GOOGLE_CLIENT_SECRET
+  delete process.env.SESSION_SECRET
+  delete process.env.ALLOWED_EMAILS
   delete process.env.VERCEL
   vi.restoreAllMocks()
 })
@@ -37,13 +39,6 @@ const post = (body: unknown) =>
       body: typeof body === "string" ? body : JSON.stringify(body),
     })
   )
-
-const loginReq = (body: unknown) =>
-  new Request("https://x.test/api/login", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: typeof body === "string" ? body : JSON.stringify(body),
-  })
 
 const row = (min: number, gallons = 1): FlumeRow => {
   const hh = String(Math.floor(min / 60)).padStart(2, "0")
@@ -87,45 +82,11 @@ const win = (id: string): ConfigWindow => ({
 
 // ---------------------------------------------------------------------------
 
-describe("POST /api/login", () => {
-  // The success path sets a cookie through next/headers, which needs a real
-  // request scope that a bare handler call does not provide. It is covered end
-  // to end in e2e/smoke.spec.ts, against the built app, where it also proves the
-  // cookie is actually accepted afterwards — which is the part that matters.
-
-  it("reports open mode rather than rejecting, when no password is configured", async () => {
-    const res = await login(loginReq({ password: "anything" }))
-    expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({ authMode: "open" })
-  })
-
-  it("503s on a deployment with no password, instead of letting anyone in", async () => {
-    process.env.VERCEL = "1"
-    expect((await login(loginReq({ password: "anything" }))).status).toBe(503)
-  })
-
-  it("401s a wrong password", async () => {
-    process.env.APP_PASSWORD = "correct-horse"
-    const res = await login(loginReq({ password: "wrong" }))
-    expect(res.status).toBe(401)
-    // One message for every kind of failure: a caller should not be able to tell
-    // "no such field" from "wrong value" by reading the response.
-    expect(await res.json()).toEqual({ error: "wrong password" })
-  })
-
-  it("401s a missing, empty or non-string password", async () => {
-    process.env.APP_PASSWORD = "correct-horse"
-    expect((await login(loginReq({}))).status).toBe(401)
-    expect((await login(loginReq({ password: "" }))).status).toBe(401)
-    expect((await login(loginReq({ password: 123 }))).status).toBe(401)
-    expect((await login(loginReq({ password: null }))).status).toBe(401)
-  })
-
-  it("400s on malformed JSON", async () => {
-    process.env.APP_PASSWORD = "correct-horse"
-    expect((await login(loginReq("{not json"))).status).toBe(400)
-  })
-})
+// The sign-in flow used to be tested here, when it was a password POST. It is
+// now three OAuth endpoints whose interesting parts are the state/PKCE checks
+// and the allow-list — covered as pure functions in session.test.ts, at the
+// guard in proxy.test.ts, and end to end in e2e/smoke.spec.ts. What is left for
+// this file is what it was always for: the route handlers' body validation.
 
 describe("POST /api/rows — body validation", () => {
   it("400s on malformed JSON", async () => {

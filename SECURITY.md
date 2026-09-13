@@ -1,54 +1,85 @@
 # Security
 
-SprinklerFun is a single-household hobby app, deployed publicly and protected by a
-single shared password. This file records what that does and does not buy, so
-nobody — including a future version of the author — has to infer it from the code.
+SprinklerFun is a single-household hobby app, deployed publicly and protected by
+Google sign-in restricted to an allow-list of addresses. This file records what
+that does and does not buy, so nobody — including a future version of the author
+— has to infer it from the code.
 
 ## Reporting
 
 Open a GitHub issue. There is no bounty and no SLA.
 
-## The password
+## Signing in
 
 Every page and every API route sits behind `proxy.ts`, which requires a session
-cookie. The only exclusions are the login page, `POST /api/login`, `GET /api/health`
-and Next's static output. Because the guard is one matcher rather than a check
-inside each handler, a new route is protected by virtue of being new — the failure
-mode where someone adds an endpoint and forgets the credential check is not
-available.
+cookie. The only exclusions are the sign-in page, the `/api/auth` endpoints,
+`GET /api/health` and Next's static output. Because the guard is one matcher
+rather than a check inside each handler, a new route is protected by virtue of
+being new — the failure mode where someone adds an endpoint and forgets the
+credential check is not available.
 
-**The password never reaches the browser.** `APP_PASSWORD` is server-side only; the
-cookie carries an HMAC of a fixed string under it, is `httpOnly` so page scripts
-cannot read it, and is `SameSite=Lax`.
+The `/api/auth` endpoints have to be anonymous: the callback is where Google
+sends the browser back, and nobody holds a session at that moment.
 
-This replaced an `x-sprinkler-secret` header compared against a value that had to
-ship to the client as `NEXT_PUBLIC_APP_SHARED_SECRET` — inlined into a static chunk
-at build time, readable by anyone who loaded the site, and replayable. That was
-obfuscation, and this file used to say so. This is not.
+**Identity and authorisation are separate.** Google says *who* you are;
+`ALLOWED_EMAILS` decides whether that person gets in. Anyone with a Google
+account can complete the sign-in and still be refused, which is the normal case
+for a household app on the public internet.
 
-A deployment with no `APP_PASSWORD` serves nothing: every request is refused with a
-503, rather than falling open to the internet.
+**Nothing secret reaches the browser.** The client ID is public by design, the
+client secret and `SESSION_SECRET` are server-side only, and the cookie carries
+a signed `{ email, exp }` — `httpOnly`, `SameSite=Lax`, seven days. It is a
+signed cookie rather than a JWT because there is one issuer, one audience and no
+third party parsing it; `node:crypto` covers that without a dependency.
+
+**The allow-list is re-checked on every request**, not just at sign-in. Removing
+an address revokes that person on their next click. The app this flow was
+modelled on checks only at sign-in, which means a removed user keeps access
+until their cookie expires a week later.
+
+**CSRF and code interception are handled.** The flow carries a `state` value in
+an httpOnly cookie and compares it on return, so the callback will not accept a
+code from a flow this browser did not start — without it, an attacker can
+complete sign-in inside a victim's browser and leave them authenticated as
+someone else. PKCE (S256) means an intercepted authorization code is useless
+without the verifier, which never leaves the server. Unverified Google addresses
+are refused outright.
+
+Two credentials ago this app compared an `x-sprinkler-secret` header against a
+value that had to ship to the client as `NEXT_PUBLIC_APP_SHARED_SECRET` —
+inlined into a static chunk at build time, readable by anyone who loaded the
+site, and replayable. Then it was one shared password. Each step removed a thing
+that had to be known by everyone who needed access.
+
+A deployment without `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and
+`SESSION_SECRET` serves nothing: every request is refused with a 503, rather
+than falling open to the internet. A partial configuration counts as none.
 
 ## What is not protected
 
 These are accepted risks, not oversights.
 
-- **One password, no accounts.** Everyone who has it has everything, and there is
-  no record of who did what, because there is no "who".
-- **A stolen cookie stays valid until the password changes.** Sessions are not
-  tracked server-side, so an individual one cannot be revoked. Rotating
-  `APP_PASSWORD` invalidates all of them at once — that is the log-out-everywhere
-  lever, and the answer to a lost phone. See `docs/RUNBOOK.md`.
-- **No rate limiting on the login.** Per-instance counters are meaningless on
-  serverless (each cold start gets its own memory), and a shared store means
-  adding infrastructure. The mitigation is a long random password rather than a
-  lockout; Vercel's edge firewall is the realistic control if that ever changes.
+- **No per-user identity inside the app.** Sign-in knows who you are, but
+  everyone admitted sees and edits the same household data, and nothing records
+  who changed what. The allow-list is an access decision, not an audit trail.
+- **A stolen cookie is valid until it expires or the address is removed.**
+  Sessions are not tracked server-side, so a single one cannot be cancelled.
+  There are two levers: take the address out of `ALLOWED_EMAILS`, which takes
+  effect on that person's next request, or rotate `SESSION_SECRET`, which signs
+  everyone out at once. A lost phone is the first one.
+- **Trust is delegated to Google.** Whoever controls an allow-listed Google
+  account controls that access, so those accounts' own 2FA is part of this app's
+  security. If Google is down, nobody can sign in — existing sessions keep
+  working, since they are verified locally.
+- **No rate limiting of our own.** Google rate-limits the sign-in itself, which
+  is where the guessing would happen; per-instance counters are meaningless on
+  serverless anyway. Vercel's edge firewall is the realistic control beyond that.
 - **No CSP.** See `next.config.ts` for why a permissive one would be worse than
   none.
 
 ## What is protected
 
-The password is the front door. The controls below are what stands behind it:
+Google sign-in is the front door. The controls below are what stands behind it:
 blast-radius reduction and recovery, because a single credential is one mistake
 away from being someone else's.
 
@@ -60,7 +91,8 @@ away from being someone else's.
 | `GET /api/rows` removed | An unauthenticated full-database export with no date range, no limit, and no caller in the app. |
 | The config timeline cannot be emptied through the API | `replaceWindows` is delete-all-then-insert, so `{"rows":[],"windows":[]}` once destroyed months of tuning through a request that read as a no-op. `POST /api/rows` now rejects a `windows` field outright, and `PUT /api/config` refuses an empty timeline: the earliest window also covers every row before it, so an empty one would leave the entire history unattributable. |
 | Ingest validated and bounded | `datetime` must match the date format the `flume_rows` index and `rowDateBounds()` depend on; `gallons` is range-checked; `rows` is capped at 200,000. Uncapped bodies amplified the full-table statistics recompute. |
-| Auth fails closed on a deployment | No `APP_PASSWORD` means every request gets a 503. The previous guard returned `true` when its secret was unset, making the database anonymously writable with no symptom at all — nothing logged, nothing 500ing, the app looking perfectly healthy. |
+| Auth fails closed on a deployment | Missing — or partially set — Google credentials mean every request gets a 503. An early guard returned `true` when its secret was unset, making the database anonymously writable with no symptom at all: nothing logged, nothing 500ing, the app looking perfectly healthy. |
+| An empty allow-list admits nobody | The tempting reading of "no list configured" is "allow everyone", which would hand the database to any Google account the moment one variable went missing. It denies instead. |
 | Missing `TURSO_DATABASE_URL` throws in production | It used to fall back to an ephemeral local file, serving an empty dataset as if it were real and discarding writes on recycle. |
 | Security headers | `frame-ancestors 'none'`, `nosniff`, `strict-origin-when-cross-origin`, HSTS, `Permissions-Policy`. No CSP yet — see `next.config.ts` for why a permissive one would be worse than none. |
 | Dependency scanning | Dependabot alerts, security updates, secret scanning and push protection are enabled. Actions are pinned by commit SHA. `npm audit` is at 0. |

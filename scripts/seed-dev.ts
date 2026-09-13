@@ -17,7 +17,13 @@
  * script works, the API works.
  */
 const BASE = process.env.SEED_BASE_URL ?? "http://127.0.0.1:3000"
-const PASSWORD = process.env.APP_PASSWORD
+
+/**
+ * A session cookie value, only needed if you point this at a server that has
+ * Google sign-in configured. Local `npm run dev` has no credentials set, so the
+ * guard runs open and this is unnecessary — which is the normal case.
+ */
+const SESSION_VALUE = process.env.SEED_COOKIE
 
 const CONFIG_FILE = "data/sprinkler-config-2026-08-31.json"
 const ROWS_FILE = "data/fixture-sprinkler-day.json"
@@ -25,20 +31,10 @@ const ROWS_FILE = "data/fixture-sprinkler-day.json"
 async function main() {
   const { readFileSync } = await import("node:fs")
 
-  // A session cookie, only if the local server is enforcing one. Local dev
-  // leaves APP_PASSWORD unset and runs open, so this is usually skipped.
+  // Local dev has no Google credentials set, so the guard runs open and no
+  // session is needed. Against an enforced server, pass SEED_COOKIE.
   const headers: Record<string, string> = { "content-type": "application/json" }
-  if (PASSWORD) {
-    const res = await fetch(`${BASE}/api/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password: PASSWORD }),
-    })
-    if (!res.ok) throw new Error(`login failed: HTTP ${res.status}`)
-    const cookie = res.headers.get("set-cookie")
-    if (!cookie) throw new Error("login succeeded but set no cookie")
-    headers.cookie = cookie.split(";")[0]
-  }
+  if (SESSION_VALUE) headers.cookie = `sf_session=${SESSION_VALUE}`
 
   const { windows } = JSON.parse(readFileSync(CONFIG_FILE, "utf8"))
   const { rows } = JSON.parse(readFileSync(ROWS_FILE, "utf8"))

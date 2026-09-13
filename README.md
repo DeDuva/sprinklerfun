@@ -1,6 +1,6 @@
 # SprinklerFun
 
-A web app for analyzing [Flume smart meter](https://flumewater.com) data to understand and optimize residential sprinkler water usage. It runs on Vercel, keeps its data in Turso, and is behind a single password — so the same numbers and the same config show up on every device you open it on.
+A web app for analyzing [Flume smart meter](https://flumewater.com) data to understand and optimize residential sprinkler water usage. It runs on Vercel, keeps its data in Turso, and is behind Google sign-in limited to a short list of approved accounts — so the same numbers and the same config show up on every device you open it on.
 
 ## What it does
 
@@ -19,7 +19,7 @@ npm run dev        # http://localhost:3000
 ```
 
 ### First-time setup
-1. Log in with the app password, then go to **Config** → **Upload CSV** and load your Flume export.
+1. Sign in with Google, then go to **Config** → **Upload CSV** and load your Flume export.
 2. Go to **Config** → **Create first config** (or **＋ New config**), set its effective date, and verify your timer start times and station list.
 3. Enter baseline gpm per station (or skip until your next seasonal audit).
 4. **Save window** → return to Dashboard.
@@ -76,7 +76,7 @@ See [SECURITY.md](SECURITY.md) for what is and isn't protected.
 | Charts | Recharts 3 |
 | State | Zustand (in-memory; the server owns the data) |
 | Database | Turso (libSQL / SQLite) |
-| Auth | One password → signed httpOnly cookie, enforced in `proxy.ts` |
+| Auth | Google sign-in + email allow-list → signed httpOnly cookie, enforced in `proxy.ts` |
 | UI components | shadcn/ui |
 | CSV parsing | Papa Parse |
 | Testing | Vitest + Playwright |

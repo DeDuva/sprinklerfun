@@ -11,10 +11,11 @@ import type {
 // Client-side bridge to the Turso backend.
 //
 // Nothing here carries a credential. The session is an httpOnly cookie set by
-// POST /api/login and checked in proxy.ts, so the browser attaches it to these
-// requests automatically and JavaScript cannot read it. That is the whole point
-// of the change: the previous version shipped the write secret to the client as
-// NEXT_PUBLIC_APP_SHARED_SECRET, which Next inlined into a static chunk.
+// the Google callback (/api/auth/callback) and checked in proxy.ts, so the
+// browser attaches it to these requests automatically and JavaScript cannot
+// read it. Two versions ago this app shipped its write secret to the client as
+// NEXT_PUBLIC_APP_SHARED_SECRET, which Next inlined into a static chunk — the
+// credential was in the bundle, readable by anyone who loaded the page.
 //
 // What every helper does have to handle is a 401, which here means the cookie
 // expired or the password was rotated. Half a dozen empty charts and a console
@@ -143,10 +144,11 @@ export async function fetchDayRows(date: string): Promise<FlumeRow[]> {
   return data.rows
 }
 
-// Log out: expire the session cookie. The session is not stored server-side, so
-// this is the whole of it.
+// Sign out: expire the session cookie. The session is not stored server-side,
+// so this is the whole of it. It deliberately does not sign the person out of
+// Google — leaving this app should not log you out of your mail.
 export async function logout(): Promise<void> {
-  await fetch("/api/login", { method: "DELETE" })
+  await fetch("/api/auth/logout", { method: "DELETE" })
 }
 
 // Clear the metered data (rows + the three derived tables). The config timeline

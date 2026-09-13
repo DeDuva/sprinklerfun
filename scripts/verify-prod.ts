@@ -1,7 +1,7 @@
 /**
  * Re-run the delay estimator against LIVE production data.
  *
- * Run with:  SPRINKLER_PASSWORD=… npm run verify:prod
+ * Run with:  SPRINKLER_COOKIE=… npm run verify:prod
  *
  * Why this exists
  * ---------------
@@ -34,28 +34,25 @@ import { COOKIE } from "../lib/server/session"
 
 const BASE = process.env.SPRINKLER_URL ?? "https://sprinklerfun.vercel.app"
 const DAYS = Number(process.env.DAYS ?? 12)
-const PASSWORD = process.env.SPRINKLER_PASSWORD
-
-// fetch() keeps no cookie jar, so the session is carried by hand.
-let session: string | null = null
-
 /**
- * Log in, if a password was supplied. Production requires one for every route
- * except /api/health; a local server started without APP_PASSWORD requires none,
+ * The session cookie, pasted from a browser that is already signed in.
+ *
+ * Sign-in is an interactive Google consent flow now, which a script cannot
+ * drive and should not try to: automating it would mean either storing Google
+ * credentials or carving a non-interactive hole in the guard, and this is a
+ * read-only diagnostic that runs on a laptop a few times a year.
+ *
+ * To get it: open the app, DevTools → Application → Cookies → copy the value of
+ * `sf_session`, then run
+ *   SPRINKLER_COOKIE=<value> npm run verify:prod
+ *
+ * A local server started with no Google credentials runs open and needs none,
  * which is why this is optional rather than an argument check.
  */
-async function login(): Promise<void> {
-  if (!PASSWORD) return
-  const res = await fetch(`${BASE}/api/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ password: PASSWORD }),
-  })
-  if (!res.ok) throw new Error(`POST /api/login → HTTP ${res.status} (wrong SPRINKLER_PASSWORD?)`)
-  const setCookie = res.headers.getSetCookie().find((c) => c.startsWith(`${COOKIE}=`))
-  if (!setCookie) throw new Error("login succeeded but set no session cookie")
-  session = setCookie.split(";")[0]
-}
+const SESSION_VALUE = process.env.SPRINKLER_COOKIE
+
+// fetch() keeps no cookie jar, so the session is carried by hand.
+const session: string | null = SESSION_VALUE ? `${COOKIE}=${SESSION_VALUE}` : null
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -63,7 +60,8 @@ async function getJson<T>(path: string): Promise<T> {
   })
   if (res.status === 401) {
     throw new Error(
-      `GET ${path} → 401. This deployment needs a password: run with SPRINKLER_PASSWORD=… set.`
+      `GET ${path} → 401. This deployment needs a session: sign in in a browser, copy the ` +
+        `sf_session cookie, and run with SPRINKLER_COOKIE=… set.`
     )
   }
   if (!res.ok) throw new Error(`GET ${path} → HTTP ${res.status}`)
@@ -80,7 +78,6 @@ const fmt = (r: Record<string, unknown>) =>
 
 async function main() {
   console.log(`Verifying against ${BASE}\n`)
-  await login()
 
   const health = await getJson<{ ok: boolean; rows: number }>("/api/health")
   console.log(`health: ${health.ok ? "ok" : "DEGRADED"}, ${health.rows.toLocaleString()} rows\n`)

@@ -15,12 +15,16 @@ delete process.env.TURSO_AUTH_TOKEN
 
 // Neither VERCEL nor VERCEL_ENV should be set in a test run; if a developer has
 // them exported, the fail-closed guards in lib/server/session.ts and lib/db.ts
-// would change behaviour under test for no good reason. APP_PASSWORD is cleared
-// for the same reason: the tests that care set it themselves, and the ones that
-// do not should see the open mode that local development uses.
+// would change behaviour under test for no good reason. The Google sign-in
+// variables are cleared for the same reason: the tests that care set them
+// themselves, and the ones that do not should see the open mode that local
+// development uses.
 delete process.env.VERCEL
 delete process.env.VERCEL_ENV
-delete process.env.APP_PASSWORD
+delete process.env.GOOGLE_CLIENT_ID
+delete process.env.GOOGLE_CLIENT_SECRET
+delete process.env.SESSION_SECRET
+delete process.env.ALLOWED_EMAILS
 
 if (!process.env.TURSO_DATABASE_URL.includes(":memory:")) {
   throw new Error(

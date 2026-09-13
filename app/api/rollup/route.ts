@@ -10,9 +10,9 @@ export const dynamic = "force-dynamic"
 // are optional; omit them for the full history.
 //
 // There is no auth check in this file because there is one in front of it:
-// proxy.ts guards every route except the login page, POST /api/login and
-// GET /api/health. A new route is protected by default rather than by someone
-// remembering to protect it.
+// proxy.ts guards every route except the sign-in page, the /api/auth endpoints
+// and GET /api/health. A new route is protected by default rather than by
+// someone remembering to protect it.
 export async function GET(req: NextRequest) {
   const from = req.nextUrl.searchParams.get("from") ?? undefined
   const to = req.nextUrl.searchParams.get("to") ?? undefined
