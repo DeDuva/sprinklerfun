@@ -2,6 +2,7 @@ import type {
   ConfigDocument,
   ConfigPayload,
   DelayRecommendation,
+  FlumeDeviceStatus,
   FlumeRow,
   RollupRow,
   StatsPayload,
@@ -122,6 +123,16 @@ export async function fetchStats(): Promise<StatsPayload> {
   if (res.status === 401) toLogin()
   if (!res.ok) throw new Error(`GET /api/stats → HTTP ${res.status}`)
   return (await res.json()) as StatsPayload
+}
+
+// The Flume sensor's health as of the last sync, or null before any sync has run
+// (or on a deployment without Flume). Alerts are derived from it client-side, so
+// "how long ago" is measured against the viewer's clock.
+export async function fetchMeterStatus(): Promise<FlumeDeviceStatus | null> {
+  const res = await fetch("/api/flume")
+  if (res.status === 401) toLogin()
+  if (!res.ok) throw new Error(`GET /api/flume → HTTP ${res.status}`)
+  return ((await res.json()) as { status: FlumeDeviceStatus | null }).status
 }
 
 // The inferred inter-station delay per timer, fitted server-side across several

@@ -5,6 +5,8 @@ import {
   saveRefreshToken,
   refreshTokenUpdatedAt,
   clearRefreshToken,
+  saveDeviceStatus,
+  readDeviceStatus,
 } from "../server/flumeState"
 
 // The refresh token is the one Flume credential the deployment holds, and the
@@ -81,5 +83,36 @@ describe("clearRefreshToken", () => {
     await saveRefreshToken("rotated-token")
     await clearRefreshToken()
     expect(await readRefreshToken()).toBeNull()
+  })
+})
+
+describe("device status", () => {
+  const status = {
+    deviceId: "d1",
+    name: "House",
+    batteryLevel: "low",
+    connected: false,
+    lastSeen: "2026-09-12T18:43:00.000Z",
+    checkedAt: "2026-09-13T21:42:00.000Z",
+  }
+
+  it("is null before any sync has recorded one", async () => {
+    expect(await readDeviceStatus()).toBeNull()
+  })
+
+  it("round-trips, including a false connection (not just truthy values)", async () => {
+    await saveDeviceStatus(status)
+    expect(await readDeviceStatus()).toEqual(status)
+  })
+
+  it("keeps unreported fields null rather than inventing values", async () => {
+    await saveDeviceStatus({ ...status, batteryLevel: null, connected: null, lastSeen: null })
+    expect(await readDeviceStatus()).toMatchObject({ batteryLevel: null, connected: null, lastSeen: null })
+  })
+
+  it("replaces the previous reading — it is a reading, not a history", async () => {
+    await saveDeviceStatus(status)
+    await saveDeviceStatus({ ...status, batteryLevel: "high", connected: true, checkedAt: "2026-09-20T17:00:00.000Z" })
+    expect(await readDeviceStatus()).toMatchObject({ batteryLevel: "high", connected: true, checkedAt: "2026-09-20T17:00:00.000Z" })
   })
 })

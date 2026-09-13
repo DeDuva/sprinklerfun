@@ -243,6 +243,25 @@ export interface RollupRow {
 // GET /api/stats. `stationStats` is the fleet-wide buildStationStats output;
 // `warnings` is computeStationWarnings — neither can be reconstructed from the
 // daily gallon sums in `daily_rollup`, so they are computed at recompute time.
+/**
+ * The Flume water sensor's own health, as last reported to a sync. Recorded on
+ * every sync, because a meter that stops reporting does not look like an error:
+ * Flume answers with zeros, and the app would otherwise chart a dead battery as a
+ * household that stopped using water.
+ */
+export interface FlumeDeviceStatus {
+  deviceId: string
+  name: string
+  /** Flume's own words: "high", "medium", "low" — null when not reported. */
+  batteryLevel: string | null
+  /** Whether Flume considers the sensor connected; null when not reported. */
+  connected: boolean | null
+  /** ISO timestamp of the sensor's last contact with Flume. */
+  lastSeen: string | null
+  /** ISO timestamp of the sync that recorded this. */
+  checkedAt: string
+}
+
 export interface StatsPayload {
   stationStats: StationStats[]
   warnings: StationWarning[]

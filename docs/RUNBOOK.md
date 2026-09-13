@@ -261,7 +261,7 @@ and it only matters if the table is emptied.
 
 That table is deliberately **not** in the backups (`scripts/backup.ts`): it is a
 live credential, the dumps become 90-day artifacts, and it can be re-minted in a
-minute.
+minute. Nor is `flume_device`, the sensor-health reading: the next sync rewrites it.
 
 ### Failure signatures
 
@@ -273,6 +273,9 @@ minute.
 | `token refresh failed (HTTP 400): invalid_grant` | The stored token is spent or revoked. Re-run `flume:connect` and set a fresh `FLUME_REFRESH_TOKEN`, then clear the stale stored one (below). |
 | `usage query failed (HTTP 400): …` | Flume refused a query parameter. The part in parentheses is Flume's own `detailed` field, naming the field and why. |
 | `rate limit reached (120 requests/hour)` | Wait. A sync makes at most 52 requests (a refresh, a device lookup, up to 50 queries), so two back-to-back catch-up syncs fit in an hour and a third does not. |
+| **Your Flume meter is offline** (red, dashboard and Config) | The sensor has not been in touch with Flume for over 3 hours as of the last sync, or Flume reports it disconnected. Water used meanwhile is not recorded. Check the sensor battery first (the notice shows the last reading), then that the bridge is plugged in and on Wi-Fi. When it reports again, **Sync now** — readings Flume received for the last three days fill in on their own. |
+| **Flume sensor battery is low** (amber) | Replace it soon. The meter keeps working until it dies, and then it goes offline. |
+| **Meter status last checked …** (amber) | No sync has succeeded for a day and a half, so the meter could be offline unnoticed. Look at the sync failure in the logs (rows above). |
 | Usage shows as zero for recent hours | Flume has not received those readings yet. The next sync within three days overwrites them. If zeros are older than that, check the sync log for `no usable timezone on the Flume location` — without one the sync cannot tell future minutes from past ones. |
 | Data silently stops arriving | Check **Vercel → Cron Jobs → View Logs**. Cron delivery is best effort and is not retried on failure, so one missed day is normal; several is not. |
 

@@ -20,8 +20,9 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import Papa from "papaparse"
-import type { FlumeRow } from "@/lib/types"
-import { pushRows, fetchRollups, clearAllRows, fetchStats, syncFlumeNow } from "@/lib/backend"
+import type { FlumeDeviceStatus, FlumeRow } from "@/lib/types"
+import { pushRows, fetchRollups, clearAllRows, fetchStats, syncFlumeNow, fetchMeterStatus } from "@/lib/backend"
+import MeterAlerts, { MeterStatusLine } from "@/components/MeterAlerts"
 import type { RollupRow } from "@/lib/types"
 import { parseFlumeCsvRows, buildFlumeExportUrl } from "@/lib/csvImport"
 
@@ -877,7 +878,18 @@ function SyncCard() {
   const setRowCount = useStore((s) => s.setRowCount)
   const setLastRowDate = useStore((s) => s.setLastRowDate)
   const bumpServerVersion = useStore((s) => s.bumpServerVersion)
+  const serverVersion = useStore((s) => s.serverVersion)
   const [busy, setBusy] = useState(false)
+  const [meter, setMeter] = useState<FlumeDeviceStatus | null>(null)
+
+  // Every sync records the sensor's health; re-read it after one.
+  useEffect(() => {
+    let cancelled = false
+    fetchMeterStatus()
+      .then((m) => { if (!cancelled) setMeter(m) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [serverVersion])
 
   // There is no stored "last sync" state to read: the last row's date already
   // says how current the data is, which is the question anyone actually has.
@@ -910,6 +922,9 @@ function SyncCard() {
       toast.error(`Could not sync: ${e instanceof Error ? e.message : e}`)
     } finally {
       setBusy(false)
+      // A failed sync still records the sensor's health first — often the very
+      // reason the sync found nothing — so re-read it either way.
+      fetchMeterStatus().then(setMeter).catch(() => {})
     }
   }
 
@@ -917,9 +932,11 @@ function SyncCard() {
     <Card>
       <CardHeader><CardTitle className="text-base">Flume sync</CardTitle></CardHeader>
       <CardContent className="space-y-3">
+        <MeterAlerts status={meter} />
         <p className="text-sm text-gray-500">
           {lastRowDate ? `Data stored through ${fmtDate(lastRowDate)}.` : "No data stored yet."}
         </p>
+        <MeterStatusLine status={meter} />
         <p className="text-xs text-gray-400">
           When Flume credentials are configured, the app pulls new readings once a day on its
           own. This button asks immediately — useful after a watering change you want to see

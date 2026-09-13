@@ -189,6 +189,12 @@ export interface FlumeDevice {
    * is what says which minutes have already happened.
    */
   timezone?: string
+  /** Flume's battery reading ("high" | "medium" | "low"), when reported. */
+  batteryLevel?: string
+  /** Whether Flume considers the sensor connected, when reported. */
+  connected?: boolean
+  /** ISO timestamp of the sensor's last contact with Flume, when reported. */
+  lastSeen?: string
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -210,7 +216,15 @@ export async function listWaterSensors(userId: string, accessToken: string): Pro
     .filter((d) => Number(d.type) === 2)
     .map((d) => {
       const tz = (d.location as { tz?: unknown } | undefined)?.tz
-      return { id: String(d.id), name: deviceName(d), timezone: typeof tz === "string" && tz ? tz : undefined }
+      const str = (v: unknown) => (typeof v === "string" && v ? v : undefined)
+      return {
+        id: String(d.id),
+        name: deviceName(d),
+        timezone: str(tz),
+        batteryLevel: str(d.battery_level),
+        connected: typeof d.connected === "boolean" ? d.connected : undefined,
+        lastSeen: str(d.last_seen),
+      }
     })
 }
 

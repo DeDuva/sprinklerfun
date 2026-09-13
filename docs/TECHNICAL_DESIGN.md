@@ -60,6 +60,7 @@ sprinklerfun/
 │       ├── rollup/route.ts     # GET per-day/per-station aggregates
 │       ├── stats/route.ts      # GET precomputed fleet gpm stats + baseline warnings
 │       ├── delay/route.ts      # GET inferred inter-station delay per timer
+│       ├── flume/route.ts      # GET the water sensor's health as of the last sync
 │       ├── health/route.ts     # GET database reachability + row count (unauthenticated)
 │       └── auth/               # login · callback · logout (Google OAuth, PKCE)
 ├── components/
@@ -73,6 +74,7 @@ sprinklerfun/
 │   ├── ReconciliationTable.tsx # Analysis: per-station cfg→actual table; buttons STAGE config edits (don't write)
 │   ├── ReviewChangesModal.tsx  # Analysis: review staged config changes (old→new, removable) before saving
 │   ├── StationDelayCard.tsx    # Analysis: inferred station delay, staged like any other proposal
+│   ├── MeterAlerts.tsx         # Dashboard + Config: meter offline / battery low / status stale notices
 │   ├── DayPicker.tsx
 │   ├── design/  ui/            # Flo + design-system pieces · shadcn/ui primitives
 │   └── UploadModal.tsx, DailyChart.tsx, WeeklyChart.tsx  # not referenced by any page
@@ -81,6 +83,7 @@ sprinklerfun/
 │   ├── analyze.ts              # Pure analysis functions (no React) — reused server-side
 │   ├── staging.ts              # Pure staged-config-edit logic for the Analysis tab
 │   ├── csvImport.ts            # Flume CSV row parsing + the Flume export link
+│   ├── meterHealth.ts          # Pure: sensor status → offline / battery / stale alerts
 │   ├── store.ts                # Zustand store — in-memory copy of the server's config, persists nothing
 │   ├── db.ts                   # server-only: libSQL client + idempotent schema bootstrap
 │   ├── backend.ts              # client-only: fetch config/rollups/stats/day, push rows, sync now
@@ -88,7 +91,7 @@ sprinklerfun/
 │   │   ├── data.ts             # data access + recomputeRollups/recomputeStats (reuses analyze.ts)
 │   │   ├── validate.ts         # config and row validation for the write routes
 │   │   ├── flume.ts            # Flume Personal API client (refresh grant, devices, usage query)
-│   │   ├── flumeState.ts       # the stored, rotating refresh token
+│   │   ├── flumeState.ts       # the stored, rotating refresh token + the sensor's last health reading
 │   │   ├── sync.ts             # syncFlumeData: window, slicing, query budget, ingest
 │   │   ├── session.ts          # auth mode, signed session cookie, allow-list
 │   │   ├── google.ts           # authorization URL + code exchange (PKCE S256)
@@ -259,6 +262,7 @@ at ingest and stored as rollups.
 | Station warnings | `station_warnings (station_id PK, station_name, baseline_gpm, recent_avg_gpm, pct_above_baseline, consecutive_days_above)` | server, `computeStationWarnings` over full enriched series | on every ingest / config edit |
 | Maintenance flags | `maintenance (station_id PK, flagged_at, note)` | client edits | on edit |
 | Flume token | `flume_state (id = 1, refresh_token, updated_at)` | Flume, on each refresh | every sync (it rotates) |
+| Sensor health | `flume_device (id = 1, device_id, name, battery_level, connected, last_seen, checked_at)` | Flume's device list | every sync, before any query |
 
 The two `station_*` tables hold the per-minute-only
 aggregates the dashboard/analysis need but that daily gallon sums **cannot**
@@ -302,6 +306,10 @@ Schema is bootstrapped idempotently (`CREATE … IF NOT EXISTS`) by
 - **`GET /api/delay?days=N`** — the inferred inter-station delay per timer (see
   *Inter-Station Delay Inference*). Server-side because the fit needs many days of
   per-minute flow.
+- **`GET /api/flume`** — `{ status }`: the water sensor's battery, connection and
+  last contact, as recorded by the last sync (null before one). Deliberately not
+  a live Flume call: that would need a token refresh, and with a token that rotates
+  on every refresh, two page loads racing could leave the stored one spent.
 - **`GET /api/health`** — database reachability and row count. Unauthenticated, so
   it still answers when sign-in is misconfigured — which is what makes "503 on `/`,
   200 here" a diagnosis rather than an outage.
@@ -480,6 +488,24 @@ rather than suggests: delivery is best effort, may skip a run, and may deliver
 the same one twice. Re-querying writes the same values again, and a missed day is
 picked up by the next run because the window reaches back to the last stored row
 rather than to "yesterday".
+
+**The sensor's own health is recorded on every sync**, because a meter that stops
+reporting raises no error anywhere: Flume answers for its silent minutes with
+zeros, and the app charts a household that stopped using water. That is how a dead
+sensor battery went unnoticed from 2026-09-12. The device list already carries
+`battery_level`, `connected` and `last_seen`; the sync stores them in
+`flume_device` before doing any query work (so a failed sync still records them)
+and logs a warning when they look wrong. `meterAlerts` (`lib/meterHealth.ts`, pure)
+turns the record into notices, shown above everything on the dashboard and on
+Config's Flume sync card:
+
+| Notice | Level | When |
+|---|---|---|
+| Meter offline | critical | `connected` is false, or `last_seen` is more than 3 hours before the check. Carries the battery reading, since a dead battery is the usual cause |
+| Battery low / empty | warning / critical | `battery_level` is `low` / `critical` or `empty`, on a meter that is still reporting. Unknown words are ignored |
+| Status stale | warning | The last check is more than 36 hours old, so syncs are failing and the other two cannot be trusted |
+
+Detection is only as fresh as the last sync: the daily cron, or **Sync now**.
 
 **A CSV upload** remains the fallback, unchanged: it is the recovery path when
 credentials lapse, the API changes, or a gap needs filling that Flume will no
@@ -900,7 +926,9 @@ The card also links to Flume's export page, starting from the last stored date
 | `serverData.test.ts` | Data access, rollup and stats recompute against an in-memory database |
 | `routes.test.ts` | `/api/rows` (validation, the rejected `windows` field, delete), `/api/config`, `/api/day`, `/api/rollup`, `/api/stats`, `/api/health`, `/api/delay` |
 | `flume.test.ts` | Flume client: refresh grant, device list, usage query shape (per-minute, no `operation`), error detail |
-| `flumeState.test.ts` | Reading, saving and clearing the stored token; its precedence over the env seed |
+| `flumeState.test.ts` | Reading, saving and clearing the stored token; its precedence over the env seed; the sensor-health record |
+| `meterHealth.test.ts` | Offline, battery and stale thresholds; one notice rather than two for a dead battery |
+| `MeterAlerts.test.tsx` | Offline renders as an alert, low battery as a status; the Config status line; relative times |
 | `sync.test.ts` | Token rotation persisted before queries, device selection, the query window, 12-hour slices, the 50-query budget, idempotent ingest |
 | `syncRoutes.test.ts` | `/api/sync` and `/api/cron`, including `CRON_SECRET` failing closed |
 | `session.test.ts`, `google.test.ts`, `authRoutes.test.ts`, `proxy.test.ts` | Auth modes, cookie signing and allow-list, the OAuth flow, and the guard's matcher |
