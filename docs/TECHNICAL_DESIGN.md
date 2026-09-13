@@ -408,7 +408,9 @@ Three details that are load-bearing rather than incidental:
 
 - **The bucket is `MIN`.** Station attribution works on minute-of-day
   (`localDateAndMin`), so hourly totals would make it meaningless. The real CSV
-  exports are per-minute too — 56,041 rows for five weeks.
+  exports are per-minute too — 56,041 rows for five weeks. The query sets **no
+  `operation`**: with one, Flume collapses the range into a single value with no
+  datetimes.
 - **Flume's datetime is passed through untouched.** Its format,
   `YYYY-MM-DD HH:MM:SS`, is exactly what ingest accepts. Converting it to an ISO
   string with a `Z` — which an earlier version did — is rejected with a 400 by

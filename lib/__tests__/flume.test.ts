@@ -277,6 +277,28 @@ describe("queryUsage", () => {
     expect(body.queries[0].since_datetime).toBe("2026-05-01 00:00:00")
   })
 
+  it("sends no aggregate operation, which would collapse the samples into one value", async () => {
+    // With `operation` set, Flume returns [{ value }] with no datetime at all.
+    // The first production sync did exactly that and failed in the database.
+    const fetchMock = vi.fn().mockResolvedValue(sample())
+    vi.stubGlobal("fetch", fetchMock)
+    await queryUsage({ userId: "1", deviceId: "d", accessToken: "t", since: new Date(), until: new Date() })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.queries[0]).not.toHaveProperty("operation")
+  })
+
+  it("refuses a sample without a datetime instead of passing undefined to the database", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ data: [{ sprinklerfun: [{ value: 4788.875 }] }] }))
+    )
+    const err = await queryUsage({
+      userId: "1", deviceId: "d", accessToken: "t", since: new Date(), until: new Date(),
+    }).catch((e) => e)
+    expect(err).toBeInstanceOf(FlumeError)
+    expect(err.message).toMatch(/without a datetime/)
+  })
+
   it("returns Flume's datetime UNCHANGED, with no timezone suffix", async () => {
     // The regression that would have made every synced row fail ingest. The
     // previous version ran the value through new Date(...).toISOString(),
