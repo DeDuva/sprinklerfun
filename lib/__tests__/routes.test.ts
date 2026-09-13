@@ -11,6 +11,8 @@ import { GET as getRollup } from "@/app/api/rollup/route"
 import { GET as getStats } from "@/app/api/stats/route"
 import { GET as getDelay } from "@/app/api/delay/route"
 import { GET as getHealth } from "@/app/api/health/route"
+import { GET as getFlume } from "@/app/api/flume/route"
+import { saveDeviceStatus } from "@/lib/server/flumeState"
 
 // Route handlers are plain functions over a Request, so they need no Next server
 // to test — only a real database, which lib/__tests__/setup.ts makes in-memory.
@@ -318,6 +320,27 @@ describe("GET /api/rollup, /api/stats, /api/health", () => {
     const res = await getHealth()
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ ok: true, database: "reachable", rows: 1 })
+  })
+})
+
+describe("GET /api/flume", () => {
+  it("returns a null status before any sync has recorded one", async () => {
+    const res = await getFlume()
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ status: null })
+  })
+
+  it("returns the last recorded sensor health", async () => {
+    const status = {
+      deviceId: "d",
+      name: "House",
+      batteryLevel: "low",
+      connected: true,
+      lastSeen: "2026-09-13T21:40:00.000Z",
+      checkedAt: "2026-09-13T21:42:00.000Z",
+    }
+    await saveDeviceStatus(status)
+    expect(await (await getFlume()).json()).toEqual({ status })
   })
 })
 

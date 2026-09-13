@@ -16,14 +16,16 @@ import {
   currentConfig,
   localDateKey,
 } from "@/lib/analyze"
-import { fetchRollups, fetchStats, fetchDayRows } from "@/lib/backend"
-import type { FlumeRow, RollupRow, StatsPayload } from "@/lib/types"
+import { fetchRollups, fetchStats, fetchDayRows, fetchMeterStatus } from "@/lib/backend"
+import type { FlumeDeviceStatus, FlumeRow, RollupRow, StatsPayload } from "@/lib/types"
 import SummaryCards from "@/components/SummaryCards"
 import ConsumptionChart from "@/components/ConsumptionChart"
 import StationFlowChart from "@/components/StationFlowChart"
 import WarningsPanel from "@/components/WarningsPanel"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import Flo from "@/components/design/Flo"
+import MeterAlerts from "@/components/MeterAlerts"
+import { meterAlerts } from "@/lib/meterHealth"
 
 function ymKey(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
@@ -69,6 +71,17 @@ export default function DashboardPage() {
         setRollups([])
         setStats(null)
       })
+    return () => { cancelled = true }
+  }, [serverVersion])
+
+  // The meter's own health. Fetched separately and allowed to fail quietly: the
+  // dashboard must still render when this read does not.
+  const [meter, setMeter] = useState<FlumeDeviceStatus | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetchMeterStatus()
+      .then((m) => { if (!cancelled) setMeter(m) })
+      .catch(() => {})
     return () => { cancelled = true }
   }, [serverVersion])
 
@@ -205,6 +218,7 @@ export default function DashboardPage() {
         <h1 className="text-2xl font-semibold text-[#143049]" style={{ fontFamily: "var(--font-fredoka)" }}>
           Dashboard
         </h1>
+        <MeterAlerts status={meter} />
         <div className="rounded-2xl border-2 border-dashed border-[#EADFC6] bg-white p-10 text-center flex flex-col items-center gap-3">
           <Flo mood="watching" size={72} />
           <p className="text-[#143049] text-lg font-medium">No data yet</p>
@@ -224,7 +238,8 @@ export default function DashboardPage() {
   }
 
   // Flo's plain-English headline for this month.
-  const floMood = warnings.length > 0 ? "alert" : "happy"
+  const meterOffline = meterAlerts(meter).some((a) => a.kind === "offline")
+  const floMood = warnings.length > 0 || meterOffline ? "alert" : "happy"
   const floHeadline = monthlySummary
     ? `Your yard used ${fmt(monthlySummary.summary.totalGallons)} gal in ${monthlySummary.monthFmt}${
         monthlySummary.summary.totalGallons > 0
@@ -232,7 +247,9 @@ export default function DashboardPage() {
           : "."
       }`
     : "Crunching the numbers…"
-  const floNote = warnings.length > 0
+  const floNote = meterOffline
+    ? "These numbers stop where the meter went quiet — see the notice above."
+    : warnings.length > 0
     ? `Worth a look: ${warnings.map((w) => w.stationName).join(", ")} running above baseline.`
     : derived && derived.hasBaselines
       ? "Everything's tracking within baseline. 🌿"
@@ -240,6 +257,10 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      {/* The meter itself — above everything, because an offline meter makes
+          every number below it wrong. */}
+      <MeterAlerts status={meter} />
+
       {/* Flo's headline */}
       <div className="rounded-2xl border-2 border-[#143049] bg-gradient-to-b from-white to-[#FFFDF8] p-5 shadow-[4px_4px_0_rgba(20,48,73,0.08)] flex items-center gap-4 flex-wrap">
         <Flo mood={floMood} size={64} idle />
@@ -248,7 +269,7 @@ export default function DashboardPage() {
             {floHeadline}
           </p>
           {floNote && (
-            <p className={`text-sm mt-0.5 ${warnings.length > 0 ? "text-[#B33B2E]" : "text-[#4A6076]"}`}>
+            <p className={`text-sm mt-0.5 ${warnings.length > 0 || meterOffline ? "text-[#B33B2E]" : "text-[#4A6076]"}`}>
               {floNote}
             </p>
           )}

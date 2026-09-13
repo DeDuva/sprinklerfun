@@ -15,7 +15,8 @@ import {
   queryUsage,
   refreshAccessToken,
 } from "@/lib/server/flume"
-import { readRefreshToken, saveRefreshToken } from "@/lib/server/flumeState"
+import { readRefreshToken, saveDeviceStatus, saveRefreshToken } from "@/lib/server/flumeState"
+import { meterAlerts } from "@/lib/meterHealth"
 
 // ---------------------------------------------------------------------------
 // One sync entry point, shared by the daily cron and the "Sync now" button.
@@ -166,6 +167,27 @@ export async function syncFlumeData(opts: { since?: Date } = {}): Promise<SyncRe
       )
     }
     const deviceId = device.id
+
+    // Record the sensor's health before any query work, so a later failure still
+    // leaves an up-to-date reading. A silent meter produces zeros, not errors —
+    // this record is the only thing that tells the two apart.
+    const deviceStatus = {
+      deviceId,
+      name: device.name,
+      batteryLevel: device.batteryLevel ?? null,
+      connected: device.connected ?? null,
+      lastSeen: device.lastSeen ?? null,
+      checkedAt: new Date().toISOString(),
+    }
+    await saveDeviceStatus(deviceStatus)
+    console.log(
+      `[sync] meter: battery=${deviceStatus.batteryLevel ?? "?"} connected=${deviceStatus.connected ?? "?"} ` +
+        `lastSeen=${deviceStatus.lastSeen ?? "?"}`
+    )
+    for (const alert of meterAlerts(deviceStatus)) {
+      if (alert.kind === "offline") console.warn(`[sync] METER OFFLINE: no contact since ${alert.lastSeen ?? "unknown"}`)
+      if (alert.kind === "battery") console.warn(`[sync] meter battery ${alert.batteryLevel}`)
+    }
 
     // The first minute that has not finished happening where the meter is.
     const cutoff = device.timezone ? localMinute(new Date(), device.timezone) : null

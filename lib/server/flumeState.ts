@@ -1,4 +1,5 @@
 import { getDb, ensureSchema } from "@/lib/db"
+import type { FlumeDeviceStatus } from "@/lib/types"
 
 // ---------------------------------------------------------------------------
 // The one piece of Flume state that has to persist: the current refresh token.
@@ -58,4 +59,42 @@ export async function refreshTokenUpdatedAt(): Promise<string | null> {
 export async function clearRefreshToken(): Promise<void> {
   await ensureSchema()
   await getDb().execute("DELETE FROM flume_state WHERE id = 1")
+}
+
+/** Record the water sensor's health, replacing the previous reading. */
+export async function saveDeviceStatus(status: FlumeDeviceStatus): Promise<void> {
+  await ensureSchema()
+  await getDb().execute({
+    sql: `INSERT INTO flume_device (id, device_id, name, battery_level, connected, last_seen, checked_at)
+          VALUES (1, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET device_id = excluded.device_id, name = excluded.name,
+            battery_level = excluded.battery_level, connected = excluded.connected,
+            last_seen = excluded.last_seen, checked_at = excluded.checked_at`,
+    args: [
+      status.deviceId,
+      status.name,
+      status.batteryLevel,
+      status.connected === null ? null : status.connected ? 1 : 0,
+      status.lastSeen,
+      status.checkedAt,
+    ],
+  })
+}
+
+/** The last recorded sensor health, or null if no sync has recorded one. */
+export async function readDeviceStatus(): Promise<FlumeDeviceStatus | null> {
+  await ensureSchema()
+  const res = await getDb().execute(
+    "SELECT device_id, name, battery_level, connected, last_seen, checked_at FROM flume_device WHERE id = 1"
+  )
+  const r = res.rows[0]
+  if (!r) return null
+  return {
+    deviceId: String(r.device_id),
+    name: String(r.name),
+    batteryLevel: r.battery_level == null ? null : String(r.battery_level),
+    connected: r.connected == null ? null : Number(r.connected) === 1,
+    lastSeen: r.last_seen == null ? null : String(r.last_seen),
+    checkedAt: String(r.checked_at),
+  }
 }

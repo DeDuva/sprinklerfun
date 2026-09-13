@@ -99,11 +99,12 @@ In daily-bar mode, clicking a bar sets the selected day for the Per-Station Flow
 ### Dashboard (/)
 The primary landing page. There is no data-loading control on it: data arrives on its own, and the fetch-now and upload controls live on Config. Top-to-bottom layout:
 
-1. **Flo's headline** — a plain-English sentence for the month selected in the summary below (the current month by default) ("Your yard used N gal in September — about $X so far."), a note naming any station running above baseline, and the date range of stored data. Empty state (no data at all) points to Config.
-2. **Station Alerts panel** — red warning per station running >20% above baseline for 2+ consecutive days; green all-clear otherwise; prompt to add baselines if none set.
-3. **Monthly Summary Cards** — Total gallons · Sprinkler gallons · House gallons · Estimated cost. Scoped to a selected calendar month (1st → last day, or today for the current month). ← month → arrows let the user page backward through historical months, defaulting to the current month.
-4. **Consumption Chart** — the unified chart described above. In 2W / 1M (daily-bar) views, clicking a bar sets the selected day for the Per-Station Flow Rate chart.
-5. **Per-Station Flow Rate** — inside a single card:
+1. **Meter notices**, above everything, only when something is wrong with the Flume sensor itself: **meter offline** (red — no contact for 3+ hours, or disconnected; says that usage since then is not being recorded, and shows the last battery reading), **battery low** (amber), or **status stale** (amber — no successful sync in 36 hours). An offline meter also turns Flo's note to "These numbers stop where the meter went quiet."
+2. **Flo's headline** — a plain-English sentence for the month selected in the summary below (the current month by default) ("Your yard used N gal in September — about $X so far."), a note naming any station running above baseline, and the date range of stored data. Empty state (no data at all) points to Config.
+3. **Station Alerts panel** — red warning per station running >20% above baseline for 2+ consecutive days; green all-clear otherwise; prompt to add baselines if none set.
+4. **Monthly Summary Cards** — Total gallons · Sprinkler gallons · House gallons · Estimated cost. Scoped to a selected calendar month (1st → last day, or today for the current month). ← month → arrows let the user page backward through historical months, defaulting to the current month.
+5. **Consumption Chart** — the unified chart described above. In 2W / 1M (daily-bar) views, clicking a bar sets the selected day for the Per-Station Flow Rate chart.
+6. **Per-Station Flow Rate** — inside a single card:
    - **Day summary tiles** (Total · Sprinkler · House · Est. Cost) scoped to the selected day, updated whenever the day changes.
    - **Date navigation** (← prev sprinkler day · date label · next sprinkler day →).
    - **Horizontal bar chart** — one bar per active station; bars >20% above baseline turn red; orange tick marks the baseline.
@@ -167,7 +168,7 @@ The page is organized around a **timeline of config windows**.
 **Chart integration**: each window's `effectiveFrom` is a marker on the Consumption Chart; clicking a marker jumps to that window. From the dashboard's per-day view, **Tune config for this day** deep-links to the window active on that day.
 
 **Getting data in**, below the editor:
-- **Flume sync** — shows how current the stored data is ("Data stored through …") and a **Sync now** button that runs the daily sync immediately. Re-running is harmless.
+- **Flume sync** — the same meter notices as the dashboard; how current the stored data is ("Data stored through …"); a one-line sensor status (battery · connected · last contact, and when it was checked); and a **Sync now** button that runs the daily sync immediately and rechecks the sensor. Re-running is harmless.
 - **Upload CSV Data** — a link that opens Flume's export page starting from the last stored date, then drag-and-drop or click-to-browse for the downloaded CSV, or paste a URL (GitHub blob URLs are rewritten to raw). New rows merge; duplicates are skipped.
 
 **Export / import**: download the whole config as JSON, or replace it from a file or URL.

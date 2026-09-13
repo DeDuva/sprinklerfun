@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { resetDbForTests } from "../db"
 import { insertRows, countRows, replaceWindows, readRollups, readDayRows, recomputeRollups } from "../server/data"
-import { readRefreshToken, saveRefreshToken } from "../server/flumeState"
+import { readRefreshToken, saveRefreshToken, readDeviceStatus } from "../server/flumeState"
 import type { ConfigWindow } from "../types"
 
 // Replace only the network-facing half of the Flume client. The token
@@ -195,6 +195,33 @@ describe("syncFlumeData: device selection", () => {
     expect(res.ok).toBe(false)
     expect(res.error).toMatch(/FLUME_DEVICE_ID typo is not a water sensor/)
     expect(queryUsage).not.toHaveBeenCalled()
+  })
+
+  it("records the sensor's health, even when the sync then fails", async () => {
+    // A silent meter shows up as zeros, not errors. The record has to survive a
+    // failed sync, because that is often exactly when it is needed.
+    listWaterSensors.mockResolvedValue([
+      { id: "dev-9", name: "House", timezone: "UTC", batteryLevel: "low", connected: false, lastSeen: "2026-09-12T18:43:00.000Z" },
+    ])
+    queryUsage.mockRejectedValue(new Error("network down"))
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+    const res = await syncFlumeData()
+
+    expect(res.ok).toBe(false)
+    expect(await readDeviceStatus()).toMatchObject({
+      deviceId: "dev-9",
+      batteryLevel: "low",
+      connected: false,
+      lastSeen: "2026-09-12T18:43:00.000Z",
+    })
+    expect(warn.mock.calls.flat().join(" ")).toMatch(/METER OFFLINE/)
+  })
+
+  it("records unreported health fields as null", async () => {
+    listWaterSensors.mockResolvedValue([{ id: "dev-9", name: "House", timezone: "UTC" }])
+    await syncFlumeData()
+    expect(await readDeviceStatus()).toMatchObject({ batteryLevel: null, connected: null, lastSeen: null })
   })
 
   it("fails clearly when the account has no water sensor", async () => {

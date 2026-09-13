@@ -276,6 +276,25 @@ describe("listWaterSensors", () => {
     expect(devices[1].timezone).toBeUndefined()
   })
 
+  it("carries the sensor's battery, connection and last contact", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          data: [
+            { id: 2, type: 2, battery_level: "low", connected: false, last_seen: "2026-09-12T18:43:00.000Z" },
+            { id: 3, type: 2, connected: "yes" },
+          ],
+        })
+      )
+    )
+    const [dead, odd] = await listWaterSensors("u1", "tok")
+    expect(dead).toMatchObject({ batteryLevel: "low", connected: false, lastSeen: "2026-09-12T18:43:00.000Z" })
+    // A non-boolean "connected" is not reported, rather than coerced to true.
+    expect(odd.connected).toBeUndefined()
+    expect(odd.batteryLevel).toBeUndefined()
+  })
+
   it("raises a rate-limit error on HTTP 429", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, false, 429)))
     await expect(listWaterSensors("u1", "tok")).rejects.toMatchObject({ rateLimited: true })

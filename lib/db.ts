@@ -107,11 +107,11 @@ export function ensureSchema(): Promise<void> {
         // The current Flume refresh token, and nothing else.
         //
         // It lives in the database rather than in an environment variable
-        // because Flume returns a refresh_token on every refresh and does not
-        // document whether it is a new one. If it rotates, a static env var
-        // goes stale and the daily sync dies quietly about a week later — the
-        // worst failure shape available, since the symptom is data silently
-        // stopping. Storing it means the rotated value survives.
+        // because Flume rotates the refresh token on every refresh (undocumented,
+        // but every production sync has logged it). A static env var would go
+        // stale after one sync and the next would fail — the worst failure
+        // shape available, since the symptom is data silently stopping.
+        // Storing it means the rotated value survives.
         //
         // Deliberately NOT in scripts/backup.ts TABLES: it is a live
         // credential, the backups are 90-day GitHub artifacts, and it can be
@@ -124,6 +124,18 @@ export function ensureSchema(): Promise<void> {
            id            INTEGER PRIMARY KEY CHECK (id = 1),
            refresh_token TEXT,
            updated_at    TEXT
+         )`,
+        // The water sensor's health as of the last sync: battery, connection,
+        // last contact. One row, replaced on every sync — it is a reading, not a
+        // history. Not in the backups: the next sync rewrites it from Flume.
+        `CREATE TABLE IF NOT EXISTS flume_device (
+           id            INTEGER PRIMARY KEY CHECK (id = 1),
+           device_id     TEXT NOT NULL,
+           name          TEXT NOT NULL,
+           battery_level TEXT,
+           connected     INTEGER,
+           last_seen     TEXT,
+           checked_at    TEXT NOT NULL
          )`,
         // Per-minute-only aggregates that daily gallon sums can't reconstruct
         // (fleet-wide gpm stats + baseline warnings). Recomputed over the full
