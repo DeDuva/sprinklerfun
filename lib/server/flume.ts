@@ -1,28 +1,40 @@
-import type { FlumeConnection, FlumeDevice, FlumeRow } from "@/lib/types"
-import { readFlumeConnection, updateFlumeConnection } from "@/lib/server/settings"
+import type { FlumeRow } from "@/lib/types"
 
 // ---------------------------------------------------------------------------
 // Flume Personal API client (server-only).
 //
-// Auth is OAuth2 "password" grant: exchange client_id/secret + account
-// email/password for an access token (JWT) + refresh token. The account password
-// is used ONLY here for the initial exchange and never stored; all later calls
-// use the refresh token. See https://flumetech.readme.io/docs/authentication.
+// Auth is OAuth2 "password" grant: client_id/secret + account email/password in
+// exchange for an access token. See https://flumetech.readme.io/docs/authentication.
 //
-// Rate limit: 120 requests/hour → HTTP 429. We make at most a couple of requests
-// per sync (token refresh + one batched usage query), so we stay well under it.
+// There is deliberately no refresh-token handling and nothing persisted. The
+// original version of this file stored a rotating refresh token in an encrypted
+// database column, which needed a table, an encryption key, a settings UI and a
+// connect/disconnect flow — several hundred lines to avoid re-sending a password
+// this server already holds. A sync runs once a day and Flume allows 120
+// requests an hour, so doing the password grant each time costs one request and
+// deletes all of that machinery.
+//
+// Rate limit: 120 requests/hour → HTTP 429. A sync makes at most three calls
+// (token, devices, query), so it stays far under.
 // ---------------------------------------------------------------------------
 
 const BASE = "https://api.flumewater.com"
-
-// Refresh the access token when it is within this window of expiring.
-const EXPIRY_SKEW_MS = 60_000
 
 export class FlumeError extends Error {
   constructor(message: string, readonly status?: number, readonly rateLimited = false) {
     super(message)
     this.name = "FlumeError"
   }
+}
+
+/** All four variables must be present; a partial configuration is not "nearly working". */
+export function flumeConfigured(): boolean {
+  return Boolean(
+    process.env.FLUME_CLIENT_ID &&
+      process.env.FLUME_CLIENT_SECRET &&
+      process.env.FLUME_USERNAME &&
+      process.env.FLUME_PASSWORD
+  )
 }
 
 // Flume wraps most responses as { success, data: [...] }. Unwrap defensively.
@@ -43,143 +55,119 @@ function raise(res: Response, body: { message?: string }, context: string): neve
       true
     )
   }
+  // Deliberately not including the request body or credentials in the message:
+  // this string ends up in logs.
   const detail = body.message ? `: ${body.message}` : ""
   throw new FlumeError(`Flume ${context} failed (HTTP ${res.status})${detail}`, res.status)
 }
 
 interface TokenResponse {
   access_token: string
-  refresh_token: string
-  expires_in: number // seconds
+  expires_in: number
 }
 
-function unwrapToken(body: { data?: unknown[] }): TokenResponse {
-  const t = (body.data?.[0] ?? body) as Partial<TokenResponse>
-  if (!t.access_token || !t.refresh_token) {
-    throw new FlumeError("Flume token response missing tokens")
-  }
-  return {
-    access_token: t.access_token,
-    refresh_token: t.refresh_token,
-    expires_in: typeof t.expires_in === "number" ? t.expires_in : 3600,
-  }
-}
+/** Exchange the account credentials for an access token. */
+export async function fetchAccessToken(): Promise<string> {
+  if (!flumeConfigured()) throw new FlumeError("Flume is not configured")
 
-// Decode the numeric user_id from an access-token JWT payload.
-export function decodeJwtUserId(accessToken: string): string {
-  const parts = accessToken.split(".")
-  if (parts.length < 2) throw new FlumeError("Malformed access token")
-  const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"))
-  const userId = payload?.user_id
-  if (userId == null) throw new FlumeError("Access token payload has no user_id")
-  return String(userId)
-}
-
-// Initial token exchange with the account password (never persisted).
-export async function exchangePassword(args: {
-  clientId: string
-  clientSecret: string
-  username: string
-  password: string
-}): Promise<TokenResponse> {
   const res = await fetch(`${BASE}/oauth/token`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       grant_type: "password",
-      client_id: args.clientId,
-      client_secret: args.clientSecret,
-      username: args.username,
-      password: args.password,
+      client_id: process.env.FLUME_CLIENT_ID,
+      client_secret: process.env.FLUME_CLIENT_SECRET,
+      username: process.env.FLUME_USERNAME,
+      password: process.env.FLUME_PASSWORD,
     }),
   })
   const body = await parseJson(res)
   if (!res.ok) raise(res, body, "authentication")
-  return unwrapToken(body)
-}
 
-// Mint a fresh access token from the stored refresh token.
-async function refreshAccessToken(conn: FlumeConnection): Promise<TokenResponse> {
-  if (!conn.clientId || !conn.clientSecret || !conn.refreshToken) {
-    throw new FlumeError("Flume is not connected")
-  }
-  const res = await fetch(`${BASE}/oauth/token`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      client_id: conn.clientId,
-      client_secret: conn.clientSecret,
-      refresh_token: conn.refreshToken,
-    }),
-  })
-  const body = await parseJson(res)
-  if (!res.ok) raise(res, body, "token refresh")
-  return unwrapToken(body)
-}
-
-// Return a valid access token, refreshing + persisting it when expired/near-expiry.
-export async function getValidAccessToken(conn: FlumeConnection): Promise<string> {
-  const notExpired =
-    conn.accessToken &&
-    conn.accessExpiresAt &&
-    new Date(conn.accessExpiresAt).getTime() - Date.now() > EXPIRY_SKEW_MS
-  if (notExpired) return conn.accessToken!
-
-  const t = await refreshAccessToken(conn)
-  const accessExpiresAt = new Date(Date.now() + t.expires_in * 1000).toISOString()
-  await updateFlumeConnection({
-    accessToken: t.access_token,
-    refreshToken: t.refresh_token, // Flume may rotate the refresh token
-    accessExpiresAt,
-  })
-  // Keep the in-memory copy consistent for the rest of this request.
-  conn.accessToken = t.access_token
-  conn.refreshToken = t.refresh_token
-  conn.accessExpiresAt = accessExpiresAt
+  const t = (body.data?.[0] ?? body) as Partial<TokenResponse>
+  if (!t.access_token) throw new FlumeError("Flume token response contained no access_token")
   return t.access_token
+}
+
+/** The numeric user_id lives in the access token's JWT payload, not in a separate call. */
+export function decodeJwtUserId(accessToken: string): string {
+  const parts = accessToken.split(".")
+  if (parts.length < 2) throw new FlumeError("Malformed access token")
+  let payload: { user_id?: unknown }
+  try {
+    payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"))
+  } catch {
+    throw new FlumeError("Access token payload is not JSON")
+  }
+  if (payload?.user_id == null) throw new FlumeError("Access token payload has no user_id")
+  return String(payload.user_id)
+}
+
+export interface FlumeDevice {
+  id: string
+  name: string
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deviceName(d: any): string {
-  return (
-    d?.location?.name ??
-    d?.name ??
-    d?.product ??
-    `Flume device ${d?.id ?? "?"}`
-  )
+  return d?.location?.name ?? d?.name ?? d?.product ?? `Flume device ${d?.id ?? "?"}`
 }
 
-// List the account's Water Sensor devices (type 2). Bridges (type 1) are skipped.
+/**
+ * The account's Water Sensor devices (type 2). Bridges (type 1) are skipped —
+ * they relay, they do not meter.
+ */
 export async function listWaterSensors(userId: string, accessToken: string): Promise<FlumeDevice[]> {
   const res = await fetch(`${BASE}/users/${userId}/devices?location=true`, {
     headers: { authorization: `Bearer ${accessToken}` },
   })
   const body = await parseJson(res)
   if (!res.ok) raise(res, body, "device list")
-  const devices = (body.data ?? []) as Record<string, unknown>[]
-  return devices
+  return ((body.data ?? []) as Record<string, unknown>[])
     .filter((d) => Number(d.type) === 2)
-    .map((d) => ({ id: String(d.id), type: Number(d.type), name: deviceName(d) }))
+    .map((d) => ({ id: String(d.id), name: deviceName(d) }))
 }
 
-// Format a Date as Flume's local-time query format "YYYY-MM-DD HH:MM:SS". The
-// server TZ is pinned to APP_TIMEZONE (see lib/db.ts) so this is the account's
-// local time, which is what the Flume query endpoint expects.
-export function fmtFlumeLocal(d: Date): string {
+/**
+ * Format a datetime the way Flume's query endpoint wants it: "YYYY-MM-DD HH:MM:SS".
+ *
+ * Built from UTC components on purpose. The previous version used local getters
+ * and a comment saying the server timezone was pinned by APP_TIMEZONE — that pin
+ * was deleted, production never set the variable, and on Vercel the process runs
+ * UTC anyway. Reading the process timezone would make the query window depend on
+ * where the code happens to run, which is the class of bug this codebase spent a
+ * PR removing.
+ *
+ * Flume interprets these as ACCOUNT-local time, so a UTC-built window can be off
+ * by the account's offset. That is why syncFlumeData pads both ends by a day:
+ * the overlap absorbs any offset, and rows dedupe on their datetime primary key,
+ * so over-fetching costs nothing but under-fetching would silently lose a day.
+ */
+export function fmtFlumeDatetime(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0")
   return (
-    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
-    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+    `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ` +
+    `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
   )
 }
 
-// Query water usage between two datetimes and return rows in the app's shape.
-// `bucket` defaults to "HR" to match the manual CSV export (scale=hour) so
-// API-sourced rows are identical in granularity to manually-imported ones.
-// Flume returns datetimes in account-local time ("YYYY-MM-DD HH:MM:SS"); we
-// normalize each to a UTC ISO string via Date so it matches CSV-imported rows,
-// which the enrichment (lib/analyze.ts) converts back to local.
+/**
+ * Query water usage and return rows in the app's shape.
+ *
+ * `bucket` is MIN — per-minute — and that is not a detail. This app attributes
+ * water to sprinkler stations by minute of day: `localDateAndMin` in lib/analyze
+ * turns a timestamp into a minute offset, and the schedule reconstruction lines
+ * station run windows up against it. The previous version defaulted to "HR" on
+ * the stated grounds that it matched the manual CSV export; the real exports are
+ * per-minute (56,041 rows for five weeks), and hourly totals would make station
+ * attribution meaningless.
+ *
+ * The datetime is returned EXACTLY as Flume sends it. The previous version ran
+ * it through `new Date(...).toISOString()`, producing a UTC string with a `Z` —
+ * which POST /api/rows now rejects with a 400, deliberately, because everything
+ * downstream reads these as naive wall-clock time. Flume's own format,
+ * "YYYY-MM-DD HH:MM:SS", is already precisely what the ingest accepts.
+ */
 export async function queryUsage(args: {
   userId: string
   deviceId: string
@@ -199,9 +187,9 @@ export async function queryUsage(args: {
       queries: [
         {
           request_id: requestId,
-          bucket: args.bucket ?? "HR",
-          since_datetime: fmtFlumeLocal(args.since),
-          until_datetime: fmtFlumeLocal(args.until),
+          bucket: args.bucket ?? "MIN",
+          since_datetime: fmtFlumeDatetime(args.since),
+          until_datetime: fmtFlumeDatetime(args.until),
           operation: "SUM",
           units: "GALLONS",
           sort_direction: "ASC",
@@ -214,15 +202,8 @@ export async function queryUsage(args: {
 
   // data: [ { "<request_id>": [ { datetime, value } ] } ]
   const first = (body.data?.[0] ?? {}) as Record<string, { datetime: string; value: number }[]>
-  const samples = first[requestId] ?? []
-  return samples.map((s) => ({
-    // Local "YYYY-MM-DD HH:MM:SS" → UTC ISO, matching CSV-imported rows.
-    datetime: new Date(s.datetime.replace(" ", "T")).toISOString(),
+  return (first[requestId] ?? []).map((s) => ({
+    datetime: s.datetime,
     gallons: Number(s.value) || 0,
   }))
-}
-
-// Convenience for callers that just have the stored connection.
-export async function loadConnection(): Promise<FlumeConnection> {
-  return readFlumeConnection()
 }

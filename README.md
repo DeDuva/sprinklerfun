@@ -25,7 +25,9 @@ npm run dev        # http://localhost:3000
 4. **Save window** → return to Dashboard.
 
 ### Weekly check-in (< 2 min)
-1. Log in → **Config** → upload your new CSV. Data appends, duplicates skipped.
+1. Log in. If Flume credentials are configured the data is already there — the app pulls new
+   readings once a day. Otherwise: **Config** → upload your new CSV. Either way data appends and
+   duplicates are skipped, and **Config → Flume sync → Sync now** fetches immediately.
 2. Scan **Station Alerts** for red warnings.
 3. Review the **Consumption Chart** (1M window) for anomaly markers (⚠) or unexpected step-changes.
 4. Click a suspicious bar → **Per-Station Flow Rate** chart updates to that day; hover a bar to see gpm vs. baseline and the active config version.
@@ -76,6 +78,7 @@ See [SECURITY.md](SECURITY.md) for what is and isn't protected.
 | Charts | Recharts 3 |
 | State | Zustand (in-memory; the server owns the data) |
 | Database | Turso (libSQL / SQLite) |
+| Data in | Flume Personal API, pulled daily by a Vercel cron — or a CSV upload if you'd rather |
 | Auth | Google sign-in + email allow-list → signed httpOnly cookie, enforced in `proxy.ts` |
 | UI components | shadcn/ui |
 | CSV parsing | Papa Parse |
