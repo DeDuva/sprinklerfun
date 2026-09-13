@@ -205,19 +205,52 @@ describe("syncFlumeData: the query window", () => {
     expect(queryUsage.mock.calls[0][0].since.toISOString().slice(0, 10)).toBe("2026-08-27")
   })
 
-  it("reaches a year back when the database is empty", async () => {
-    await syncFlumeData()
+  it("backfills about three weeks when the database is empty, in a single run", async () => {
+    const res = await syncFlumeData()
     const daysBack = (Date.now() - queryUsage.mock.calls[0][0].since.getTime()) / 86_400_000
-    expect(daysBack).toBeGreaterThan(360)
-    expect(daysBack).toBeLessThan(370)
+    expect(daysBack).toBeGreaterThan(20)
+    expect(daysBack).toBeLessThan(22)
+    // The empty-database backfill must fit the budget, or it would be fetched
+    // over several runs and could stall on slices that hold no data.
+    expect(res.truncated).toBe(false)
   })
 
-  it("slices a long backfill rather than asking for it all at once", async () => {
+  it("asks for at most 12 hours of per-minute data per query", async () => {
+    // Production rejected 14-day MIN queries with "A provided parameter failed
+    // validation".
     await syncFlumeData()
     expect(queryUsage.mock.calls.length).toBeGreaterThan(20)
     for (const [args] of queryUsage.mock.calls) {
-      expect((args.until.getTime() - args.since.getTime()) / 86_400_000).toBeLessThanOrEqual(14.01)
+      expect(args.until.getTime() - args.since.getTime()).toBeLessThanOrEqual(12 * 3_600_000)
     }
+  })
+
+  it("stays inside Flume's hourly rate limit on a long gap, fetching the oldest part first", async () => {
+    await replaceWindows([win("w1")])
+    const old = new Date(Date.now() - 60 * 86_400_000).toISOString().slice(0, 10)
+    await insertRows([{ datetime: `${old} 00:00:00`, gallons: 1 }])
+
+    const res = await syncFlumeData()
+
+    // 120 requests/hour, less the refresh and the device lookup, less room
+    // for a manual "Sync now" in the same hour.
+    expect(queryUsage.mock.calls.length).toBe(50)
+    expect(res).toMatchObject({ ok: true, truncated: true })
+    // Oldest first: the next run resumes from the last stored row, so starting
+    // at the old end is what keeps the catch-up free of holes.
+    const firstSince = queryUsage.mock.calls[0][0].since.toISOString().slice(0, 10)
+    expect(firstSince < old).toBe(true)
+    const lastUntil = queryUsage.mock.calls.at(-1)![0].until.getTime()
+    expect(lastUntil).toBeLessThan(Date.now() - 30 * 86_400_000)
+  })
+
+  it("reports an ordinary daily window as complete", async () => {
+    await replaceWindows([win("w1")])
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
+    await insertRows([{ datetime: `${yesterday} 00:00:00`, gallons: 1 }])
+    const res = await syncFlumeData()
+    expect(res.truncated).toBe(false)
+    expect(queryUsage.mock.calls.length).toBeLessThanOrEqual(8)
   })
 
   it("covers the window contiguously, with no gap between slices", async () => {

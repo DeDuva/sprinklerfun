@@ -416,8 +416,13 @@ Three details that are load-bearing rather than incidental:
 - **The window is padded a day at each end and queried in slices.** Flume reads
   the query datetimes as *account*-local while we build them from UTC, so the
   padding absorbs the offset; rows dedupe on their primary key, so over-fetching
-  is free and under-fetching would silently lose a day. Slicing keeps a year of
-  per-minute data (~525,000 samples) from arriving in one response.
+  is free and under-fetching would silently lose a day. Each query covers at most
+  12 hours: production rejected 14-day `MIN` queries as failing validation, and
+  Flume documents no maximum range.
+- **One sync makes at most 50 queries.** Flume allows 120 requests an hour. A
+  longer window fetches its *oldest* part and the next run carries on from the
+  last stored row; an empty database backfills 20 days, and older history comes
+  from a CSV upload.
 
 The sync is idempotent by construction, which Vercel's cron contract requires
 rather than suggests: delivery is best effort, may skip a run, and may deliver
