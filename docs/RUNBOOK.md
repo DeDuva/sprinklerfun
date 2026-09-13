@@ -18,28 +18,39 @@ wholesale:
 So a bad deploy that corrupts data leaves corrupt data behind after the rollback. The
 only fix is a restore.
 
-## Logging in, and rotating the password
+## Signing in, granting and revoking access
 
-The app is behind one password, `APP_PASSWORD`, set in Vercel → Production. Every
-page and API route needs a session cookie obtained by logging in with it; only the
-login page and `GET /api/health` are open.
+The app is behind Google sign-in. Every page and API route needs a session; only
+the sign-in page, the `/api/auth` endpoints and `GET /api/health` are open.
 
-To rotate it — after a lost phone, or on principle:
+**To give someone access**, add their Google address to `ALLOWED_EMAILS`:
 
 ```bash
-vercel env rm APP_PASSWORD production
-vercel env add APP_PASSWORD production   # paste a long random value; do not invent one
-vercel --prod                            # a redeploy is required to pick it up
+vercel env rm ALLOWED_EMAILS production
+vercel env add ALLOWED_EMAILS production   # the full comma-separated list
+vercel --prod                              # a redeploy is required to pick it up
 ```
 
-**Rotating logs every device out, including the one you are holding.** The session
-cookie is an HMAC of the password, so changing the password invalidates every
-cookie ever issued. It is also the *only* revocation there is: individual sessions
-cannot be cancelled, because none are stored. Log back in on each device after.
+**To revoke someone**, remove their address the same way. It takes effect on
+their next request — the allow-list is re-read on every one, not just at sign-in
+— so there is no waiting for a cookie to expire.
 
-If `APP_PASSWORD` is ever missing from the deployment, every request returns 503
-while `/api/health` keeps answering normally. That exact combination means the
-variable is gone, not that the database is down.
+**To sign every device out at once** (a lost laptop, or on principle), rotate the
+cookie signing key:
+
+```bash
+vercel env rm SESSION_SECRET production
+vercel env add SESSION_SECRET production   # openssl rand -base64 32
+vercel --prod
+```
+
+Everyone signs back in with Google afterwards, including you.
+
+If the Google credentials are ever missing — or only partly set — every request
+returns 503 while `/api/health` keeps answering normally. That exact combination
+means a variable is gone, not that the database is down.
+
+Signing out of the app does not sign you out of Google, deliberately.
 
 ## Rolling back a bad deploy
 
@@ -140,9 +151,9 @@ property that matters: the backup job never needs to change anything.
 
 Note that this token became a real secret when the login landed. The original
 argument for it was that it granted nothing an anonymous visitor did not already
-have, because reads were public; reads now require the password, so this token is
-the one remaining way to read the data without it. It lives only in Actions
-secrets.
+have, because reads were public; reads now require a session, so this token is
+the one remaining way to read the data without signing in. It lives only in
+Actions secrets.
 
 Expiration is `never` on purpose: a dated token means the backup stops silently
 when it lapses, which is the worst possible failure for the thing that *is* the
@@ -191,7 +202,8 @@ before it, so a config with no windows would leave the entire history unattribut
 ## Local development
 
 No environment variables are needed. `lib/db.ts` falls back to a local SQLite file
-and `APP_PASSWORD` is unset, so the guard runs in open mode:
+and no Google credentials are set, so the guard runs in open mode — which is also
+how the E2E suite's server would run if it did not set them deliberately:
 
 ```bash
 npm run dev       # http://localhost:3000
@@ -222,7 +234,8 @@ in the same sitting.
 | Where | Setting | Why |
 |---|---|---|
 | Vercel → project → Settings → Git | Under *Connected Git Repository*: **Pull Request Comments** off, **Commit Comments** off | The bot commented on every PR, including every Dependabot PR. Vercel has replaced the single *Silence GitHub comments* switch with these two toggles, so look for them by name — the old one no longer exists. The `github.silent` key in `vercel.json` does the same thing but is deprecated; if it was ever set, Vercel migrates it to these toggles for you. |
-| Vercel → project → Settings → Environment Variables | Production only: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `APP_PASSWORD` | Nothing is set for Preview or Development. These three are the whole list. Check with `vercel env ls production` from a linked checkout. |
+| Vercel → project → Settings → Environment Variables | Production only: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET`, `ALLOWED_EMAILS` | Nothing is set for Preview or Development. These six are the whole list. Check with `vercel env ls production` from a linked checkout. |
+| Google Cloud console → APIs & Services → Credentials | OAuth 2.0 Client ID (Web application). Authorised redirect URI must be exactly `https://sprinklerfun.vercel.app/api/auth/callback` | A mismatch here fails the sign-in with `redirect_uri_mismatch` at Google, before any of our code runs. The consent screen's test-user list matters too if the app is still in "testing" mode. |
 | GitHub → Settings → Rules → ruleset `main` | PR required, squash only, branch up to date; required checks `types + tests`, `lint`, `e2e`, `audit` | Rename a CI job without renaming it here and the gate silently stops requiring it. |
 | GitHub → Settings → Secrets → Actions | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (read-only database token) | Used only by `backup.yml`. |
 | GitHub → Settings → Advanced Security | Dependabot alerts and security updates, secret scanning, push protection | Security updates open as soon as an advisory lands, whatever the schedule in `.github/dependabot.yml` — but they do obey its `ignore` rules, which is why majors there are grouped, not ignored. |
@@ -236,10 +249,13 @@ branch, add `"<branch>": true` under `deploymentEnabled` in that branch's commit
 
 ## Known operational limits
 
-- **No rate limiting, including on the login.** Per-instance counters are
-  meaningless on serverless. The mitigation is a long random password; the
-  realistic control beyond that is Vercel's edge firewall, configured in the
-  dashboard.
+- **No rate limiting of our own.** Per-instance counters are meaningless on
+  serverless. Google rate-limits the sign-in itself, which is where guessing
+  would happen; the realistic control beyond that is Vercel's edge firewall,
+  configured in the dashboard.
+- **Sign-in depends on Google being reachable.** Existing sessions keep working
+  during an outage — they are verified locally against `SESSION_SECRET` — but
+  nobody new can sign in until Google is back.
 - **`recomputeStats()` re-reads the entire `flume_rows` table on every write.** This
   is the scaling cliff. At the current ~175k rows it is fine; it is superlinear in
   accumulated history.

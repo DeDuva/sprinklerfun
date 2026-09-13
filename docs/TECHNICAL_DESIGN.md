@@ -10,7 +10,7 @@
 | Charts | Recharts 3 | React-native, good enough for this data scale |
 | CSV parsing | Papa Parse | Handles Flume's datetime format, browser-native |
 | State | Zustand (in-memory) | Simple global store; holds a copy of the server's config, persists nothing |
-| Auth | One password → HMAC cookie, checked in `proxy.ts` | One household, no user model; every route behind it by default |
+| Auth | Google sign-in + email allow-list → signed cookie, checked in `proxy.ts` | Identity from Google, authorisation from `ALLOWED_EMAILS`; every route behind it by default |
 | Database | Turso (libSQL / SQLite) via `@libsql/client` | Durable, multi-device time-series store; SQL-native aggregation |
 | Backend | Next.js Route Handlers (`app/api/*`, Node runtime) | Ingest + rollup endpoints; reuse the pure `analyze.ts` functions server-side |
 | UI components | shadcn/ui | Accessible, unstyled-first components |
@@ -76,7 +76,7 @@ sprinkler-app/
 │       ├── analyze.test.ts     # Vitest unit tests
 │       └── staging.test.ts     # Staged-edit logic tests
 ├── .github/workflows/ci.yml    # typecheck + tests + lint; required checks on main
-├── .env.example                # TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, APP_PASSWORD
+├── .env.example                # TURSO_*, GOOGLE_*, SESSION_SECRET, ALLOWED_EMAILS
 ├── vitest.config.ts
 └── vercel.json
 ```
@@ -311,27 +311,49 @@ anchored at both ends, so a `Z` or `±HH:MM` suffix is a 400. An offset would be
 ignored rather than honoured, and a silent shift in every rollup is a worse
 outcome than a rejected upload.
 
-### Auth (single-user)
+### Auth (Google sign-in, one household)
 
-One password, `APP_PASSWORD`, and one guard: `proxy.ts` (Next 16's renamed
-`middleware`, which always runs on the Node runtime). It requires a session
-cookie on every route except the login page, `POST /api/login`, `GET /api/health`
-and static output — so a route is protected by existing, not by remembering.
+One guard: `proxy.ts` (Next 16's renamed `middleware`, which always runs on the
+Node runtime). It requires a session cookie on every route except the sign-in
+page, the `/api/auth` endpoints, `GET /api/health` and static output — so a route
+is protected by existing, not by remembering. The `/api/auth` exclusion is not
+optional: the callback is where Google returns the browser, and nobody holds a
+session at that moment.
 
 `lib/server/session.ts` holds the three decisions:
 
 | Mode | When | Behaviour |
 |---|---|---|
-| `open` | no password, not a deployment | everything allowed — local dev and both test suites, zero setup |
-| `enforced` | `APP_PASSWORD` set | valid cookie required; API gets 401, pages redirect to `/login?next=…` |
-| `refuse` | no password, on a deployment | every request 503s |
+| `open` | no Google credentials, not a deployment | everything allowed — local dev and both test suites, zero setup |
+| `enforced` | `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `SESSION_SECRET` all set | valid session required; API gets 401, pages redirect to `/login?next=…` |
+| `refuse` | credentials missing or partial, on a deployment | every request 503s |
 
-The cookie value is `HMAC(APP_PASSWORD, "sprinklerfun-session-v1")` — httpOnly,
-SameSite=Lax, 30 days. There is no session table: the token is a pure function of
-the password, which is what makes rotating it a global logout, and equally means
-an individual session cannot be revoked. For one household, that trade is the
-point. The mode keys off `VERCEL`, not `NODE_ENV`, for the reason in
-`lib/server/env.ts` — `next start` sets `NODE_ENV=production` locally too.
+The mode keys off `VERCEL`, not `NODE_ENV`, for the reason in
+`lib/server/env.ts` — `next start` sets `NODE_ENV=production` locally too, which
+is exactly how the E2E suite runs.
+
+**Identity vs authorisation.** Google answers *who*; `ALLOWED_EMAILS` answers
+*whether*. `sessionEmail()` is what the guard calls, and it checks three things:
+signature, expiry, and that the address is **still** on the list. That last check
+runs on every request, so removing someone revokes them on their next click
+rather than whenever their cookie runs out.
+
+**The cookie** is `base64url({ email, exp }) . hex HMAC-SHA256` — httpOnly,
+SameSite=Lax, seven days, signed with `SESSION_SECRET`. A signed cookie, not a
+JWT: one issuer, one audience, no third party parsing it, so a JWT library would
+buy a spec we do not use. Rotating `SESSION_SECRET` invalidates every session at
+once.
+
+**The flow** is a hand-rolled authorization-code exchange with PKCE
+(`lib/server/google.ts`), three endpoints under `app/api/auth/`:
+`login` mints `state` + a PKCE verifier into short-lived httpOnly cookies and
+redirects to Google; `callback` compares `state`, exchanges the code with the
+verifier, requires `email_verified`, checks the allow-list, and sets the session;
+`logout` expires the cookie. It does not sign anyone out of Google, deliberately.
+
+Every failure lands on `/login?error=<code>` with a generic message, because
+"not on the allow-list" versus "bad code" is useful only to someone probing which
+addresses are permitted. The specific reason goes to the server log.
 
 This replaced a shared header whose value shipped to the browser as
 `NEXT_PUBLIC_APP_SHARED_SECRET`; see `SECURITY.md`.
@@ -364,7 +386,10 @@ vercel link                              # select the "sprinklerfun" project
 # 2nd arg is the ENVIRONMENT (production | preview | development), not the project:
 vercel env add TURSO_DATABASE_URL production
 vercel env add TURSO_AUTH_TOKEN production
-vercel env add APP_PASSWORD production             # long + random, from a password manager
+vercel env add GOOGLE_CLIENT_ID production         # from the Google Cloud console
+vercel env add GOOGLE_CLIENT_SECRET production
+vercel env add SESSION_SECRET production           # openssl rand -base64 32
+vercel env add ALLOWED_EMAILS production           # comma-separated addresses
 ```
 
 - Run these in the same shell/working directory the app builds from (for WSL
@@ -624,7 +649,7 @@ station names.
 
 One SSR detail does still matter: `app/layout.tsx` reads the session cookie per
 request to decide whether to show "Log out". Asking the session module alone
-baked the answer in at **build** time, when no password is set — so the deployed
+baked the answer in at **build** time, when no credentials are set — so the deployed
 app showed a logged-in user no way to log out. The e2e suite caught that; nothing
 about the source would have.
 

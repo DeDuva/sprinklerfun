@@ -250,7 +250,7 @@ that particular browser last remembered. It remains a single-user,
 single-property app.
 
 ## Out of Scope (V1)
-- Multi-user / multi-tenant accounts (the DB is single-user; the whole app sits behind one password, with no per-user identity)
+- Multi-user / multi-tenant accounts. Google sign-in identifies *who* is at the door and an allow-list decides who gets in, but there is still no per-user identity inside the app: everyone admitted sees and edits the same single-household data
 - Direct Flume API integration
 - Email / SMS alerts
 - Weather data integration

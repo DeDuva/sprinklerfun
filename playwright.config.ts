@@ -37,11 +37,21 @@ export default defineConfig({
     env: {
       E2E_DB: "1",
       TURSO_DATABASE_URL: `file:.data/e2e-${PORT}.db`,
-      // The suite runs against a server with auth ENFORCED, so every test logs
-      // in the way a person does. Running it open would leave the guard — the
-      // only thing standing between this deployment and anyone who finds it —
-      // exercised by nothing at all.
-      APP_PASSWORD: "e2e-password",
+      // The suite runs against a server with auth ENFORCED. Running it open
+      // would leave the guard — the only thing standing between this deployment
+      // and anyone who finds it — exercised by nothing at all.
+      //
+      // A headless browser cannot drive a Google consent screen, so the tests do
+      // not try: they mint a session cookie with the same SESSION_SECRET the
+      // server is using. That is not a bypass — knowing the signing key is what
+      // being the server *means* — and it leaves no test-only code path in the
+      // product. The Google client values are never contacted, because no test
+      // reaches the token exchange; they exist so `authMode()` reports
+      // "enforced" rather than "open".
+      GOOGLE_CLIENT_ID: "e2e-client-id",
+      GOOGLE_CLIENT_SECRET: "e2e-client-secret",
+      SESSION_SECRET: "e2e-session-secret-not-used-anywhere-real",
+      ALLOWED_EMAILS: "e2e@sprinklerfun.test",
     },
   },
 })
