@@ -4,7 +4,7 @@ import Flo from "@/components/design/Flo"
 
 export const metadata: Metadata = {
   title: "About — SprinklerFun",
-  description: "What SprinklerFun is, how it works, and the design system behind it.",
+  description: "What SprinklerFun is, where its data comes from, and the design system behind it.",
 }
 
 export default function AboutPage() {
@@ -15,18 +15,28 @@ export default function AboutPage() {
         <Flo mood="wave" size={72} idle />
         <div>
           <h1 className="text-3xl font-bold tracking-tight">About SprinklerFun</h1>
-          <p className="text-gray-600">Understand and optimize your backyard&rsquo;s water, one Flume export at a time.</p>
+          <p className="text-gray-600">Understand and optimize your backyard&rsquo;s water, with fresh meter data every day.</p>
         </div>
       </div>
 
       <div className="space-y-4 text-[15px] leading-relaxed text-gray-700">
         <p>
-          SprinklerFun turns a{" "}
-          <a className="text-blue-600 underline" href="https://flumewater.com" target="_blank" rel="noreferrer">Flume smart-meter</a>{" "}
-          CSV
-          into a clear picture of what your sprinkler system is actually doing — spotting the zone that&rsquo;s
-          running hot, the week that spiked, and the schedule change that explains it. Upload a file and the
-          dashboard, per-station flow, and timing calibration light up. No accounts to scan a chart.
+          SprinklerFun turns your{" "}
+          <a className="text-blue-600 underline" href="https://flumewater.com" target="_blank" rel="noreferrer">Flume smart meter</a>&rsquo;s
+          minute-by-minute readings into a clear picture of what your sprinkler system is actually doing —
+          spotting the zone that&rsquo;s running hot, the week that spiked, and the schedule change that
+          explains it.
+        </p>
+        <p>
+          <b>The data comes in on its own.</b> Once a day the app pulls the latest readings straight from
+          Flume, so the dashboard is already current when you open it. Want to see this morning&rsquo;s
+          watering right now? <b>Config → Flume sync → Sync now</b> asks immediately. A CSV export from
+          Flume still works too, for filling in older history. Readings are matched on their timestamp, so
+          nothing is ever counted twice.
+        </p>
+        <p>
+          It&rsquo;s a household app: you sign in with Google, and only the accounts on the household&rsquo;s
+          list get in. Everyone who does sees the same data and the same config, on any device.
         </p>
         <p>
           Meet <b>Flo</b>, the water droplet who fronts the experience. She reads your meter like a weather
@@ -58,9 +68,9 @@ export default function AboutPage() {
       {/* quick facts */}
       <div className="mt-8 grid gap-4 sm:grid-cols-3">
         {[
-          { t: "Dashboard", d: "Flo's weekly headline, station status, and the unified consumption chart." },
-          { t: "Analysis", d: "Timing & flow calibration — reconcile your config to what the meter really saw." },
-          { t: "Reports", d: "Share a read-only yard report, or get Flo's recap emailed every Sunday." },
+          { t: "Dashboard", d: "Flo's monthly headline, station alerts, the last two weeks of consumption, and per-station flow for any day." },
+          { t: "Analysis", d: "Timing & flow calibration — reconcile your config to what the meter really saw, including the delay between stations." },
+          { t: "Config", d: "A timeline of schedule changes, so each day is analyzed against the settings that were really in effect." },
         ].map((f) => (
           <div key={f.t} className="rounded-xl border border-gray-200 bg-white p-4">
             <div className="font-semibold text-[#143049]">{f.t}</div>

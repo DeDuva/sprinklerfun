@@ -6,7 +6,7 @@ A web application that helps a homeowner analyze Flume smart meter data to under
 ## User Persona
 **Primary User**: Homeowner with a Flume smart meter and a two-timer, multi-zone sprinkler system (EBMUD service area).
 - Wants to spot broken or wasteful sprinklers quickly
-- Checks in weekly after downloading a new Flume CSV export
+- Checks in weekly; the meter data is already there, pulled from Flume every day
 - Makes seasonal schedule adjustments a few times a year; keeps notes on what changed and why
 - Does a seasonal audit: physically measures each station's flow rate and records the baseline gpm
 - May run multiple programs on a timer (e.g., full summer schedule on Mon/Wed/Fri, a lighter drought schedule on Sat)
@@ -17,7 +17,9 @@ A web application that helps a homeowner analyze Flume smart meter data to under
 ## Core Data Model
 
 ### Input Data
-Flume exports a CSV with a `datetime` column and `gallons` column (one row per minute).
+One row per minute: a timezone-naive `datetime` and the `gallons` used in that minute. It arrives two ways, and both land in the same table, deduplicated on `datetime`:
+- **The Flume Personal API** (primary) — pulled once a day by a scheduled job, or on demand with **Sync now**.
+- **A Flume CSV export** (fallback) — the same `datetime` and `gallons` columns, uploaded from the Config page. Useful for history older than the API serves.
 
 ### Configuration (windowed)
 ```
@@ -66,12 +68,9 @@ The main chart is a unified time-series visualization that answers three questio
 3. Which part of the system is responsible?
 
 **Time Window** (top-right button group):
-`2W | 1M | 3M | 6M | 1Y | All`
+`2W | 1M | 3M | 6M | 1Y | All` — **2W is the default.** With data arriving daily, the recent run of days is what a visit is for, and 2W's daily bars are clickable into the per-station chart.
 
-The bar granularity adapts to the window:
-- 2W, 1M → daily bars
-- 3M, 6M → weekly bars
-- 1Y, All → monthly bars
+The bar granularity follows how many days of data the window actually holds, not the window's name: up to 60 days → daily bars, up to 270 → weekly, beyond that → monthly. In practice 2W and 1M are daily, 3M and 6M weekly, 1Y and All monthly — but a 6M window over three weeks of data stays daily rather than collapsing into three bars.
 
 **Breakdown** (segmented control below window selector):
 - **Simple** (default): House vs. Sprinkler — two stacks, easy to read
@@ -98,12 +97,13 @@ In daily-bar mode, clicking a bar sets the selected day for the Per-Station Flow
 ---
 
 ### Dashboard (/)
-The primary landing page. Top-to-bottom layout:
+The primary landing page. There is no data-loading control on it: data arrives on its own, and the fetch-now and upload controls live on Config. Top-to-bottom layout:
 
-1. **Station Alerts panel** — red warning per station running >20% above baseline for 2+ consecutive days; green all-clear otherwise; prompt to add baselines if none set.
-2. **Monthly Summary Cards** — Total gallons · Sprinkler gallons · House gallons · Estimated cost. Scoped to a selected calendar month (1st → last day, or today for the current month). ← month → arrows let the user page backward through historical months, defaulting to the current month.
-3. **Consumption Chart** — the unified chart described above. In 2W / 1M (daily-bar) views, clicking a bar sets the selected day for the Per-Station Flow Rate chart.
-4. **Per-Station Flow Rate** — inside a single card:
+1. **Flo's headline** — a plain-English sentence for the month selected in the summary below (the current month by default) ("Your yard used N gal in September — about $X so far."), a note naming any station running above baseline, and the date range of stored data. Empty state (no data at all) points to Config.
+2. **Station Alerts panel** — red warning per station running >20% above baseline for 2+ consecutive days; green all-clear otherwise; prompt to add baselines if none set.
+3. **Monthly Summary Cards** — Total gallons · Sprinkler gallons · House gallons · Estimated cost. Scoped to a selected calendar month (1st → last day, or today for the current month). ← month → arrows let the user page backward through historical months, defaulting to the current month.
+4. **Consumption Chart** — the unified chart described above. In 2W / 1M (daily-bar) views, clicking a bar sets the selected day for the Per-Station Flow Rate chart.
+5. **Per-Station Flow Rate** — inside a single card:
    - **Day summary tiles** (Total · Sprinkler · House · Est. Cost) scoped to the selected day, updated whenever the day changes.
    - **Date navigation** (← prev sprinkler day · date label · next sprinkler day →).
    - **Horizontal bar chart** — one bar per active station; bars >20% above baseline turn red; orange tick marks the baseline.
@@ -166,31 +166,35 @@ The page is organized around a **timeline of config windows**.
 
 **Chart integration**: each window's `effectiveFrom` is a marker on the Consumption Chart; clicking a marker jumps to that window. From the dashboard's per-day view, **Tune config for this day** deep-links to the window active on that day.
 
-**Data management**: row count; clear-all button.
+**Getting data in**, below the editor:
+- **Flume sync** — shows how current the stored data is ("Data stored through …") and a **Sync now** button that runs the daily sync immediately. Re-running is harmless.
+- **Upload CSV Data** — a link that opens Flume's export page starting from the last stored date, then drag-and-drop or click-to-browse for the downloaded CSV, or paste a URL (GitHub blob URLs are rewritten to raw). New rows merge; duplicates are skipped.
 
-### Upload (modal, accessible from nav)
-- Drag-and-drop or click-to-browse
-- URL input: paste a GitHub blob URL; auto-converted to raw
-- New rows merged; duplicates skipped
+**Export / import**: download the whole config as JSON, or replace it from a file or URL.
+
+**Stored data**: row count and **Clear all data** — inert until `DELETE` is typed. It clears metered rows and derived tables, never the config windows or maintenance flags.
+
+### About (/about)
+What the app is, where its data comes from (daily Flume sync, Sync now, CSV for older history), who can sign in, and a link to the design-system page.
 
 ---
 
 ## User Flows
 
 ### First-Time Setup
-1. Land on Dashboard → empty state → click Upload CSV
-2. Upload or URL-load Flume CSV → toast confirms row count
-3. Navigate to Config → verify timers, stations, Program A schedule
-4. Enter baseline gpm per station (or skip until seasonal audit)
-5. Save config with notes → return to Dashboard
+1. The operator connects Flume once (`npm run flume:connect` locally, then the Flume variables in Vercel — see `docs/RUNBOOK.md`)
+2. Sign in with Google → Dashboard empty state → **Go to Config**
+3. **Sync now** → toast confirms how many rows arrived (the first sync backfills 20 days); optionally upload a CSV export for older history
+4. **Create first config** → verify timers, stations, Program A schedule
+5. Enter baseline gpm per station (or skip until seasonal audit)
+6. Save config with notes → return to Dashboard
 
 ### Weekly Check-In (< 2 min)
-1. Open app → Dashboard
-2. Upload new CSV → data appends
-3. Scan Station Alerts for red warnings
-4. Review Consumption Chart (1M window) for anomaly markers or unexpected steps
-5. If something looks off — check whether it coincides with a config-change marker
-6. Click suspicious day → day's station flow shown in the Per-Station chart below
+1. Open app → Dashboard; data through yesterday is already there
+2. Scan Station Alerts for red warnings
+3. Review Consumption Chart (opens on 2W) for anomaly markers or unexpected steps; widen to 1M or 3M for context
+4. If something looks off — check whether it coincides with a config-change marker
+5. Click suspicious day → day's station flow shown in the Per-Station chart below
 
 ### Seasonal Config Update (establish a new window)
 1. Do physical audit: measure each station's gpm
@@ -225,7 +229,7 @@ The page is organized around a **timeline of config windows**.
 ---
 
 ## Design Principles
-1. **Zero friction**: Upload → see charts immediately.
+1. **Zero friction**: The data is already there when you open the app; nothing to download or upload.
 2. **Config is time-aware**: Analysis uses the window active on each date. Each window's effective date is the real-world change date, set explicitly — so tuning a window never distorts history, and you can establish a change on the date it actually happened.
 3. **Context on the chart**: Config changes and anomalies are visible directly on the time series, not in a separate panel.
 4. **Progressive breakdown**: Simple → Timer → Station. Coarse first, drill when needed.
@@ -251,7 +255,6 @@ single-property app.
 
 ## Out of Scope (V1)
 - Multi-user / multi-tenant accounts. Google sign-in identifies *who* is at the door and an allow-list decides who gets in, but there is still no per-user identity inside the app: everyone admitted sees and edits the same single-household data
-- Direct Flume API integration
 - Email / SMS alerts
 - Weather data integration
 - Multi-property support

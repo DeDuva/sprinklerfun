@@ -13,7 +13,8 @@ Open a GitHub issue. There is no bounty and no SLA.
 
 Every page and every API route sits behind `proxy.ts`, which requires a session
 cookie. The only exclusions are the sign-in page, the `/api/auth` endpoints,
-`GET /api/health` and Next's static output. Because the guard is one matcher
+`GET /api/health`, `/api/cron` (which requires its own bearer token — see the
+table below) and Next's static output. Because the guard is one matcher
 rather than a check inside each handler, a new route is protected by virtue of
 being new — the failure mode where someone adds an endpoint and forgets the
 credential check is not available.

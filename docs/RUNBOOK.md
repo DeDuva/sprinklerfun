@@ -11,17 +11,20 @@ Deploys and data are independent. Vercel's Instant Rollback swaps which build se
 traffic; it does not touch Turso. Every write path in this app rewrites derived tables
 wholesale:
 
-- `POST /api/rows` deletes and rebuilds `daily_rollup` for the full date range, then
-  wipes and rebuilds `station_stats` and `station_warnings` — on every write.
+- `POST /api/rows` and every Flume sync — the daily cron included — delete and rebuild
+  `daily_rollup` for the full date range, then wipe and rebuild `station_stats` and
+  `station_warnings`.
 - `replaceWindows` deletes every row in `config_windows` before inserting the new set.
 
 So a bad deploy that corrupts data leaves corrupt data behind after the rollback. The
-only fix is a restore.
+only fix is a restore. And because the sync runs daily on its own, a bad deploy does
+not need anyone to click anything to do that damage.
 
 ## Signing in, granting and revoking access
 
 The app is behind Google sign-in. Every page and API route needs a session; only
-the sign-in page, the `/api/auth` endpoints and `GET /api/health` are open.
+the sign-in page, the `/api/auth` endpoints and `GET /api/health` are open, plus
+`/api/cron`, which has its own bearer-token check (see *Connecting Flume*).
 
 **To give someone access**, add their Google address to `ALLOWED_EMAILS`:
 
@@ -91,7 +94,10 @@ artifact is the only path.
    ```
 4. Repoint `TURSO_DATABASE_URL` in Vercel → **Production** → redeploy.
 5. Save any config change in the app to force a rollup and stats recompute — the
-   dump deliberately carries only `flume_rows` and `config_windows`.
+   dump deliberately carries only `flume_rows`, `config_windows` and `maintenance`.
+6. The Flume token is not in the dump either. The restored database has no stored
+   token, so the next sync falls back to `FLUME_REFRESH_TOKEN` — which has almost
+   certainly been rotated away. Mint a fresh one (see *Connecting Flume*).
 
 The dump is plain SQL, so it restores with `turso db shell` and needs nothing
 from this repository. That is the point: recovery tooling that depends on the
@@ -112,16 +118,18 @@ a restore only needs to get the raw rows back.
 ## Backups
 
 `.github/workflows/backup.yml` runs daily at 09:15 UTC (≈02:15 local) and on
-demand via **Actions → Backup → Run workflow**. It dumps `flume_rows` and
-`config_windows` to gzipped SQL and uploads it as an artifact kept for 90 days.
+demand via **Actions → Backup → Run workflow**. It dumps `flume_rows`,
+`config_windows` and `maintenance` to gzipped SQL and uploads it as an artifact kept
+for 90 days.
 
 Deliberately **not** committed: this is the household water data the fixtures were
 scrubbed of in #41, and the repository is public.
 
-**Only two tables are dumped.** `flume_rows` is irreplaceable and
-`config_windows` is hand-tuned; `daily_rollup`, `station_stats` and
-`station_warnings` are derived and rebuild from a single write, so backing them up
-would be archiving a cache.
+**Only three tables are dumped.** `flume_rows` is irreplaceable, and
+`config_windows` and `maintenance` are hand-entered; `daily_rollup`,
+`station_stats` and `station_warnings` are derived and rebuild from a single write,
+so backing them up would be archiving a cache. `flume_state` is left out on
+purpose: it holds a live credential.
 
 **It fails loudly rather than quietly succeeding.** `scripts/backup.ts` exits
 non-zero if the database returns no rows or the file comes out implausibly small,
@@ -171,7 +179,7 @@ my meter history" should not cost you a season of hand-tuned config, so clearing
 deliberately the narrower of the two things it could mean.
 
 There is no undo. Recovery is a restore from the daily backup (see *Restoring data*),
-so if you are unsure, take an export from the same card first.
+so if you are unsure, run the Backup workflow first (**Actions → Backup → Run workflow**). The config export on the page covers the config, not the metered rows.
 
 Against the database directly, if the app is not reachable:
 
@@ -181,6 +189,9 @@ turso db shell sprinklerfun "DELETE FROM flume_rows"
 
 Then trigger a recompute by saving any config change in the app, or the derived tables
 will keep describing rows that no longer exist.
+
+After a clear, the next Flume sync sees an empty table and backfills only the last
+20 days. Anything older has to come back from a CSV export or a backup.
 
 ## When the config looks wrong
 
@@ -201,8 +212,9 @@ before it, so a config with no windows would leave the entire history unattribut
 
 ## Connecting Flume (and what to do when it stops)
 
-Automatic data is optional. Without it the app waits for CSV uploads exactly as
-it always has; `/api/cron` refuses every request and nothing breaks.
+Production has pulled from Flume automatically since 2026-09-12. It is still
+optional: without the Flume variables the app waits for CSV uploads, `/api/cron`
+refuses every request, and nothing else breaks.
 
 **Your Flume account password is never stored.** It is needed for one thing —
 the initial grant that mints a refresh token — and that happens on your machine:
@@ -226,8 +238,9 @@ vercel env add CRON_SECRET production        # openssl rand -base64 32
 vercel --prod                                # a redeploy is required
 ```
 
-Confirm it works with **Config → Flume sync → Sync now** rather than waiting for
-17:00 UTC. The first sync is incremental — it starts from your last stored row,
+`vercel env add` prompts for the value. Type or paste it carefully: a clipped
+paste or a stray character is how `invalid_client` happens (see below). Confirm it
+works with **Config → Flume sync → Sync now** rather than waiting for 17:00 UTC. The first sync is incremental — it starts from your last stored row,
 so it is a small catch-up. A gap longer than about 25 days is caught up over
 several runs (`"truncated": true` in the response means there is more to fetch);
 press Sync now again, up to twice an hour, or let the daily cron finish it.
@@ -237,11 +250,12 @@ that in its `detailed` field and the sync copies it into the message.
 
 ### Where the token actually lives
 
-`FLUME_REFRESH_TOKEN` only *seeds* a fresh database. Flume returns a refresh
-token on every refresh and does not document whether it rotates, so the current
-one is kept in the `flume_state` table and the stored value wins after the first
-sync. Each run logs which happened — `Flume rotated the refresh token` or
-`Flume returned the same refresh token` — so the logs will tell you definitively.
+`FLUME_REFRESH_TOKEN` only *seeds* a fresh database. **Flume rotates the refresh
+token on every refresh** — its docs do not say so, but every production sync has
+logged `Flume rotated the refresh token; stored the new one`. So the current token
+lives in the `flume_state` table, and the value in Vercel goes stale after the first
+sync. That is expected: a stale env var is harmless while the table holds a token,
+and it only matters if the table is emptied.
 
 That table is deliberately **not** in the backups (`scripts/backup.ts`): it is a
 live credential, the dumps become 90-day artifacts, and it can be re-minted in a
@@ -253,8 +267,10 @@ minute.
 |---|---|
 | `Flume is not configured` | `FLUME_CLIENT_ID` / `FLUME_CLIENT_SECRET` are missing. |
 | `Flume is not connected — run npm run flume:connect` | No refresh token, in the table or the env. |
+| `token refresh failed (HTTP 400): invalid_client` | `FLUME_CLIENT_ID` or `FLUME_CLIENT_SECRET` in Vercel is wrong. The token is not the problem, and a request rejected this way does not spend it. To check a client pair without risking the real token, send it with a fake one: `invalid_grant` back means the pair is good. |
 | `token refresh failed (HTTP 400): invalid_grant` | The stored token is spent or revoked. Re-run `flume:connect` and set a fresh `FLUME_REFRESH_TOKEN`, then clear the stale stored one (below). |
-| `rate limit reached (120 requests/hour)` | Wait. A sync uses three requests, so this means something is calling it in a loop. |
+| `usage query failed (HTTP 400): …` | Flume refused a query parameter. The part in parentheses is Flume's own `detailed` field, naming the field and why. |
+| `rate limit reached (120 requests/hour)` | Wait. A sync makes at most 52 requests (a refresh, a device lookup, up to 50 queries), so two back-to-back catch-up syncs fit in an hour and a third does not. |
 | Data silently stops arriving | Check **Vercel → Cron Jobs → View Logs**. Cron delivery is best effort and is not retried on failure, so one missed day is normal; several is not. |
 
 To discard a bad stored token and fall back to the env seed:
@@ -268,8 +284,9 @@ that invalidates the refresh token minted under the old ones.
 
 ## Local development
 
-No environment variables are needed. `lib/db.ts` falls back to a local SQLite file
-and no Google credentials are set, so the guard runs in open mode — which is also
+No environment variables are needed. `lib/db.ts` falls back to a local SQLite file,
+the Flume sync simply reports that it is not configured, and no Google credentials
+are set, so the guard runs in open mode — which is also
 how the E2E suite's server would run if it did not set them deliberately:
 
 ```bash
@@ -325,8 +342,9 @@ branch, add `"<branch>": true` under `deploymentEnabled` in that branch's commit
   during an outage — they are verified locally against `SESSION_SECRET` — but
   nobody new can sign in until Google is back.
 - **`recomputeStats()` re-reads the entire `flume_rows` table on every write.** This
-  is the scaling cliff. At the current ~175k rows it is fine; it is superlinear in
-  accumulated history.
+  is the scaling cliff. At the current ~196k rows it is fine; it is superlinear in
+  accumulated history, and the daily sync now adds ~1,440 rows a day without anyone
+  uploading anything.
 - **Ingest refuses any timestamp carrying a timezone.** Flume's export is
   timezone-naive and is read as local wall-clock time, so a trailing `Z` or
   `+HH:MM` would be ignored rather than honoured and every rollup would shift

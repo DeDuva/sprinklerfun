@@ -119,7 +119,9 @@ interface Props {
 }
 
 export default function ConsumptionChart({ enriched, windows, onDaySelect, selectedDay, onConfigClick }: Props) {
-  const [timeWindow, setTimeWindow] = useState<TimeWindow>("3m")
+  // Two weeks by default: data now arrives daily, so the recent run of days —
+  // daily bars, each clickable into the per-station chart — is what a visit is for.
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>("2w")
   const [breakdown, setBreakdown] = useState<Breakdown>("simple")
 
   // Defer heavy recomputation so button highlights update instantly
