@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest"
 import { resetDbForTests } from "../db"
 import {
   insertRows,
+  upsertRows,
+  deleteRowsFrom,
   countRows,
   replaceWindows,
   readWindows,
@@ -122,6 +124,65 @@ describe("insertRows", () => {
 
   it("accepts an empty array", async () => {
     expect(await insertRows([])).toBe(0)
+  })
+
+  it("keeps the first value it sees — an upload never overwrites", async () => {
+    await insertRows([{ datetime: "2026-08-28 06:00:00", gallons: 0 }])
+    await insertRows([{ datetime: "2026-08-28 06:00:00", gallons: 5 }])
+    expect(await readDayRows("2026-08-28")).toEqual([{ datetime: "2026-08-28 06:00:00", gallons: 0 }])
+  })
+})
+
+describe("upsertRows", () => {
+  it("overwrites a stored value and reports it as corrected, not inserted", async () => {
+    await insertRows([{ datetime: "2026-08-28 06:00:00", gallons: 0 }])
+    const res = await upsertRows([
+      { datetime: "2026-08-28 06:00:00", gallons: 5 },
+      { datetime: "2026-08-28 06:01:00", gallons: 4 },
+    ])
+    expect(res).toEqual({ inserted: 1, corrected: 1 })
+    expect(await readDayRows("2026-08-28")).toEqual([
+      { datetime: "2026-08-28 06:00:00", gallons: 5 },
+      { datetime: "2026-08-28 06:01:00", gallons: 4 },
+    ])
+  })
+
+  it("counts nothing when re-reading unchanged minutes", async () => {
+    // A daily re-read of the last few days must not report thousands of
+    // "corrections" that changed nothing.
+    await upsertRows(dayRows("2026-08-28"))
+    expect(await upsertRows(dayRows("2026-08-28"))).toEqual({ inserted: 0, corrected: 0 })
+  })
+
+  it("survives the chunk boundary", async () => {
+    await insertRows(dayRows("2026-08-28").slice(0, 600).map((r) => ({ ...r, gallons: 0 })))
+    const res = await upsertRows(dayRows("2026-08-28").slice(0, 1001))
+    const changed = dayRows("2026-08-28").slice(0, 600).filter((r) => r.gallons !== 0).length
+    expect(res).toEqual({ inserted: 401, corrected: changed })
+    expect(await countRows()).toBe(1001)
+  })
+
+  it("accepts an empty array", async () => {
+    expect(await upsertRows([])).toEqual({ inserted: 0, corrected: 0 })
+  })
+})
+
+describe("deleteRowsFrom", () => {
+  it("deletes rows at or after the cutoff and rollups for later days, keeping the rest", async () => {
+    await replaceWindows([win("w1", "2026-01-01")])
+    await insertRows([
+      { datetime: "2026-08-28 23:58:00", gallons: 1 },
+      { datetime: "2026-08-28 23:59:00", gallons: 1 },
+      { datetime: "2026-08-29 06:00:00", gallons: 1 },
+    ])
+    await recomputeRollups("2026-08-28", "2026-08-29")
+
+    expect(await deleteRowsFrom("2026-08-28 23:59:00")).toBe(2)
+
+    expect(await readAllRows()).toEqual([{ datetime: "2026-08-28 23:58:00", gallons: 1 }])
+    const dates = new Set((await readRollups()).map((r) => r.date))
+    expect(dates.has("2026-08-28")).toBe(true)
+    expect(dates.has("2026-08-29")).toBe(false)
   })
 
   it("keeps the last value when one payload repeats a timestamp", async () => {

@@ -6,6 +6,7 @@ import {
   flumeConfigured,
   fmtFlumeDatetime,
   listWaterSensors,
+  localMinute,
   queryUsage,
   refreshAccessToken,
 } from "../server/flume"
@@ -221,6 +222,26 @@ describe("exchangePassword (local bootstrap only)", () => {
   })
 })
 
+describe("localMinute", () => {
+  const at = new Date("2026-09-13T17:00:42Z")
+
+  it("formats the current minute as wall-clock time in the zone, like Flume's datetimes", () => {
+    expect(localMinute(at, "UTC")).toBe("2026-09-13 17:00:00")
+    expect(localMinute(at, "America/Los_Angeles")).toBe("2026-09-13 10:00:00")
+    // Across the date line, and a half-hour offset.
+    expect(localMinute(at, "Pacific/Kiritimati")).toBe("2026-09-14 07:00:00")
+    expect(localMinute(at, "Asia/Kolkata")).toBe("2026-09-13 22:30:00")
+  })
+
+  it("writes midnight as 00, not 24", () => {
+    expect(localMinute(new Date("2026-09-13T07:00:00Z"), "America/Los_Angeles")).toBe("2026-09-13 00:00:00")
+  })
+
+  it("returns null for a zone it does not recognise rather than guessing", () => {
+    expect(localMinute(at, "Mars/Olympus_Mons")).toBeNull()
+  })
+})
+
 describe("listWaterSensors", () => {
   it("keeps water sensors (type 2) and drops bridges (type 1)", async () => {
     vi.stubGlobal(
@@ -236,6 +257,23 @@ describe("listWaterSensors", () => {
     )
     const devices = await listWaterSensors("u1", "tok")
     expect(devices).toEqual([{ id: "2", name: "House" }])
+  })
+
+  it("carries the location's timezone, which says which minutes have happened", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          data: [
+            { id: 2, type: 2, location: { name: "House", tz: "America/Los_Angeles" } },
+            { id: 3, type: 2, location: { name: "Cabin", tz: "" } },
+          ],
+        })
+      )
+    )
+    const devices = await listWaterSensors("u1", "tok")
+    expect(devices[0].timezone).toBe("America/Los_Angeles")
+    expect(devices[1].timezone).toBeUndefined()
   })
 
   it("raises a rate-limit error on HTTP 429", async () => {

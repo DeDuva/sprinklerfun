@@ -183,6 +183,12 @@ export function decodeJwtUserId(accessToken: string): string {
 export interface FlumeDevice {
   id: string
   name: string
+  /**
+   * The IANA timezone of the device's location ("America/Los_Angeles"), when
+   * Flume provides one. Flume's datetimes are wall-clock time in this zone, so it
+   * is what says which minutes have already happened.
+   */
+  timezone?: string
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -202,7 +208,36 @@ export async function listWaterSensors(userId: string, accessToken: string): Pro
   if (!res.ok) raise(res, body, "device list")
   return ((body.data ?? []) as Record<string, unknown>[])
     .filter((d) => Number(d.type) === 2)
-    .map((d) => ({ id: String(d.id), name: deviceName(d) }))
+    .map((d) => {
+      const tz = (d.location as { tz?: unknown } | undefined)?.tz
+      return { id: String(d.id), name: deviceName(d), timezone: typeof tz === "string" && tz ? tz : undefined }
+    })
+}
+
+/**
+ * The start of the current minute as wall-clock time in `timezone`, formatted like
+ * Flume's datetimes ("YYYY-MM-DD HH:MM:00") so the two compare as strings.
+ *
+ * Returns null for a zone the runtime does not recognise, rather than guessing:
+ * a wrong "now" either discards real readings or keeps phantom ones.
+ */
+export function localMinute(now: Date, timezone: string): string | null {
+  let parts: Intl.DateTimeFormatPart[]
+  try {
+    parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(now)
+  } catch {
+    return null
+  }
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ""
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:00`
 }
 
 /**

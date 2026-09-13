@@ -241,7 +241,9 @@ vercel --prod                                # a redeploy is required
 `vercel env add` prompts for the value. Type or paste it carefully: a clipped
 paste or a stray character is how `invalid_client` happens (see below). Confirm it
 works with **Config → Flume sync → Sync now** rather than waiting for 17:00 UTC. The first sync is incremental — it starts from your last stored row,
-so it is a small catch-up. A gap longer than about 25 days is caught up over
+so it is a small catch-up. Every sync also re-reads the last three days and
+overwrites them, because Flume reports minutes it has not received yet as 0; the
+toast's "corrected" count is those zeros being filled in. A gap longer than about 25 days is caught up over
 several runs (`"truncated": true` in the response means there is more to fetch);
 press Sync now again, up to twice an hour, or let the daily cron finish it.
 
@@ -271,6 +273,7 @@ minute.
 | `token refresh failed (HTTP 400): invalid_grant` | The stored token is spent or revoked. Re-run `flume:connect` and set a fresh `FLUME_REFRESH_TOKEN`, then clear the stale stored one (below). |
 | `usage query failed (HTTP 400): …` | Flume refused a query parameter. The part in parentheses is Flume's own `detailed` field, naming the field and why. |
 | `rate limit reached (120 requests/hour)` | Wait. A sync makes at most 52 requests (a refresh, a device lookup, up to 50 queries), so two back-to-back catch-up syncs fit in an hour and a third does not. |
+| Usage shows as zero for recent hours | Flume has not received those readings yet. The next sync within three days overwrites them. If zeros are older than that, check the sync log for `no usable timezone on the Flume location` — without one the sync cannot tell future minutes from past ones. |
 | Data silently stops arriving | Check **Vercel → Cron Jobs → View Logs**. Cron delivery is best effort and is not retried on failure, so one missed day is normal; several is not. |
 
 To discard a bad stored token and fall back to the env seed:

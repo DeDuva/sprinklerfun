@@ -1,15 +1,17 @@
 import type { FlumeRow } from "@/lib/types"
 import {
-  insertRows,
+  deleteRowsFrom,
   recomputeRollups,
   recomputeStats,
   rowDateBounds,
+  upsertRows,
 } from "@/lib/server/data"
 import {
   FlumeError,
   decodeJwtUserId,
   flumeConfigured,
   listWaterSensors,
+  localMinute,
   queryUsage,
   refreshAccessToken,
 } from "@/lib/server/flume"
@@ -18,20 +20,36 @@ import { readRefreshToken, saveRefreshToken } from "@/lib/server/flumeState"
 // ---------------------------------------------------------------------------
 // One sync entry point, shared by the daily cron and the "Sync now" button.
 //
-// Pulls usage from Flume and feeds it through the SAME server write path as a
-// CSV upload: insertRows (dedupe on the datetime primary key) → recompute
-// rollups → recompute stats. It calls those directly rather than POSTing to
+// Pulls usage from Flume and feeds it through the same derived-table path as a
+// CSV upload: write rows → recompute rollups → recompute stats. The write
+// differs in one way: synced rows OVERWRITE what is stored (upsertRows), where
+// an upload keeps the first value (insertRows). It calls those directly rather than POSTing to
 // /api/rows, so the route's 200,000-row body cap does not apply.
 //
 // Idempotent by construction, which Vercel requires rather than suggests: cron
 // delivery is best effort and can both miss a run and deliver the same one
-// twice. Re-querying inserts nothing new, and a missed day is picked up next
-// time because the window starts from the last stored row, not from "yesterday".
+// twice. Re-querying writes the same values again, and a missed day is picked up
+// next time because the window reaches back to the last stored row.
+//
+// Why synced rows overwrite: Flume answers a per-minute query with a bucket for
+// EVERY minute in the range — including minutes it has not received yet, and
+// minutes that have not happened — and those come back as 0. The first version
+// kept whatever it stored first and started each window at the last stored row.
+// Together that made the zeros permanent and pushed the window past them, so
+// real usage was never asked for again. Three things now prevent it: rows at or
+// after the location's current minute are dropped (and any already stored are
+// deleted), every sync re-reads the last LOOKBACK_DAYS, and those re-read rows
+// overwrite what is there.
 // ---------------------------------------------------------------------------
 
 export interface SyncResult {
   ok: boolean
+  /** Minutes stored that were not stored before. */
   inserted: number
+  /** Stored minutes whose value Flume now reports differently — usually a 0 filled in. */
+  corrected?: number
+  /** Stored minutes deleted because they are at or after the current local minute. */
+  removed?: number
   rollupDays: number
   windowFrom?: string
   windowTo?: string
@@ -83,6 +101,16 @@ const MAX_QUERIES_PER_SYNC = 50
  */
 const PAD_MS = 86_400_000
 
+/**
+ * Every sync re-reads at least this many days back from now, whatever is stored.
+ *
+ * Flume reports recent minutes as 0 until the readings reach it, so the newest
+ * part of any sync can be zeros that are not real. Re-reading — and overwriting —
+ * the last few days replaces them once the readings arrive. Three days rides out
+ * a bridge that is offline over a weekend, for about ten queries a day.
+ */
+const LOOKBACK_DAYS = 3
+
 const dayMs = (n: number) => n * 86_400_000
 const SLICE_MS = SLICE_HOURS * 3_600_000
 
@@ -124,22 +152,46 @@ export async function syncFlumeData(opts: { since?: Date } = {}): Promise<SyncRe
     const accessToken = tokens.accessToken
     const userId = decodeJwtUserId(accessToken)
 
-    // One env var fewer: pick the account's water sensor unless told otherwise.
-    let deviceId = process.env.FLUME_DEVICE_ID
-    if (!deviceId) {
-      const devices = await listWaterSensors(userId, accessToken)
-      if (devices.length === 0) {
-        throw new FlumeError("No Flume water sensor found on this account")
-      }
-      deviceId = devices[0].id
+    // Listed even when FLUME_DEVICE_ID pins one: the list is where the location's
+    // timezone comes from, and without it there is no telling which minutes
+    // have happened yet.
+    const devices = await listWaterSensors(userId, accessToken)
+    const pinned = process.env.FLUME_DEVICE_ID
+    const device = pinned ? devices.find((d) => d.id === pinned) : devices[0]
+    if (!device) {
+      throw new FlumeError(
+        pinned
+          ? `FLUME_DEVICE_ID ${pinned} is not a water sensor on this Flume account`
+          : "No Flume water sensor found on this account"
+      )
+    }
+    const deviceId = device.id
+
+    // The first minute that has not finished happening where the meter is.
+    const cutoff = device.timezone ? localMinute(new Date(), device.timezone) : null
+    let removed = 0
+    if (cutoff) {
+      removed = await deleteRowsFrom(cutoff)
+      if (removed > 0) console.log(`[sync] removed ${removed} rows stamped at or after ${cutoff} (${device.timezone})`)
+    } else {
+      // Not fatal: the lookback still overwrites any zeros once real readings
+      // arrive. But future minutes can be stored in the meantime, so say so.
+      console.warn(
+        `[sync] no usable timezone on the Flume location (${device.timezone ?? "none"}); ` +
+          "cannot exclude minutes that have not happened yet"
+      )
     }
 
-    // Incremental from the last stored day, so a missed run self-heals; the
-    // full backfill only applies to an empty database.
+    // From the last stored day, so a missed run self-heals — but never later than
+    // LOOKBACK_DAYS ago, so recent zeros are always re-read. The backfill only
+    // applies to an empty database.
     const bounds = await rowDateBounds()
+    const lookbackStart = Date.now() - dayMs(LOOKBACK_DAYS)
     const start =
       opts.since ??
-      (bounds ? new Date(`${bounds.max}T00:00:00Z`) : new Date(Date.now() - dayMs(INITIAL_BACKFILL_DAYS)))
+      (bounds
+        ? new Date(Math.min(new Date(`${bounds.max}T00:00:00Z`).getTime(), lookbackStart))
+        : new Date(Date.now() - dayMs(INITIAL_BACKFILL_DAYS)))
 
     const from = new Date(start.getTime() - PAD_MS)
     const wantedTo = Date.now() + PAD_MS
@@ -155,6 +207,7 @@ export async function syncFlumeData(opts: { since?: Date } = {}): Promise<SyncRe
     }
 
     let inserted = 0
+    let corrected = 0
     for (let cursor = from.getTime(); cursor < to.getTime(); cursor += SLICE_MS) {
       const sliceFrom = new Date(cursor)
       const sliceTo = new Date(Math.min(cursor + SLICE_MS, to.getTime()))
@@ -165,7 +218,9 @@ export async function syncFlumeData(opts: { since?: Date } = {}): Promise<SyncRe
         since: sliceFrom,
         until: sliceTo,
       })
-      inserted += await insertRows(rows)
+      const written = await upsertRows(cutoff ? rows.filter((r) => r.datetime < cutoff) : rows)
+      inserted += written.inserted
+      corrected += written.corrected
     }
 
     // Recompute once at the end rather than per slice: recomputeStats re-reads
@@ -177,6 +232,8 @@ export async function syncFlumeData(opts: { since?: Date } = {}): Promise<SyncRe
     return {
       ok: true,
       inserted,
+      corrected,
+      removed,
       rollupDays,
       tokenRotated,
       truncated,

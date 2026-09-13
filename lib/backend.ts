@@ -154,6 +154,7 @@ export async function logout(): Promise<void> {
 export interface SyncResponse {
   ok: boolean
   inserted: number
+  corrected: number
   rollupDays: number
   error?: string
   rateLimited?: boolean
@@ -167,11 +168,12 @@ export async function syncFlumeNow(): Promise<SyncResponse> {
   if (res.status === 401) toLogin()
   const body = (await res.json().catch(() => ({}))) as Partial<SyncResponse>
   if (res.status === 503) {
-    return { ok: false, inserted: 0, rollupDays: 0, error: body.error ?? "Flume is not configured" }
+    return { ok: false, inserted: 0, corrected: 0, rollupDays: 0, error: body.error ?? "Flume is not configured" }
   }
   return {
     ok: body.ok ?? false,
     inserted: body.inserted ?? 0,
+    corrected: body.corrected ?? 0,
     rollupDays: body.rollupDays ?? 0,
     error: body.error,
     rateLimited: body.rateLimited,
