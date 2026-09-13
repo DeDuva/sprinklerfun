@@ -12,9 +12,10 @@
 | State | Zustand (in-memory) | Simple global store; holds a copy of the server's config, persists nothing |
 | Auth | Google sign-in + email allow-list → signed cookie, checked in `proxy.ts` | Identity from Google, authorisation from `ALLOWED_EMAILS`; every route behind it by default |
 | Database | Turso (libSQL / SQLite) via `@libsql/client` | Durable, multi-device time-series store; SQL-native aggregation |
-| Backend | Next.js Route Handlers (`app/api/*`, Node runtime) | Ingest + rollup endpoints; reuse the pure `analyze.ts` functions server-side |
+| Backend | Next.js Route Handlers (`app/api/*`, Node runtime) | Config, ingest, Flume sync and aggregate endpoints; reuse the pure `analyze.ts` functions server-side |
+| Data in | Flume Personal API via a daily Vercel cron; CSV upload as the fallback | Data arrives without anyone downloading anything; the CSV path covers history the API no longer serves |
 | UI components | shadcn/ui | Accessible, unstyled-first components |
-| Testing | Vitest | Zero-config, fast, works with TypeScript path aliases |
+| Testing | Vitest (unit, with coverage thresholds) + Playwright (e2e against a real build) | Fast unit feedback; the e2e suite catches what only a built, served app shows |
 | Hosting | Vercel | Zero-config Next.js deploy; Turso env vars for the DB |
 
 **The server owns everything; the browser owns nothing** (see
@@ -39,46 +40,67 @@ it still matters; the stage numbers themselves have been removed, because "Phase
 ## Project Structure
 
 ```
-sprinkler-app/
+sprinklerfun/
+├── proxy.ts                    # The session guard in front of every route (Next 16's `middleware`)
 ├── app/
-│   ├── layout.tsx              # Root layout: Navbar + StoreProvider + Toaster
+│   ├── layout.tsx              # Root layout: Navbar + StoreProvider + Toaster; reads the session cookie
 │   ├── page.tsx                # Dashboard
-│   ├── analysis/page.tsx       # Per-station analysis
-│   ├── config/page.tsx         # Configuration editor + history
+│   ├── analysis/page.tsx       # Timing & flow calibration
+│   ├── config/page.tsx         # Config timeline editor + Flume sync, CSV upload, export/import, stored data
 │   ├── day/[date]/page.tsx     # Minute-by-minute day detail
+│   ├── about/page.tsx          # What the app is and where its data comes from
+│   ├── login/page.tsx          # Google sign-in
+│   ├── design/page.tsx         # Design-system showcase
 │   └── api/                    # Route Handlers (Node runtime) — the backend
-│       ├── rows/route.ts       # POST ingest (+recompute) · GET all rows (debug) · DELETE clear
+│       ├── config/route.ts     # GET/PUT the config document (windows + maintenance)
+│       ├── rows/route.ts       # POST ingest (+recompute) · DELETE clear
+│       ├── sync/route.ts       # POST "Sync now" — runs the Flume sync (session required)
+│       ├── cron/route.ts       # GET daily Flume sync from Vercel cron (CRON_SECRET required)
 │       ├── day/[date]/route.ts # GET one day's raw per-minute rows
 │       ├── rollup/route.ts     # GET per-day/per-station aggregates
-│       └── stats/route.ts      # GET precomputed fleet gpm stats + baseline warnings
+│       ├── stats/route.ts      # GET precomputed fleet gpm stats + baseline warnings
+│       ├── delay/route.ts      # GET inferred inter-station delay per timer
+│       ├── health/route.ts     # GET database reachability + row count (unauthenticated)
+│       └── auth/               # login · callback · logout (Google OAuth, PKCE)
 ├── components/
 │   ├── Navbar.tsx
 │   ├── StoreProvider.tsx       # Client-only: fetches /api/config + /api/stats once on mount
-│   ├── UploadModal.tsx         # CSV file + URL loader
 │   ├── SummaryCards.tsx
-│   ├── ConsumptionChart.tsx    # Unified time-series chart
+│   ├── WarningsPanel.tsx       # Baseline-deviation warnings + maintenance-flag surfacing
+│   ├── ConsumptionChart.tsx    # Unified time-series chart (opens on 2W)
 │   ├── StationFlowChart.tsx    # Horizontal bar chart for a single day with nav, day tiles, and enriched tooltip
 │   ├── FlowTimelineChart.tsx   # Analysis: per-minute actual vs configured-baseline overlay + brush/station zoom
 │   ├── ReconciliationTable.tsx # Analysis: per-station cfg→actual table; buttons STAGE config edits (don't write)
 │   ├── ReviewChangesModal.tsx  # Analysis: review staged config changes (old→new, removable) before saving
-│   └── WarningsPanel.tsx       # Baseline-deviation warnings + maintenance-flag surfacing
+│   ├── StationDelayCard.tsx    # Analysis: inferred station delay, staged like any other proposal
+│   ├── DayPicker.tsx
+│   ├── design/  ui/            # Flo + design-system pieces · shadcn/ui primitives
+│   └── UploadModal.tsx, DailyChart.tsx, WeeklyChart.tsx  # not referenced by any page
 ├── lib/
-│   ├── types.ts                # All shared TypeScript interfaces, DEFAULT_CONFIG, migrateConfig
+│   ├── types.ts                # All shared TypeScript interfaces, DEFAULT_CONFIG, migrateConfig, toWindows
 │   ├── analyze.ts              # Pure analysis functions (no React) — reused server-side
 │   ├── staging.ts              # Pure staged-config-edit logic for the Analysis tab
-│   ├── store.ts                # Zustand store with migration on rehydrate
+│   ├── csvImport.ts            # Flume CSV row parsing + the Flume export link
+│   ├── store.ts                # Zustand store — in-memory copy of the server's config, persists nothing
 │   ├── db.ts                   # server-only: libSQL client + idempotent schema bootstrap
-│   ├── backend.ts              # client-only: fetch rollups/stats/day + push rows / sync windows
+│   ├── backend.ts              # client-only: fetch config/rollups/stats/day, push rows, sync now
 │   ├── server/
-│   │   ├── data.ts             # server data access + recomputeRollups/recomputeStats (reuses analyze.ts)
-│   │   └── auth.ts             # single-user shared-secret guard for writes
-│   └── __tests__/
-│       ├── analyze.test.ts     # Vitest unit tests
-│       └── staging.test.ts     # Staged-edit logic tests
-├── .github/workflows/ci.yml    # typecheck + tests + lint; required checks on main
-├── .env.example                # TURSO_*, GOOGLE_*, SESSION_SECRET, ALLOWED_EMAILS
-├── vitest.config.ts
-└── vercel.json
+│   │   ├── data.ts             # data access + recomputeRollups/recomputeStats (reuses analyze.ts)
+│   │   ├── validate.ts         # config and row validation for the write routes
+│   │   ├── flume.ts            # Flume Personal API client (refresh grant, devices, usage query)
+│   │   ├── flumeState.ts       # the stored, rotating refresh token
+│   │   ├── sync.ts             # syncFlumeData: window, slicing, query budget, ingest
+│   │   ├── session.ts          # auth mode, signed session cookie, allow-list
+│   │   ├── google.ts           # authorization URL + code exchange (PKCE S256)
+│   │   └── env.ts              # "is this a deployment?"
+│   └── __tests__/              # Vitest unit + component tests
+├── e2e/                        # Playwright smoke suite
+├── scripts/                    # flume-connect, seed-dev, backup, make-fixtures, verify-prod
+├── .github/workflows/          # ci.yml (types + tests, lint, e2e, audit) · backup.yml
+├── .env.example                # every variable, with what happens when it is unset
+├── vitest.config.mts
+├── playwright.config.ts
+└── vercel.json                 # main-only deploys + the /api/cron schedule
 ```
 
 ---
@@ -182,7 +204,7 @@ series; **client-side** they run only over reconstructed rollups or a single
 fetched day.
 
 ```
-SERVER (recompute on every write — POST /api/rows, PUT /api/config, DELETE)
+SERVER (recompute on every write — POST /api/rows, each Flume sync, PUT /api/config)
   flume_rows (raw minutes)  +  config_windows
       │  enrichRowsMultiConfig(rows, windows)   → EnrichedRow[]  (full series)
       ├─▶ buildDailyRows()                       → daily_rollup   (date, station, gallons, isSprinklerDay)
@@ -230,12 +252,13 @@ at ingest and stored as rollups.
 
 | Data | Table | Computed by | When |
 |---|---|---|---|
-| Raw minute rows | `flume_rows (datetime PK, gallons)` | CSV parse | on upload |
-| Config windows | `config_windows (id, effective_from, notes, config JSON, …)` | client edits | on upload / edit |
-| Daily rollups | `daily_rollup (date, station, gallons, is_sprinkler_day)` PK `(date, station)` | server, from enriched rows | on upload / config edit |
-| Station stats | `station_stats (id PK, name, total_gallons, avg/min/max/std_gpm, cost_estimate, pct_of_sprinkler)` | server, `buildStationStats` over full enriched series | on upload / config edit |
-| Station warnings | `station_warnings (station_id PK, station_name, baseline_gpm, recent_avg_gpm, pct_above_baseline, consecutive_days_above)` | server, `computeStationWarnings` over full enriched series | on upload / config edit |
+| Raw minute rows | `flume_rows (datetime PK, gallons)` | Flume sync, or CSV parse | daily cron, Sync now, or upload |
+| Config windows | `config_windows (id, effective_from, notes, config JSON, …)` | client edits | on edit / import |
+| Daily rollups | `daily_rollup (date, station, gallons, is_sprinkler_day)` PK `(date, station)` | server, from enriched rows | on every ingest / config edit |
+| Station stats | `station_stats (id PK, name, total_gallons, avg/min/max/std_gpm, cost_estimate, pct_of_sprinkler)` | server, `buildStationStats` over full enriched series | on every ingest / config edit |
+| Station warnings | `station_warnings (station_id PK, station_name, baseline_gpm, recent_avg_gpm, pct_above_baseline, consecutive_days_above)` | server, `computeStationWarnings` over full enriched series | on every ingest / config edit |
 | Maintenance flags | `maintenance (station_id PK, flagged_at, note)` | client edits | on edit |
+| Flume token | `flume_state (id = 1, refresh_token, updated_at)` | Flume, on each refresh | every sync (it rotates) |
 
 The two `station_*` tables hold the per-minute-only
 aggregates the dashboard/analysis need but that daily gallon sums **cannot**
@@ -276,6 +299,13 @@ Schema is bootstrapped idempotently (`CREATE … IF NOT EXISTS`) by
   *behind* the session guard, because this one is reached by a person. There is
   no `GET`: an ingest plus a whole-table recompute is not something a link or a
   prefetch should set off.
+- **`GET /api/delay?days=N`** — the inferred inter-station delay per timer (see
+  *Inter-Station Delay Inference*). Server-side because the fit needs many days of
+  per-minute flow.
+- **`GET /api/health`** — database reachability and row count. Unauthenticated, so
+  it still answers when sign-in is misconfigured — which is what makes "503 on `/`,
+  200 here" a diagnosis rather than an outage.
+- **`/api/auth/login`, `/callback`, `/logout`** — the Google sign-in flow; see *Auth*.
 - **`GET /api/rollup?from=&to=`** — the small aggregate feed for the dashboard
   chart/summary + per-window day counts. Bounds optional.
 - **`GET /api/stats`** — the precomputed per-minute-only aggregates:
@@ -324,8 +354,9 @@ outcome than a rejected upload.
 
 One guard: `proxy.ts` (Next 16's renamed `middleware`, which always runs on the
 Node runtime). It requires a session cookie on every route except the sign-in
-page, the `/api/auth` endpoints, `GET /api/health` and static output — so a route
-is protected by existing, not by remembering. The `/api/auth` exclusion is not
+page, the `/api/auth` endpoints, `GET /api/health`, `/api/cron` (which checks
+`CRON_SECRET` itself) and static output — so a route is protected by existing, not
+by remembering. The `/api/auth` exclusion is not
 optional: the callback is where Google returns the browser, and nobody holds a
 session at that moment.
 
@@ -370,7 +401,7 @@ This replaced a shared header whose value shipped to the browser as
 ### Getting data in (Flume API, or a CSV)
 
 Data arrives one of two ways, and the second still works when the first is not
-configured.
+configured. Production has used the first since 2026-09-12.
 
 **The Flume Personal API**, pulled by a Vercel cron once a day (`0 17 * * *`).
 `lib/server/flume.ts` is a small hand-rolled client: `grant_type=refresh_token`
@@ -391,11 +422,12 @@ not.
 
 The refresh token lives in a one-row `flume_state` table, seeded by
 `FLUME_REFRESH_TOKEN` on a fresh database, with the stored value winning
-thereafter. It is stored rather than kept in the env var because **Flume returns
-a `refresh_token` on every refresh and does not document whether it rotates**. If
-it does, a static env var goes stale and the daily sync dies quietly about a week
-later — the worst failure shape available, since the symptom is data simply
-stopping. `syncFlumeData` compares the returned token against the one it sent and
+thereafter. It is stored rather than kept in the env var because **Flume rotates the
+refresh token on every refresh.** Its docs never said so. The code was written to
+handle either case, and every production sync since has logged a rotation. A static
+env var would have gone stale after the first sync, and the daily sync would have
+died on the next one — the worst failure shape available, since the symptom is data
+simply stopping. `syncFlumeData` compares the returned token against the one it sent and
 persists any difference **before** doing the query work, because the token it
 just spent may already be dead: writing afterwards would mean a mid-sync failure
 stranded the new token and left the next run authenticating with a spent one.
@@ -404,7 +436,7 @@ That table is deliberately absent from `scripts/backup.ts`. The dumps become
 90-day GitHub artifacts, and a live credential that can be re-minted in a minute
 does not belong in an archive.
 
-Three details that are load-bearing rather than incidental:
+Four details that are load-bearing rather than incidental:
 
 - **The bucket is `MIN`.** Station attribution works on minute-of-day
   (`localDateAndMin`), so hourly totals would make it meaningless. The real CSV
@@ -468,6 +500,12 @@ vercel env add GOOGLE_CLIENT_ID production         # from the Google Cloud conso
 vercel env add GOOGLE_CLIENT_SECRET production
 vercel env add SESSION_SECRET production           # openssl rand -base64 32
 vercel env add ALLOWED_EMAILS production           # comma-separated addresses
+
+# Optional — automatic data (see docs/RUNBOOK.md, "Connecting Flume"):
+vercel env add FLUME_CLIENT_ID production
+vercel env add FLUME_CLIENT_SECRET production
+vercel env add FLUME_REFRESH_TOKEN production      # from `npm run flume:connect`
+vercel env add CRON_SECRET production              # openssl rand -base64 32
 ```
 
 - Run these in the same shell/working directory the app builds from (for WSL
@@ -477,8 +515,6 @@ vercel env add ALLOWED_EMAILS production           # comma-separated addresses
   does **not** make a var global.
 - Repeat per environment you need (`production`, `preview`, `development`), or
   run `vercel env add NAME` with no environment to get the checkbox prompt.
-- Also enable Vercel **deployment protection** for read-side gating (the app's
-  shared secret only guards writes).
 - Local dev needs none of this — the `./.data/sprinkler.db` fallback covers it;
   optionally copy `.env.example` → `.env.local`.
 
@@ -501,13 +537,15 @@ vercel env add ALLOWED_EMAILS production           # comma-separated addresses
 
 ### CI/CD — where the gate actually is
 
-`.github/workflows/ci.yml` runs typecheck + tests on every PR and every push to
-`main`. **It does not deploy.** Vercel's Git integration builds production from
+`.github/workflows/ci.yml` runs four jobs on every PR and every push to `main`:
+`types + tests` (typecheck, unit tests with coverage thresholds, then the unit
+tests again under four timezones), `lint`, `e2e` (a real `next build` served
+locally, driven by Playwright) and `audit` (`npm audit --audit-level=high`). **It does not deploy.** Vercel's Git integration builds production from
 `main` on every merge, and Vercel has no native "wait for CI checks" setting for
 production deployments — so the gate is placed at the **merge**, not the deploy:
 
 ```
-PR ──→ types + tests ──→ [ruleset on main] ──→ merge ──→ Vercel deploys production
+PR ──→ types + tests, lint, e2e, audit ──→ [ruleset on main] ──→ merge ──→ Vercel deploys production
             │
             └─ red ⇒ merge blocked ⇒ main unchanged ⇒ nothing deploys
 ```
@@ -556,7 +594,7 @@ had never existed.
 
 Still deferred, deliberately: **targeted recompute.** A config change can affect
 any date, so rollups are recomputed over the whole range and stats over the whole
-series on every write. At ~175k rows that is fast, and making it incremental adds
+series on every write — including the daily sync. At ~196k rows that is fast, and making it incremental adds
 state to get wrong. Revisit when a write takes more than a few seconds.
 
 ---
@@ -668,7 +706,7 @@ On the reference data this yields **timer 1: no delay** (0 of 26 days; its run t
   maintenance: Record<string, MaintenanceFlag>  // station id → flag (top-level)
   serverVersion: number         // bumped after any server write → pages refetch
   rowCount: number              // cosmetic total row count (status labels)
-  lastRowDate: string | null    // latest stored date (incremental Flume export link)
+  lastRowDate: string | null    // latest stored date (Sync card, incremental Flume export link)
 
   addWindowFromDate(date, notes)  // clone the config active on `date` → new window
   updateWindow(id, patch)         // edit config/notes/effectiveFrom in place (no new
@@ -732,17 +770,19 @@ app showed a logged-in user no way to log out. The e2e suite caught that; nothin
 about the source would have.
 
 ### Performance
-The `useDeferredValue` scaffolding that used to live here is gone, along with the
-problem it worked around. It existed because `enrichRowsMultiConfig` ran O(n)
-over the entire series **in the browser**, so navigation blocked on enrichment.
-Enrichment now runs server-side at write time and the pages read precomputed
-aggregates keyed on `serverVersion`, so there is no heavy client-side `useMemo`
-left to defer.
+Enrichment runs server-side at write time, and the pages read precomputed
+aggregates keyed on `serverVersion`. The heavy client-side work that used to block
+navigation — `enrichRowsMultiConfig` over the entire series, in the browser — is
+gone.
 
-The Dashboard splits computation into two memos:
-- **`derived`** (expensive, deferred) — runs `enrichRowsMultiConfig` + `buildDailyRows` + warnings once per data/config change; memoises `enriched`, `allDaily`, `sprinklerDates`, `defaultFlowDay`.
-- **`monthlySummary`** (cheap) — filters `allDaily` by the selected month and calls `computeSummary`; reruns only when the month selector changes, not when data changes.
-- **`flowDayStats`** (cheap) — filters `enriched` and `allDaily` by the selected day, calls `buildStationStats` + `computeSummary` with that day's config, and resolves the active window for that day via `activeWindowForDate`. Reruns only when the selected day changes.
+`ConsumptionChart` still uses `useDeferredValue` for its window and breakdown
+buttons, so the highlight moves at once while the bars re-aggregate. That is
+cheap now, and deferring it keeps it off the click.
+
+The Dashboard splits its computation into three memos:
+- **`derived`** — reconstructs `DailyRow[]` and a synthetic `EnrichedRow[]` from the rollup feed (`rollupsToDailyRows`, `rollupsToEnriched`), plus the date range, `sprinklerDates` and `defaultFlowDay`. Reruns when rollups or config change.
+- **`monthlySummary`** — filters `allDaily` by the selected month and calls `computeSummary`; reruns when the month selector changes.
+- **`flowDayStats`** — enriches the one fetched day (`/api/day/[date]`) with that day's config, calls `buildStationStats` + `computeSummary`, and resolves the active window via `activeWindowForDate`. Reruns when the selected day or its rows change.
 
 ---
 
@@ -802,61 +842,62 @@ Windows are never auto-pruned; the user deletes them explicitly (the last one ca
 
 ---
 
-## Upload & CSV Parsing
+## Getting data in: sync and CSV
 
-Two input paths in `UploadModal`:
-- **File**: Papa Parse reads `File` directly (no full string copy)
-- **URL**: `fetch(url)` → text → Papa Parse. GitHub blob URLs auto-rewritten to `raw.githubusercontent.com`
+**Flume sync** (`SyncCard` on the Config page) calls `POST /api/sync`, which runs
+`syncFlumeData` — the same function the daily cron calls. See
+*Getting data in (Flume API, or a CSV)* above for how it works.
 
-Column matching: `datetime | Datetime | DateTime`, `gallons | Gallons`. Invalid rows silently dropped.
+**CSV upload** (`UploadCsvCard` on the Config page) has two inputs:
+- **File**: Papa Parse reads the `File` directly (no full string copy)
+- **URL**: `fetch(url)` → text → Papa Parse. GitHub blob URLs are rewritten to `raw.githubusercontent.com`
 
-`appendRows` deduplicates by `datetime` string and re-sorts. Overlapping uploads are safe.
+`parseFlumeCsvRows` (`lib/csvImport.ts`) matches `datetime | Datetime | DateTime`
+and `gallons | Gallons`, and drops rows it cannot read. `POST /api/rows` then
+validates what is left — a malformed or timezone-suffixed datetime is a 400, not a
+silent skip — and `INSERT OR IGNORE` on the `datetime` primary key makes an
+overlapping upload safe.
+
+The card also links to Flume's export page, starting from the last stored date
+(`buildFlumeExportUrl`), so a CSV only needs to cover the gap.
 
 ---
 
 ## Testing
 
-**Runner**: Vitest (`npm test` = `vitest run`, `npm run test:watch` = `vitest`)
-
-### Test Coverage (`lib/__tests__/analyze.test.ts`)
-
-| Test | What it verifies |
+| Command | What runs |
 |---|---|
-| `buildDaySchedule` — reconstruction | Back-to-back windows from start + durations; baseline lookup; disabled/zero-duration omitted; inactive day → empty |
-| `buildDayMinuteSeries` | One point per minute, gpm = that minute's gallons, sorted |
-| `reconcileDay` — clean run | Zero drift; trimmed gpm equals baseline; high confidence |
-| `reconcileDay` — late start | Program start shift → positive `startDriftMin` |
-| `reconcileDay` — off baseline | Above-baseline flow → positive `gpmDeltaPct` |
-| `reconcileDay` — short run | Run ≤3 min → low confidence |
-| `reconcileDay` — no flow | No detected run → null actuals, low confidence |
-| `reconcileDay` — ambiguous boundary | Equal adjacent baselines → low confidence, still measures gpm |
-| `reconcileDay` — boundary refinement | Late inter-station boundary detected from the flow step |
-| `staging` — stageKey | Per-station baseline/duration keys; shared per-program start key |
-| `staging` — wouldChange | No-op detection for baseline (2dp) / duration / start drift |
-| `staging` — buildStagedChange | `apply` mutates baseline / duration / shifts program start (±) |
-| `staging` — programStartStations | First station per program, order-independent |
-| `staging` — proposeAllChanges | Only changed fields; one start per program; skips no-run rows |
-| `staging` — applyStagedChanges | Composes all changes; input config left untouched |
-| Station assignment on sprinkler day (Program A) | Correct station id assigned for each time window |
-| House assignment outside station window | Minutes between stations → "house" |
-| House assignment on non-scheduled day | Day not in program.days → no windows → not a sprinkler day |
-| Sprinkler day threshold | Just-below threshold → not a sprinkler day |
-| Program B active on different days | B and A can have non-overlapping day sets |
-| `enrichRowsMultiConfig` — no windows | Uses DEFAULT_CONFIG when there are no windows |
-| `enrichRowsMultiConfig` — single window | Uses a window's config from its effectiveFrom onward |
-| `enrichRowsMultiConfig` — multi-window | Each date range uses the active window (even if passed out of order) |
-| `enrichRowsMultiConfig` — pre-history data | Data before the earliest window uses that window's config |
-| `activeWindowForDate` / `windowDateRange` | Boundary inclusivity, range derivation, input-order independence |
-| `diffConfigs` | Detects start/days/duration/baseline/station add-remove/billing changes |
-| `toWindows` / `normalizeTime` | Legacy→windows migration; malformed `HH:MM:SS:SS` normalized |
-| `buildWeeklyRows` — bucketing | Rows on same ISO week aggregate together |
-| `buildWeeklyRows` — week boundaries | Mon/Sun split into correct weeks |
-| `computeStationWarnings` — fires | >20% above baseline for 2+ days → warning |
-| `computeStationWarnings` — no fire (1 day) | Single day above → no warning |
-| `computeStationWarnings` — no fire (no baseline) | Stations without baseline → no warning |
-| `aggregateForChart` — simple breakdown | house vs sprinkler sums correct |
-| `aggregateForChart` — timer breakdown | timer1 vs timer2 split correct |
-| `aggregateForChart` — anomaly detection | IQR outlier correctly flagged |
+| `npm run test:coverage` | Vitest, with coverage thresholds enforced over `lib/**` and `app/api/**` (statements 85, branches 75, functions 82, lines 87). **This is CI's gate** — `npm test` runs the same tests without the thresholds, so it can pass where CI fails |
+| `TZ=<zone> npx vitest run` | CI repeats the unit suite under `UTC`, `Pacific/Kiritimati` (UTC+14), `Pacific/Midway` (UTC−11) and `Asia/Kolkata` (UTC+5:30), so "identical in every zone" is tested rather than assumed |
+| `npm run test:e2e` | Playwright against `next start` on a throwaway SQLite database. Build first (`npm run build`) and install the browser once (`npx playwright install chromium`) |
+
+### Unit and component tests (`lib/__tests__/`)
+
+| File | Covers |
+|---|---|
+| `analyze.test.ts` | Enrichment (programs, multi-window, pre-history), schedule reconstruction, reconciliation, run detection and delay inference, warnings, chart aggregation and anomalies, rollup reconstruction, date helpers, config diff and migration |
+| `staging.test.ts` | Staged-edit keys, no-op detection, applying and proposing changes |
+| `csvImport.test.ts` | CSV column matching and the Flume export link |
+| `store.test.ts` | Window actions, maintenance flags, and the write path through `PUT /api/config` |
+| `serverData.test.ts` | Data access, rollup and stats recompute against an in-memory database |
+| `routes.test.ts` | `/api/rows` (validation, the rejected `windows` field, delete), `/api/config`, `/api/day`, `/api/rollup`, `/api/stats`, `/api/health`, `/api/delay` |
+| `flume.test.ts` | Flume client: refresh grant, device list, usage query shape (per-minute, no `operation`), error detail |
+| `flumeState.test.ts` | Reading, saving and clearing the stored token; its precedence over the env seed |
+| `sync.test.ts` | Token rotation persisted before queries, device selection, the query window, 12-hour slices, the 50-query budget, idempotent ingest |
+| `syncRoutes.test.ts` | `/api/sync` and `/api/cron`, including `CRON_SECRET` failing closed |
+| `session.test.ts`, `google.test.ts`, `authRoutes.test.ts`, `proxy.test.ts` | Auth modes, cookie signing and allow-list, the OAuth flow, and the guard's matcher |
+| `FlowTimelineChart`, `ReviewChangesModal`, `StationDelayCard` `.test.tsx` | Component rendering and interaction |
+
+### End-to-end (`e2e/smoke.spec.ts`)
+
+The server runs with fake Google credentials and a test `SESSION_SECRET`, so the
+guard is genuinely enforced: the suite signs its own session cookie for the
+signed-in tests, and an anonymous group checks that pages redirect and API routes
+return 401 — including `/api/cron`, which sits outside the guard but refuses
+without `CRON_SECRET`. Signed in, it seeds through the API and checks the derived
+pipeline, that clearing data keeps the config timeline, that a second browser sees
+the config the first one saved, security headers, sign-out, and that the dashboard,
+analysis and config pages render.
 
 ---
 
@@ -899,18 +940,24 @@ The decision logic is a **pure module** (`lib/staging.ts`, no React, unit-tested
 The page is the thin UI shell: it holds staged edits in a single state object `{ ctx, map, review }` where `ctx = "${day}|${winId}"`, and resets it **during render** when `ctx` changes (the React "reset on prop change" pattern — no effect). `ReviewChangesModal` lists the staged entries grouped by area as `old → new` (removable). **Save** calls `applyStagedChanges` then `updateWindow` **once**, and clears the set. Nothing is persisted until Save.
 
 ### `ReviewChangesModal`
-A lightweight overlay (same pattern as `UploadModal`) listing staged `StagedItem[]` grouped by area, each with a `remove` action, plus **Save to config** / **Cancel**. Purely presentational — all state lives in the Analysis page.
+A lightweight overlay listing staged `StagedItem[]` grouped by area, each with a `remove` action, plus **Save to config** / **Cancel**. Purely presentational — all state lives in the Analysis page.
 
 ---
 
 ## Routing
 
-| Route | Type | Notes |
-|---|---|---|
-| `/` | Static client component | Dashboard |
-| `/analysis` | Static client component | Timing & flow calibration |
-| `/config` | Static client component | Config editor |
-| `/day/[date]` | Dynamic client component | `date` = `YYYY-MM-DD` |
+Every route renders dynamically: `app/layout.tsx` reads the session cookie per
+request (see *SSR safety*). The pages themselves are client components.
+
+| Route | Notes |
+|---|---|
+| `/` | Dashboard |
+| `/analysis` | Timing & flow calibration |
+| `/config` | Config editor, Flume sync, CSV upload, export/import, stored data |
+| `/day/[date]` | `date` = `YYYY-MM-DD` |
+| `/about` | What the app is and where its data comes from |
+| `/design` | Design-system showcase |
+| `/login` | Google sign-in; the only page outside the guard |
 
 ---
 
@@ -922,11 +969,11 @@ A lightweight overlay (same pattern as `UploadModal`) listing staged `StagedItem
 | ~~localStorage ~5MB limit~~ | **Resolved.** The browser persists nothing at all now — `persist` and its machinery are gone, and every byte lives in Turso. See [Storage & Backend Architecture](#storage--backend-architecture) |
 | ~~Full row series loads into browser memory~~ | **Resolved.** The browser never loads the full series: dashboard/analysis read `/api/rollup` + `/api/stats`, and per-minute views fetch a single day via `/api/day/[date]`. `GET /api/rows` was removed outright |
 | ~~Config has two sources of truth~~ | **Resolved.** The server owns config; `GET`/`PUT /api/config` are the only reader and writer, and the browser holds an in-memory copy it re-fetches on load |
-| Precomputed stats freeze `currentConfig`/"today" at last write | `station_stats` / `station_warnings` (and the warning 21-day lookback) are computed with `currentConfig(windows)` at recompute time. Since recompute runs on every upload **and** every window edit, they're fresh as of the last write; the only drift is "today" crossing into a future-dated window with no intervening write (rare for this app). A future phase could recompute on a schedule or thread the reference date |
+| Precomputed stats freeze `currentConfig`/"today" at last write | `station_stats` / `station_warnings` (and the warning 21-day lookback) are computed with `currentConfig(windows)` at recompute time. Recompute runs on every ingest — which now includes the daily Flume sync — and every window edit, so they are at most a day old. The remaining drift is a sync that fails for several days running while "today" crosses into a future-dated window |
 | Stats recompute over the whole series on every write | `recomputeStats()` re-enriches all rows each write (in addition to `recomputeRollups`), so two full enrichment passes per upload. Fine for a single-home dataset; making both incremental is deferred until a write takes more than a few seconds |
 | ~~Server rollups depend on process `TZ`~~ | **Resolved.** `localDateAndMin` parses Flume's naive timestamps lexically, so enrichment never reads the process timezone. `APP_TIMEZONE` and the `process.env.TZ` assignment are gone, and CI's four-timezone loop proves the output is identical in every zone rather than assuming it |
 | Full-range recompute per write | A config-window change can affect any date, so the whole range is recomputed (rollups) / whole series re-enriched (stats). Targeting it adds state to get wrong, and is deliberately deferred |
-| No row validation beyond column names | Malformed timestamps silently dropped |
+| The CSV parser drops rows it cannot read | `parseFlumeCsvRows` skips them in the browser without counting them. What reaches the server is validated, and a bad datetime there is a 400 |
 | Config `effectiveFrom` resolution is 1 day | Two windows can't share a date (enforced in the editor); sub-day changes aren't representable |
 | IQR anomaly detection is naive | No seasonal adjustment; many weeks of data needed before IQR is meaningful |
 | Programs A and B on same timer same day | Both programs' windows are merged; if they overlap in time, first-match wins |

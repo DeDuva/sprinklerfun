@@ -24,7 +24,6 @@ import StationFlowChart from "@/components/StationFlowChart"
 import WarningsPanel from "@/components/WarningsPanel"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import Flo from "@/components/design/Flo"
-import RefreshDataCard from "@/components/RefreshDataCard"
 
 function ymKey(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
@@ -209,10 +208,16 @@ export default function DashboardPage() {
         <div className="rounded-2xl border-2 border-dashed border-[#EADFC6] bg-white p-10 text-center flex flex-col items-center gap-3">
           <Flo mood="watching" size={72} />
           <p className="text-[#143049] text-lg font-medium">No data yet</p>
-          <p className="text-[#4A6076] text-sm mb-2">Load your latest Flume export to get started.</p>
-          <div className="w-full max-w-xl">
-            <RefreshDataCard />
-          </div>
+          <p className="text-[#4A6076] text-sm mb-2 max-w-md">
+            Once Flume is connected, readings arrive on their own every day. To fetch them now,
+            or to load a CSV export instead, head to Config.
+          </p>
+          <Link
+            href="/config"
+            className="inline-flex items-center gap-1.5 rounded-full border-2 border-[#143049] bg-[#FBF0DC] px-4 py-2 text-sm font-medium text-[#143049] hover:bg-[#F5E3C0] transition-colors"
+          >
+            Go to Config →
+          </Link>
         </div>
       </div>
     )
@@ -235,8 +240,6 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <RefreshDataCard />
-
       {/* Flo's headline */}
       <div className="rounded-2xl border-2 border-[#143049] bg-gradient-to-b from-white to-[#FFFDF8] p-5 shadow-[4px_4px_0_rgba(20,48,73,0.08)] flex items-center gap-4 flex-wrap">
         <Flo mood={floMood} size={64} idle />
