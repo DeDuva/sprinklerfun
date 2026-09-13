@@ -239,6 +239,11 @@ export function fmtFlumeDatetime(d: Date): string {
  * POST /api/rows rejects with a 400 by design — everything downstream reads
  * these as naive wall-clock time, and Flume's own "YYYY-MM-DD HH:MM:SS" is
  * already precisely what ingest accepts.
+ *
+ * There is deliberately NO `operation` field. Setting one (SUM, AVG, …) makes
+ * Flume aggregate the whole range into a single `{ value }` with no datetime —
+ * which is how the first production sync fed `undefined` datetimes to the
+ * database and died with libsql's "Unsupported type of value".
  */
 export async function queryUsage(args: {
   userId: string
@@ -262,7 +267,6 @@ export async function queryUsage(args: {
           bucket: args.bucket ?? "MIN",
           since_datetime: fmtFlumeDatetime(args.since),
           until_datetime: fmtFlumeDatetime(args.until),
-          operation: "SUM",
           units: "GALLONS",
           sort_direction: "ASC",
         },
@@ -273,9 +277,15 @@ export async function queryUsage(args: {
   if (!res.ok) raise(res, body, "usage query")
 
   // data: [ { "<request_id>": [ { datetime, value } ] } ]
-  const first = (body.data?.[0] ?? {}) as Record<string, { datetime: string; value: number }[]>
-  return (first[requestId] ?? []).map((s) => ({
-    datetime: s.datetime,
-    gallons: Number(s.value) || 0,
-  }))
+  const first = (body.data?.[0] ?? {}) as Record<string, { datetime?: unknown; value?: unknown }[]>
+  return (first[requestId] ?? []).map((s) => {
+    // Checked here rather than left to the database, whose complaint about an
+    // undefined bind value says nothing about where it came from.
+    if (typeof s.datetime !== "string") {
+      throw new FlumeError(
+        "Flume returned a usage sample without a datetime — an aggregated response, not per-bucket samples"
+      )
+    }
+    return { datetime: s.datetime, gallons: Number(s.value) || 0 }
+  })
 }
