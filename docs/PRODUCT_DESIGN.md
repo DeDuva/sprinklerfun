@@ -17,7 +17,7 @@ A web application that helps a homeowner analyze Flume smart meter data to under
 ## Core Data Model
 
 ### Input Data
-One row per minute: a timezone-naive `datetime` and the `gallons` used in that minute. It arrives two ways, and both land in the same table, deduplicated on `datetime`:
+One row per minute: a timezone-naive `datetime` and the `gallons` used in that minute. It arrives two ways, and both land in the same table, one row per `datetime`. A sync overwrites the minutes it re-reads, because Flume reports a minute it has not received yet as 0; an upload never overwrites:
 - **The Flume Personal API** (primary) — pulled once a day by a scheduled job, or on demand with **Sync now**.
 - **A Flume CSV export** (fallback) — the same `datetime` and `gallons` columns, uploaded from the Config page. Useful for history older than the API serves.
 

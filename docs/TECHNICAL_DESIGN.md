@@ -436,7 +436,7 @@ That table is deliberately absent from `scripts/backup.ts`. The dumps become
 90-day GitHub artifacts, and a live credential that can be re-minted in a minute
 does not belong in an archive.
 
-Four details that are load-bearing rather than incidental:
+Five details that are load-bearing rather than incidental:
 
 - **The bucket is `MIN`.** Station attribution works on minute-of-day
   (`localDateAndMin`), so hourly totals would make it meaningless. The real CSV
@@ -449,20 +449,37 @@ Four details that are load-bearing rather than incidental:
   design, because everything downstream reads naive wall-clock time.
 - **The window is padded a day at each end and queried in slices.** Flume reads
   the query datetimes as *account*-local while we build them from UTC, so the
-  padding absorbs the offset; rows dedupe on their primary key, so over-fetching
-  is free and under-fetching would silently lose a day. Each query covers at most
+  padding absorbs the offset; over-fetching is free and under-fetching would
+  silently lose a day. Each query covers at most
   12 hours: production rejected 14-day `MIN` queries as failing validation, and
   Flume documents no maximum range.
 - **One sync makes at most 50 queries.** Flume allows 120 requests an hour. A
   longer window fetches its *oldest* part and the next run carries on from the
   last stored row; an empty database backfills 20 days, and older history comes
   from a CSV upload.
+- **Flume reports a minute it has no reading for as 0 — including minutes that
+  have not happened.** A per-minute query gets a bucket for every minute in the
+  range. The first version stored the first value it saw (`INSERT OR IGNORE`) and
+  started each window at the newest stored row, and the one-day pad reached into
+  tomorrow. Together that stored zeros for future and not-yet-reported minutes,
+  made them permanent, and moved the window past them: from 2026-09-12 11:43
+  production recorded no usage at all. So now:
+  - the sync reads the location's timezone (`location.tz` on the device list),
+    drops any row at or after the current local minute, and deletes any such rows
+    already stored, with their rollups;
+  - every sync re-reads at least the last three days (`LOOKBACK_DAYS`), however
+    new the stored rows are;
+  - synced rows **overwrite** (`upsertRows`, an upsert that counts only changed
+    values as `corrected`). An upload still keeps the first value.
+
+  Without a timezone on the location the sync still runs and warns; the
+  lookback-and-overwrite then repairs zeros once real readings arrive.
 
 The sync is idempotent by construction, which Vercel's cron contract requires
 rather than suggests: delivery is best effort, may skip a run, and may deliver
-the same one twice. Re-querying inserts nothing new, and a missed day is picked
-up by the next run because the window starts from the last stored row rather
-than from "yesterday".
+the same one twice. Re-querying writes the same values again, and a missed day is
+picked up by the next run because the window reaches back to the last stored row
+rather than to "yesterday".
 
 **A CSV upload** remains the fallback, unchanged: it is the recovery path when
 credentials lapse, the API changes, or a gap needs filling that Flume will no
@@ -856,7 +873,8 @@ Windows are never auto-pruned; the user deletes them explicitly (the last one ca
 and `gallons | Gallons`, and drops rows it cannot read. `POST /api/rows` then
 validates what is left — a malformed or timezone-suffixed datetime is a 400, not a
 silent skip — and `INSERT OR IGNORE` on the `datetime` primary key makes an
-overlapping upload safe.
+overlapping upload safe. An upload never overwrites a stored minute; the Flume
+sync does (see *Getting data in*).
 
 The card also links to Flume's export page, starting from the last stored date
 (`buildFlumeExportUrl`), so a CSV only needs to cover the gap.

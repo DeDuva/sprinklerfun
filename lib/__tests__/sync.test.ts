@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { resetDbForTests } from "../db"
-import { insertRows, countRows, replaceWindows, readRollups } from "../server/data"
+import { insertRows, countRows, replaceWindows, readRollups, readDayRows, recomputeRollups } from "../server/data"
 import { readRefreshToken, saveRefreshToken } from "../server/flumeState"
 import type { ConfigWindow } from "../types"
 
@@ -75,6 +75,9 @@ beforeEach(() => {
   refreshAccessToken.mockReset()
   listWaterSensors.mockReset()
   queryUsage.mockReset()
+  // The device list is always read — it carries the timezone. UTC keeps "now"
+  // in the tests equal to the process clock.
+  listWaterSensors.mockResolvedValue([{ id: "d", name: "House", timezone: "UTC" }])
   vi.spyOn(console, "error").mockImplementation(() => {})
   vi.spyOn(console, "log").mockImplementation(() => {})
 })
@@ -174,11 +177,24 @@ describe("syncFlumeData: device selection", () => {
     expect(queryUsage.mock.calls[0][0].deviceId).toBe("dev-9")
   })
 
-  it("uses FLUME_DEVICE_ID without listing devices at all", async () => {
+  it("uses FLUME_DEVICE_ID to choose among the account's sensors", async () => {
+    // Still lists them: the list is where the location's timezone comes from.
+    listWaterSensors.mockResolvedValue([
+      { id: "first", name: "House" },
+      { id: "pinned", name: "Garden", timezone: "UTC" },
+    ])
     process.env.FLUME_DEVICE_ID = "pinned"
     await syncFlumeData()
-    expect(listWaterSensors).not.toHaveBeenCalled()
     expect(queryUsage.mock.calls[0][0].deviceId).toBe("pinned")
+  })
+
+  it("fails clearly when FLUME_DEVICE_ID names no sensor on the account", async () => {
+    listWaterSensors.mockResolvedValue([{ id: "dev-9", name: "House" }])
+    process.env.FLUME_DEVICE_ID = "typo"
+    const res = await syncFlumeData()
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/FLUME_DEVICE_ID typo is not a water sensor/)
+    expect(queryUsage).not.toHaveBeenCalled()
   })
 
   it("fails clearly when the account has no water sensor", async () => {
@@ -250,7 +266,21 @@ describe("syncFlumeData: the query window", () => {
     await insertRows([{ datetime: `${yesterday} 00:00:00`, gallons: 1 }])
     const res = await syncFlumeData()
     expect(res.truncated).toBe(false)
-    expect(queryUsage.mock.calls.length).toBeLessThanOrEqual(8)
+    // Three days of lookback plus a day of padding each side, in 12-hour slices.
+    expect(queryUsage.mock.calls.length).toBeLessThanOrEqual(12)
+  })
+
+  it("re-reads the last three days even when stored rows are newer than that", async () => {
+    // Recent minutes can be stored as zeros Flume later fills in; the window must
+    // come back for them rather than starting at the newest stored row.
+    await replaceWindows([win("w1")])
+    const today = new Date().toISOString().slice(0, 10)
+    await insertRows([{ datetime: `${today} 00:00:00`, gallons: 1 }])
+    await syncFlumeData()
+    const daysBack = (Date.now() - queryUsage.mock.calls[0][0].since.getTime()) / 86_400_000
+    // LOOKBACK_DAYS (3) + the one-day pad.
+    expect(daysBack).toBeGreaterThan(3.9)
+    expect(daysBack).toBeLessThan(4.1)
   })
 
   it("covers the window contiguously, with no gap between slices", async () => {
@@ -299,6 +329,88 @@ describe("syncFlumeData: writing", () => {
     expect(first.inserted).toBe(1)
     expect(second.inserted).toBe(0)
     expect(await countRows()).toBe(1)
+  })
+})
+
+describe("syncFlumeData: minutes Flume has not reported, or that have not happened", () => {
+  // The production bug: Flume answers a per-minute query with a 0 for every
+  // minute it has no reading for yet, including future ones. Stored first-wins
+  // and followed by a window starting at the newest row, those zeros became
+  // permanent and the real readings were never requested.
+  const minute = (msFromNow: number) =>
+    new Date(Date.now() + msFromNow).toISOString().slice(0, 16).replace("T", " ") + ":00"
+
+  beforeEach(async () => {
+    configure()
+    process.env.FLUME_REFRESH_TOKEN = "t"
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(1), refreshToken: "t" })
+    queryUsage.mockResolvedValue([])
+    await replaceWindows([win("w1")])
+  })
+
+  it("does not store minutes at or after the location's current minute", async () => {
+    const past = minute(-2 * 3_600_000)
+    const future = minute(2 * 3_600_000)
+    queryUsage.mockResolvedValueOnce([
+      { datetime: past, gallons: 2 },
+      { datetime: future, gallons: 0 },
+    ])
+    const res = await syncFlumeData()
+    expect(res).toMatchObject({ ok: true, inserted: 1 })
+    expect(await readDayRows(future.slice(0, 10))).not.toContainEqual({ datetime: future, gallons: 0 })
+    expect(await countRows()).toBe(1)
+  })
+
+  it("deletes future rows an earlier sync stored, and their rollups", async () => {
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+    await insertRows([
+      { datetime: minute(-3_600_000), gallons: 3 },
+      { datetime: `${tomorrow} 06:00:00`, gallons: 0 },
+    ])
+    await recomputeRollups("2000-01-01", tomorrow)
+    expect((await readRollups()).some((r) => r.date === tomorrow)).toBe(true)
+
+    const res = await syncFlumeData()
+
+    expect(res).toMatchObject({ ok: true, removed: 1 })
+    expect(await countRows()).toBe(1)
+    expect((await readRollups()).some((r) => r.date === tomorrow)).toBe(false)
+  })
+
+  it("overwrites a stored zero when Flume later reports the real reading", async () => {
+    const m = minute(-5 * 3_600_000)
+    await insertRows([{ datetime: m, gallons: 0 }])
+    queryUsage.mockResolvedValueOnce([{ datetime: m, gallons: 6.5 }])
+
+    const res = await syncFlumeData()
+
+    expect(res).toMatchObject({ ok: true, inserted: 0, corrected: 1 })
+    expect(await readDayRows(m.slice(0, 10))).toContainEqual({ datetime: m, gallons: 6.5 })
+  })
+
+  it("uses the location's timezone, not the server's, to decide what 'now' is", async () => {
+    // UTC+14: a minute an hour from now in UTC is already past there.
+    listWaterSensors.mockResolvedValue([{ id: "d", name: "House", timezone: "Pacific/Kiritimati" }])
+    // Fifteen hours ahead of UTC is still in the future there. Read with the
+    // server's UTC clock instead, the first would be dropped as well.
+    const utcSoon = minute(3_600_000)
+    const beyondLocalNow = minute(15 * 3_600_000)
+    queryUsage.mockResolvedValueOnce([
+      { datetime: utcSoon, gallons: 4 },
+      { datetime: beyondLocalNow, gallons: 0 },
+    ])
+    const res = await syncFlumeData()
+    expect(res.inserted).toBe(1)
+    expect(await readDayRows(utcSoon.slice(0, 10))).toContainEqual({ datetime: utcSoon, gallons: 4 })
+  })
+
+  it("still syncs without a timezone, and says it cannot exclude future minutes", async () => {
+    listWaterSensors.mockResolvedValue([{ id: "d", name: "House" }])
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    queryUsage.mockResolvedValueOnce([{ datetime: minute(-3_600_000), gallons: 1 }])
+    const res = await syncFlumeData()
+    expect(res).toMatchObject({ ok: true, inserted: 1, removed: 0 })
+    expect(warn.mock.calls.flat().join(" ")).toMatch(/cannot exclude minutes that have not happened/)
   })
 })
 

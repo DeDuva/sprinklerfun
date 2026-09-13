@@ -42,6 +42,7 @@ export async function GET(req: NextRequest) {
   // "something is broken".
   console.log(
     `[cron] sync ${result.ok ? "ok" : "failed"}: inserted=${result.inserted} ` +
+      `corrected=${result.corrected ?? 0} removed=${result.removed ?? 0} ` +
       `rollupDays=${result.rollupDays}${result.error ? ` error=${result.error}` : ""}`
   )
   return Response.json(result)

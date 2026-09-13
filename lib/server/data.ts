@@ -51,6 +51,62 @@ export async function insertRows(rows: FlumeRow[]): Promise<number> {
   return after - before
 }
 
+/**
+ * Write rows from the Flume API, OVERWRITING any stored value for the same minute.
+ *
+ * insertRows keeps the first value it sees, which is right for a CSV upload and
+ * wrong for the API: Flume answers a per-minute query with a bucket for every
+ * minute in the range, and a minute it has not received yet comes back as 0. Kept
+ * forever, those zeros replaced real usage — so a later sync must be able to
+ * correct them.
+ *
+ * `corrected` counts only rows whose value actually changed (the WHERE on the
+ * update), so re-reading an unchanged day reports nothing.
+ */
+export async function upsertRows(rows: FlumeRow[]): Promise<{ inserted: number; corrected: number }> {
+  if (rows.length === 0) return { inserted: 0, corrected: 0 }
+  await ensureSchema()
+  const db = getDb()
+
+  const before = await countRows()
+  let changed = 0
+  for (let i = 0; i < rows.length; i += ROW_CHUNK) {
+    const chunk = rows.slice(i, i + ROW_CHUNK)
+    const placeholders = chunk.map(() => "(?, ?)").join(", ")
+    const args: InArgs = []
+    for (const r of chunk) args.push(r.datetime, r.gallons)
+    const res = await db.execute({
+      sql: `INSERT INTO flume_rows (datetime, gallons) VALUES ${placeholders}
+            ON CONFLICT(datetime) DO UPDATE SET gallons = excluded.gallons
+            WHERE flume_rows.gallons <> excluded.gallons`,
+      args,
+    })
+    changed += res.rowsAffected
+  }
+  const inserted = (await countRows()) - before
+  return { inserted, corrected: changed - inserted }
+}
+
+/**
+ * Delete rows stamped at or after `cutoff` ("YYYY-MM-DD HH:MM:SS", local wall-clock
+ * time) — minutes that have not finished happening, so anything stored for them
+ * came from a query that reached past "now". Rollups for days after the cutoff's
+ * date go too: recomputeRollups only rewrites the range rows still cover, so
+ * those would otherwise outlive their rows.
+ */
+export async function deleteRowsFrom(cutoff: string): Promise<number> {
+  await ensureSchema()
+  const db = getDb()
+  const [rowsRes] = await db.batch(
+    [
+      { sql: "DELETE FROM flume_rows WHERE datetime >= ?", args: [cutoff] },
+      { sql: "DELETE FROM daily_rollup WHERE date > ?", args: [cutoff.slice(0, 10)] },
+    ],
+    "write"
+  )
+  return rowsRes.rowsAffected
+}
+
 export async function countRows(): Promise<number> {
   await ensureSchema()
   const db = getDb()

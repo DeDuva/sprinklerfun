@@ -893,9 +893,13 @@ function SyncCard() {
         const stats = await fetchStats()
         setRowCount(stats.rowCount)
         setLastRowDate(stats.lastDate)
+        const parts = [
+          r.inserted > 0 && `${r.inserted.toLocaleString()} new`,
+          r.corrected > 0 && `${r.corrected.toLocaleString()} corrected`,
+        ].filter(Boolean)
         toast.success(
-          r.inserted > 0
-            ? `Synced ${r.inserted.toLocaleString()} new rows from Flume`
+          parts.length > 0
+            ? `Synced from Flume: ${parts.join(", ")} rows`
             : "Already up to date — Flume had nothing new"
         )
       } else {
