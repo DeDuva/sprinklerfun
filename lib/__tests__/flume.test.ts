@@ -2,11 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import {
   FlumeError,
   decodeJwtUserId,
-  fetchAccessToken,
+  exchangePassword,
   flumeConfigured,
   fmtFlumeDatetime,
   listWaterSensors,
   queryUsage,
+  refreshAccessToken,
 } from "../server/flume"
 
 // The Flume client talks to a third party we cannot reach from a test, so every
@@ -19,8 +20,6 @@ const saved = { ...process.env }
 function configure() {
   process.env.FLUME_CLIENT_ID = "client-id"
   process.env.FLUME_CLIENT_SECRET = "client-secret"
-  process.env.FLUME_USERNAME = "someone@example.test"
-  process.env.FLUME_PASSWORD = "hunter2"
 }
 
 /** Flume wraps responses as { success, data: [...] }; parseJson only reads text(). */
@@ -52,21 +51,26 @@ afterEach(() => {
 })
 
 describe("flumeConfigured", () => {
-  it("needs all four variables — a partial configuration is not 'nearly working'", () => {
+  it("needs both client credentials — a partial configuration is not 'nearly working'", () => {
     expect(flumeConfigured()).toBe(false)
     process.env.FLUME_CLIENT_ID = "c"
     expect(flumeConfigured()).toBe(false)
     process.env.FLUME_CLIENT_SECRET = "s"
-    expect(flumeConfigured()).toBe(false)
-    process.env.FLUME_USERNAME = "u"
-    expect(flumeConfigured()).toBe(false)
-    process.env.FLUME_PASSWORD = "p"
     expect(flumeConfigured()).toBe(true)
   })
 
   it("treats empty strings as unset", () => {
     configure()
-    process.env.FLUME_PASSWORD = ""
+    process.env.FLUME_CLIENT_SECRET = ""
+    expect(flumeConfigured()).toBe(false)
+  })
+
+  it("does not consider a username or password, because neither is ever stored", () => {
+    // The account password reaches Flume exactly once, from the operator's own
+    // machine via scripts/flume-connect.ts. If these ever became part of the
+    // server's notion of "configured", that property would have been lost.
+    process.env.FLUME_USERNAME = "someone@example.test"
+    process.env.FLUME_PASSWORD = "hunter2"
     expect(flumeConfigured()).toBe(false)
   })
 })
@@ -106,40 +110,114 @@ describe("fmtFlumeDatetime", () => {
   })
 })
 
-describe("fetchAccessToken", () => {
-  it("refuses to call out when unconfigured", async () => {
-    await expect(fetchAccessToken()).rejects.toThrow(/not configured/)
+describe("refreshAccessToken", () => {
+  it("refuses to call out when the client credentials are missing", async () => {
+    await expect(refreshAccessToken("some-token")).rejects.toThrow(/not configured/)
   })
 
-  it("sends the password grant and returns the token", async () => {
+  it("sends the refresh grant — never a password", async () => {
+    // The property this test exists to hold: the deployment's only token call
+    // carries the client credentials and a refresh token, and nothing else.
     configure()
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ data: [{ access_token: "tok", expires_in: 3600 }] })
+      jsonResponse({ data: [{ access_token: "tok", refresh_token: "next", expires_in: 604800 }] })
     )
     vi.stubGlobal("fetch", fetchMock)
 
-    expect(await fetchAccessToken()).toBe("tok")
+    await expect(refreshAccessToken("current")).resolves.toEqual({
+      accessToken: "tok",
+      refreshToken: "next",
+    })
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.grant_type).toBe("refresh_token")
+    expect(body.refresh_token).toBe("current")
+    expect(body.client_id).toBe("client-id")
+    expect(body).not.toHaveProperty("username")
+    expect(body).not.toHaveProperty("password")
+  })
+
+  it("returns whatever refresh token came back, same or different", async () => {
+    // Flume returns one every time and does not document whether it rotates,
+    // so this reports rather than decides; syncFlumeData compares and persists.
+    configure()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ data: [{ access_token: "a", refresh_token: "current" }] })
+      )
+    )
+    expect((await refreshAccessToken("current")).refreshToken).toBe("current")
+  })
+
+  it("throws when the response is missing either token", async () => {
+    configure()
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ data: [{ access_token: "a" }] })))
+    await expect(refreshAccessToken("t")).rejects.toThrow(/no refresh_token/)
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ data: [{ refresh_token: "r" }] })))
+    await expect(refreshAccessToken("t")).rejects.toThrow(/no access_token/)
+  })
+
+  it("surfaces a refused token without echoing what was sent", async () => {
+    configure()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ message: "invalid_grant" }, false, 400))
+    )
+    const err = await refreshAccessToken("spent-token").catch((e) => e)
+    expect(err.message).toMatch(/token refresh failed \(HTTP 400\)/)
+    expect(err.message).not.toMatch(/spent-token/)
+  })
+})
+
+describe("exchangePassword (local bootstrap only)", () => {
+  it("sends the password grant and returns both tokens", async () => {
+    // Used by scripts/flume-connect.ts on the operator's own machine. Nothing
+    // on the server calls it — see the flumeConfigured test above.
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ data: [{ access_token: "tok", refresh_token: "fresh" }] })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(
+      exchangePassword({
+        username: "someone@example.test",
+        password: "hunter2",
+        clientId: "client-id",
+        clientSecret: "client-secret",
+      })
+    ).resolves.toEqual({ accessToken: "tok", refreshToken: "fresh" })
+
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body.grant_type).toBe("password")
     expect(body.client_id).toBe("client-id")
     expect(body.username).toBe("someone@example.test")
   })
 
-  it("throws when the response carries no token", async () => {
-    configure()
+  it("throws when the response is missing either token", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ data: [{}] })))
-    await expect(fetchAccessToken()).rejects.toThrow(/no access_token/)
+    await expect(
+      exchangePassword({ username: "u", password: "p", clientId: "c", clientSecret: "s" })
+    ).rejects.toThrow(/no access_token/)
   })
 
-  it("surfaces an auth failure without echoing the credentials", async () => {
-    configure()
+  it("surfaces an auth failure without echoing the password", async () => {
+    // This message reaches a terminal and possibly a log. Whatever went wrong,
+    // the thing the operator just typed must not travel with it.
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(jsonResponse({ message: "bad creds" }, false, 401))
     )
-    await expect(fetchAccessToken()).rejects.toThrow(/authentication failed \(HTTP 401\)/)
-    // The message reaches the logs; the password must not travel with it.
-    await expect(fetchAccessToken()).rejects.not.toThrow(/hunter2/)
+    const err = await exchangePassword({
+      username: "someone@example.test",
+      password: "hunter2",
+      clientId: "client-id",
+      clientSecret: "client-secret",
+    }).catch((e) => e)
+
+    expect(err.message).toMatch(/authentication failed \(HTTP 401\)/)
+    expect(err.message).not.toMatch(/hunter2/)
   })
 })
 

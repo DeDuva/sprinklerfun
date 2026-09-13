@@ -104,6 +104,27 @@ export function ensureSchema(): Promise<void> {
            flagged_at TEXT NOT NULL,
            note       TEXT
          )`,
+        // The current Flume refresh token, and nothing else.
+        //
+        // It lives in the database rather than in an environment variable
+        // because Flume returns a refresh_token on every refresh and does not
+        // document whether it is a new one. If it rotates, a static env var
+        // goes stale and the daily sync dies quietly about a week later — the
+        // worst failure shape available, since the symptom is data silently
+        // stopping. Storing it means the rotated value survives.
+        //
+        // Deliberately NOT in scripts/backup.ts TABLES: it is a live
+        // credential, the backups are 90-day GitHub artifacts, and it can be
+        // re-minted in a minute with `npm run flume:connect`. There is nothing
+        // here worth preserving and something here worth not copying around.
+        //
+        // CHECK (id = 1) makes the single-row shape a property of the schema
+        // rather than a convention someone has to remember.
+        `CREATE TABLE IF NOT EXISTS flume_state (
+           id            INTEGER PRIMARY KEY CHECK (id = 1),
+           refresh_token TEXT,
+           updated_at    TEXT
+         )`,
         // Per-minute-only aggregates that daily gallon sums can't reconstruct
         // (fleet-wide gpm stats + baseline warnings). Recomputed over the full
         // enriched series whenever rows or windows change; read via /api/stats.

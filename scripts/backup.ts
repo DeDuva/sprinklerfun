@@ -42,6 +42,10 @@ if (!url) {
 // localStorage and became server-owned state. Until then the database copy was
 // a table nothing wrote; now it is the only copy, which is exactly the property
 // that makes something worth backing up.
+// `flume_state` is deliberately absent. It holds a live Flume refresh token,
+// these dumps become 90-day GitHub artifacts, and the token can be re-minted in
+// a minute with `npm run flume:connect`. There is nothing in it worth
+// preserving and something in it worth not copying into an archive.
 const TABLES = ["flume_rows", "config_windows", "maintenance"] as const
 
 const ROWS_PER_INSERT = 500

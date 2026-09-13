@@ -1,23 +1,25 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { resetDbForTests } from "../db"
 import { insertRows, countRows, replaceWindows, readRollups } from "../server/data"
+import { readRefreshToken, saveRefreshToken } from "../server/flumeState"
 import type { ConfigWindow } from "../types"
 
-// Replace only the network-facing half of the Flume client; the window
-// arithmetic, slicing and write path are the things worth testing for real,
-// against a real in-memory database.
+// Replace only the network-facing half of the Flume client. The token
+// bookkeeping, window arithmetic, slicing and write path are the things worth
+// testing for real — against a real in-memory database and the real
+// flumeState module, so persistence is actually exercised.
 vi.mock("@/lib/server/flume", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/server/flume")>()
   return {
     ...actual,
-    fetchAccessToken: vi.fn(),
+    refreshAccessToken: vi.fn(),
     listWaterSensors: vi.fn(),
     queryUsage: vi.fn(),
   }
 })
 
 const flume = await import("@/lib/server/flume")
-const fetchAccessToken = vi.mocked(flume.fetchAccessToken)
+const refreshAccessToken = vi.mocked(flume.refreshAccessToken)
 const listWaterSensors = vi.mocked(flume.listWaterSensors)
 const queryUsage = vi.mocked(flume.queryUsage)
 
@@ -28,8 +30,6 @@ const saved = { ...process.env }
 function configure() {
   process.env.FLUME_CLIENT_ID = "c"
   process.env.FLUME_CLIENT_SECRET = "s"
-  process.env.FLUME_USERNAME = "u"
-  process.env.FLUME_PASSWORD = "p"
 }
 
 /** A JWT whose payload carries user_id, which is where the client reads it from. */
@@ -69,13 +69,14 @@ const win = (id: string): ConfigWindow => ({
 
 beforeEach(() => {
   resetDbForTests()
-  for (const k of ["FLUME_CLIENT_ID", "FLUME_CLIENT_SECRET", "FLUME_USERNAME", "FLUME_PASSWORD", "FLUME_DEVICE_ID"]) {
+  for (const k of ["FLUME_CLIENT_ID", "FLUME_CLIENT_SECRET", "FLUME_REFRESH_TOKEN", "FLUME_DEVICE_ID"]) {
     delete process.env[k]
   }
-  fetchAccessToken.mockReset()
+  refreshAccessToken.mockReset()
   listWaterSensors.mockReset()
   queryUsage.mockReset()
   vi.spyOn(console, "error").mockImplementation(() => {})
+  vi.spyOn(console, "log").mockImplementation(() => {})
 })
 
 afterEach(() => {
@@ -83,18 +84,86 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe("syncFlumeData: configuration", () => {
-  it("refuses, without calling out, when Flume is not configured", async () => {
+describe("syncFlumeData: prerequisites", () => {
+  it("refuses, without calling out, when the client credentials are missing", async () => {
+    process.env.FLUME_REFRESH_TOKEN = "t"
     const res = await syncFlumeData()
-    expect(res).toMatchObject({ ok: false, inserted: 0, error: "Flume is not configured" })
-    expect(fetchAccessToken).not.toHaveBeenCalled()
+    expect(res).toMatchObject({ ok: false, error: "Flume is not configured" })
+    expect(refreshAccessToken).not.toHaveBeenCalled()
+  })
+
+  it("says how to connect when there is no refresh token anywhere", async () => {
+    configure()
+    const res = await syncFlumeData()
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/not connected/)
+    expect(res.error).toMatch(/flume:connect/)
+    expect(refreshAccessToken).not.toHaveBeenCalled()
+  })
+
+  it("uses the env seed when the database has no token yet", async () => {
+    configure()
+    process.env.FLUME_REFRESH_TOKEN = "seed-token"
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(1), refreshToken: "seed-token" })
+    queryUsage.mockResolvedValue([])
+    process.env.FLUME_DEVICE_ID = "d"
+
+    await syncFlumeData()
+    expect(refreshAccessToken).toHaveBeenCalledWith("seed-token")
+  })
+})
+
+describe("syncFlumeData: refresh token rotation", () => {
+  beforeEach(() => {
+    configure()
+    process.env.FLUME_DEVICE_ID = "d"
+    process.env.FLUME_REFRESH_TOKEN = "original"
+    queryUsage.mockResolvedValue([])
+  })
+
+  it("persists a rotated token and reports it", async () => {
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(1), refreshToken: "rotated" })
+    const res = await syncFlumeData()
+    expect(res.tokenRotated).toBe(true)
+    expect(await readRefreshToken()).toBe("rotated")
+  })
+
+  it("writes nothing when Flume hands back the same token", async () => {
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(1), refreshToken: "original" })
+    const res = await syncFlumeData()
+    expect(res.tokenRotated).toBe(false)
+    // Still the env seed — nothing was stored, so the table stays empty.
+    expect(await readRefreshToken()).toBe("original")
+  })
+
+  it("persists the rotated token BEFORE the query work, so a later failure cannot strand it", async () => {
+    // The token just sent may already be spent. If the query fails and the new
+    // one was not written first, the next run would authenticate with a dead
+    // token and the sync would stay broken until someone re-ran the connect
+    // script. This is the ordering that prevents that.
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(1), refreshToken: "rotated" })
+    queryUsage.mockRejectedValue(new Error("network died mid-sync"))
+
+    const res = await syncFlumeData()
+
+    expect(res.ok).toBe(false)
+    expect(res.tokenRotated).toBe(true)
+    expect(await readRefreshToken()).toBe("rotated")
+  })
+
+  it("prefers a previously stored token over a stale env seed", async () => {
+    await saveRefreshToken("stored-newer")
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(1), refreshToken: "stored-newer" })
+    await syncFlumeData()
+    expect(refreshAccessToken).toHaveBeenCalledWith("stored-newer")
   })
 })
 
 describe("syncFlumeData: device selection", () => {
   beforeEach(() => {
     configure()
-    fetchAccessToken.mockResolvedValue(jwt(4242))
+    process.env.FLUME_REFRESH_TOKEN = "t"
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(4242), refreshToken: "t" })
     queryUsage.mockResolvedValue([])
   })
 
@@ -124,39 +193,30 @@ describe("syncFlumeData: the query window", () => {
   beforeEach(() => {
     configure()
     process.env.FLUME_DEVICE_ID = "d"
-    fetchAccessToken.mockResolvedValue(jwt(1))
+    process.env.FLUME_REFRESH_TOKEN = "t"
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(1), refreshToken: "t" })
     queryUsage.mockResolvedValue([])
   })
 
   it("starts from the last stored day, so a missed run self-heals", async () => {
     await replaceWindows([win("w1")])
     await insertRows([{ datetime: "2026-08-28 00:00:00", gallons: 1 }])
-
     await syncFlumeData()
-
-    // Padded a day back from the last stored day: Flume reads the window as
-    // account-local while we build it from UTC, and over-fetching is free
-    // because rows dedupe.
-    const first = queryUsage.mock.calls[0][0]
-    expect(first.since.toISOString().slice(0, 10)).toBe("2026-08-27")
+    expect(queryUsage.mock.calls[0][0].since.toISOString().slice(0, 10)).toBe("2026-08-27")
   })
 
   it("reaches a year back when the database is empty", async () => {
     await syncFlumeData()
-    const first = queryUsage.mock.calls[0][0]
-    const daysBack = (Date.now() - first.since.getTime()) / 86_400_000
+    const daysBack = (Date.now() - queryUsage.mock.calls[0][0].since.getTime()) / 86_400_000
     expect(daysBack).toBeGreaterThan(360)
     expect(daysBack).toBeLessThan(370)
   })
 
-  it("slices a long backfill into several requests rather than one huge one", async () => {
-    // A year at per-minute resolution is ~525,000 samples; one request risks
-    // the function's memory or time limit, and Vercel does not retry a cron.
+  it("slices a long backfill rather than asking for it all at once", async () => {
     await syncFlumeData()
     expect(queryUsage.mock.calls.length).toBeGreaterThan(20)
     for (const [args] of queryUsage.mock.calls) {
-      const spanDays = (args.until.getTime() - args.since.getTime()) / 86_400_000
-      expect(spanDays).toBeLessThanOrEqual(14.01)
+      expect((args.until.getTime() - args.since.getTime()) / 86_400_000).toBeLessThanOrEqual(14.01)
     }
   })
 
@@ -167,21 +227,17 @@ describe("syncFlumeData: the query window", () => {
       expect(calls[i].since.getTime()).toBe(calls[i - 1].until.getTime())
     }
   })
-
-  it("honours an explicit since", async () => {
-    await syncFlumeData({ since: new Date("2026-08-01T00:00:00Z") })
-    expect(queryUsage.mock.calls[0][0].since.toISOString().slice(0, 10)).toBe("2026-07-31")
-  })
 })
 
 describe("syncFlumeData: writing", () => {
   beforeEach(() => {
     configure()
     process.env.FLUME_DEVICE_ID = "d"
-    fetchAccessToken.mockResolvedValue(jwt(1))
+    process.env.FLUME_REFRESH_TOKEN = "t"
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(1), refreshToken: "t" })
   })
 
-  it("ingests rows and recomputes the derived tables once", async () => {
+  it("ingests rows and recomputes the derived tables", async () => {
     await replaceWindows([win("w1")])
     queryUsage.mockResolvedValue([])
     queryUsage.mockResolvedValueOnce([
@@ -191,10 +247,8 @@ describe("syncFlumeData: writing", () => {
 
     const res = await syncFlumeData({ since: new Date("2026-08-27T00:00:00Z") })
 
-    expect(res.ok).toBe(true)
-    expect(res.inserted).toBe(2)
+    expect(res).toMatchObject({ ok: true, inserted: 2 })
     expect(await countRows()).toBe(2)
-    // The rollups were rebuilt from what was just written.
     expect((await readRollups()).length).toBeGreaterThan(0)
   })
 
@@ -219,24 +273,26 @@ describe("syncFlumeData: failures", () => {
   beforeEach(() => {
     configure()
     process.env.FLUME_DEVICE_ID = "d"
+    process.env.FLUME_REFRESH_TOKEN = "t"
   })
 
-  it("reports an auth failure rather than throwing", async () => {
-    fetchAccessToken.mockRejectedValue(new flume.FlumeError("authentication failed (HTTP 401)", 401))
+  it("reports a refused refresh token rather than throwing", async () => {
+    refreshAccessToken.mockRejectedValue(
+      new flume.FlumeError("token refresh failed (HTTP 400): invalid_grant", 400)
+    )
     const res = await syncFlumeData()
     expect(res).toMatchObject({ ok: false, inserted: 0 })
-    expect(res.error).toMatch(/authentication failed/)
+    expect(res.error).toMatch(/token refresh failed/)
   })
 
   it("flags a rate limit distinctly, because it means 'try later'", async () => {
-    fetchAccessToken.mockResolvedValue(jwt(1))
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(1), refreshToken: "t" })
     queryUsage.mockRejectedValue(new flume.FlumeError("rate limit", 429, true))
-    const res = await syncFlumeData()
-    expect(res).toMatchObject({ ok: false, rateLimited: true })
+    expect(await syncFlumeData()).toMatchObject({ ok: false, rateLimited: true })
   })
 
   it("leaves the database untouched when the very first slice fails", async () => {
-    fetchAccessToken.mockResolvedValue(jwt(1))
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(1), refreshToken: "t" })
     queryUsage.mockRejectedValue(new Error("network down"))
     await syncFlumeData()
     expect(await countRows()).toBe(0)

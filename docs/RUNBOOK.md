@@ -199,6 +199,68 @@ a thing that can happen — if it looks wrong, it *is* wrong, for everyone.
 An empty timeline is refused by the API: the earliest window also covers every row
 before it, so a config with no windows would leave the entire history unattributable.
 
+## Connecting Flume (and what to do when it stops)
+
+Automatic data is optional. Without it the app waits for CSV uploads exactly as
+it always has; `/api/cron` refuses every request and nothing breaks.
+
+**Your Flume account password is never stored.** It is needed for one thing —
+the initial grant that mints a refresh token — and that happens on your machine:
+
+```bash
+npm run flume:connect      # prompts for the password, prints a refresh token
+```
+
+You need a client ID and secret first, from
+[portal.flumetech.com/#token](https://portal.flumetech.com/#token). The script
+writes nothing to disk and logs nothing; it prints the token once, for you to
+copy.
+
+Then, for production:
+
+```bash
+vercel env add FLUME_CLIENT_ID production
+vercel env add FLUME_CLIENT_SECRET production
+vercel env add FLUME_REFRESH_TOKEN production
+vercel env add CRON_SECRET production        # openssl rand -base64 32
+vercel --prod                                # a redeploy is required
+```
+
+Confirm it works with **Config → Flume sync → Sync now** rather than waiting for
+17:00 UTC. The first sync is incremental — it starts from your last stored row,
+so it is a small catch-up, not a year-long backfill.
+
+### Where the token actually lives
+
+`FLUME_REFRESH_TOKEN` only *seeds* a fresh database. Flume returns a refresh
+token on every refresh and does not document whether it rotates, so the current
+one is kept in the `flume_state` table and the stored value wins after the first
+sync. Each run logs which happened — `Flume rotated the refresh token` or
+`Flume returned the same refresh token` — so the logs will tell you definitively.
+
+That table is deliberately **not** in the backups (`scripts/backup.ts`): it is a
+live credential, the dumps become 90-day artifacts, and it can be re-minted in a
+minute.
+
+### Failure signatures
+
+| What you see | What it means |
+|---|---|
+| `Flume is not configured` | `FLUME_CLIENT_ID` / `FLUME_CLIENT_SECRET` are missing. |
+| `Flume is not connected — run npm run flume:connect` | No refresh token, in the table or the env. |
+| `token refresh failed (HTTP 400): invalid_grant` | The stored token is spent or revoked. Re-run `flume:connect` and set a fresh `FLUME_REFRESH_TOKEN`, then clear the stale stored one (below). |
+| `rate limit reached (120 requests/hour)` | Wait. A sync uses three requests, so this means something is calling it in a loop. |
+| Data silently stops arriving | Check **Vercel → Cron Jobs → View Logs**. Cron delivery is best effort and is not retried on failure, so one missed day is normal; several is not. |
+
+To discard a bad stored token and fall back to the env seed:
+
+```bash
+turso db shell sprinklerfun "DELETE FROM flume_state"
+```
+
+To revoke access entirely, regenerate the client credentials at Flume's portal —
+that invalidates the refresh token minted under the old ones.
+
 ## Local development
 
 No environment variables are needed. `lib/db.ts` falls back to a local SQLite file
@@ -234,7 +296,7 @@ in the same sitting.
 | Where | Setting | Why |
 |---|---|---|
 | Vercel → project → Settings → Git | Under *Connected Git Repository*: **Pull Request Comments** off, **Commit Comments** off | The bot commented on every PR, including every Dependabot PR. Vercel has replaced the single *Silence GitHub comments* switch with these two toggles, so look for them by name — the old one no longer exists. The `github.silent` key in `vercel.json` does the same thing but is deprecated; if it was ever set, Vercel migrates it to these toggles for you. |
-| Vercel → project → Settings → Environment Variables | Required: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET`, `ALLOWED_EMAILS`. Optional, for automatic data: `FLUME_CLIENT_ID`, `FLUME_CLIENT_SECRET`, `FLUME_USERNAME`, `FLUME_PASSWORD`, `CRON_SECRET` (and `FLUME_DEVICE_ID` only if the account has more than one sensor) | Nothing is set for Preview or Development. Without the Flume set the app still works — it just waits for a CSV upload. `CRON_SECRET` is what stops `/api/cron` being a public ingest trigger; unset means that route refuses everything. Check with `vercel env ls production` from a linked checkout. |
+| Vercel → project → Settings → Environment Variables | Required: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET`, `ALLOWED_EMAILS`. Optional, for automatic data: `FLUME_CLIENT_ID`, `FLUME_CLIENT_SECRET`, `FLUME_REFRESH_TOKEN`, `CRON_SECRET` (and `FLUME_DEVICE_ID` only if the account has more than one sensor) | Nothing is set for Preview or Development. Without the Flume set the app still works — it just waits for a CSV upload. **Your Flume account password is never among these**: run `npm run flume:connect` locally to mint `FLUME_REFRESH_TOKEN`. `CRON_SECRET` is what stops `/api/cron` being a public ingest trigger; unset means that route refuses everything. Check with `vercel env ls production` from a linked checkout. |
 | Vercel → project → Settings → Cron Jobs | One job: `/api/cron`, `0 17 * * *` | Declared in `vercel.json`, so it deploys with the code — the dashboard is where you confirm it fired and read its logs. On the Hobby plan cron is capped at **once per day** and fires anywhere within the hour, so 17:00–17:59 UTC. That lands mid-morning Pacific, deliberately after both timers have finished their night. |
 | Google Cloud console → APIs & Services → Credentials | OAuth 2.0 Client ID (Web application). Authorised redirect URI must be exactly `https://sprinklerfun.vercel.app/api/auth/callback` | A mismatch here fails the sign-in with `redirect_uri_mismatch` at Google, before any of our code runs. The consent screen's test-user list matters too if the app is still in "testing" mode. |
 | GitHub → Settings → Rules → ruleset `main` | PR required, squash only, branch up to date; required checks `types + tests`, `lint`, `e2e`, `audit` | Rename a CI job without renaming it here and the gate silently stops requiring it. |

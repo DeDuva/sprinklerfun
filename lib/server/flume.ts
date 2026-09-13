@@ -3,19 +3,19 @@ import type { FlumeRow } from "@/lib/types"
 // ---------------------------------------------------------------------------
 // Flume Personal API client (server-only).
 //
-// Auth is OAuth2 "password" grant: client_id/secret + account email/password in
-// exchange for an access token. See https://flumetech.readme.io/docs/authentication.
+// The deployment never sees your Flume account password. Flume's OAuth2
+// password grant is needed exactly once, to mint a refresh token, and that
+// happens on your own machine via `npm run flume:connect` — see
+// scripts/flume-connect.ts. The server only ever uses grant_type=refresh_token
+// with the client id and secret.
 //
-// There is deliberately no refresh-token handling and nothing persisted. The
-// original version of this file stored a rotating refresh token in an encrypted
-// database column, which needed a table, an encryption key, a settings UI and a
-// connect/disconnect flow — several hundred lines to avoid re-sending a password
-// this server already holds. A sync runs once a day and Flume allows 120
-// requests an hour, so doing the password grant each time costs one request and
-// deletes all of that machinery.
+// That distinction is the point: a refresh token is scoped to API access, can
+// be revoked by itself, and is useless anywhere else. An account password is a
+// personal credential that may be reused elsewhere and cannot be revoked
+// without changing it everywhere.
 //
 // Rate limit: 120 requests/hour → HTTP 429. A sync makes at most three calls
-// (token, devices, query), so it stays far under.
+// (refresh, devices, query), so it stays far under.
 // ---------------------------------------------------------------------------
 
 const BASE = "https://api.flumewater.com"
@@ -27,14 +27,15 @@ export class FlumeError extends Error {
   }
 }
 
-/** All four variables must be present; a partial configuration is not "nearly working". */
+/**
+ * Are the client credentials present?
+ *
+ * Deliberately does not consider the refresh token: that lives in the database
+ * and this has to stay synchronous. "Configured but not connected" is a real
+ * state with its own message — see syncFlumeData.
+ */
 export function flumeConfigured(): boolean {
-  return Boolean(
-    process.env.FLUME_CLIENT_ID &&
-      process.env.FLUME_CLIENT_SECRET &&
-      process.env.FLUME_USERNAME &&
-      process.env.FLUME_PASSWORD
-  )
+  return Boolean(process.env.FLUME_CLIENT_ID && process.env.FLUME_CLIENT_SECRET)
 }
 
 // Flume wraps most responses as { success, data: [...] }. Unwrap defensively.
@@ -55,41 +56,80 @@ function raise(res: Response, body: { message?: string }, context: string): neve
       true
     )
   }
-  // Deliberately not including the request body or credentials in the message:
-  // this string ends up in logs.
+  // This string reaches the logs, so it must never carry the request body.
   const detail = body.message ? `: ${body.message}` : ""
   throw new FlumeError(`Flume ${context} failed (HTTP ${res.status})${detail}`, res.status)
 }
 
-interface TokenResponse {
-  access_token: string
-  expires_in: number
+export interface FlumeTokens {
+  accessToken: string
+  /** Flume returns one on every grant. It may or may not differ from the last. */
+  refreshToken: string
 }
 
-/** Exchange the account credentials for an access token. */
-export async function fetchAccessToken(): Promise<string> {
-  if (!flumeConfigured()) throw new FlumeError("Flume is not configured")
+function unwrapTokens(body: { data?: unknown[] }): FlumeTokens {
+  const t = (body.data?.[0] ?? body) as { access_token?: string; refresh_token?: string }
+  if (!t.access_token) throw new FlumeError("Flume token response contained no access_token")
+  if (!t.refresh_token) throw new FlumeError("Flume token response contained no refresh_token")
+  return { accessToken: t.access_token, refreshToken: t.refresh_token }
+}
 
+/**
+ * Exchange an account password for tokens. **Local bootstrap only.**
+ *
+ * Nothing on the server calls this — it exists for scripts/flume-connect.ts,
+ * which runs on your machine, keeps the password in memory for one request, and
+ * writes only the refresh token to stdout for you to paste into Vercel.
+ */
+export async function exchangePassword(args: {
+  username: string
+  password: string
+  clientId: string
+  clientSecret: string
+}): Promise<FlumeTokens> {
   const res = await fetch(`${BASE}/oauth/token`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       grant_type: "password",
-      client_id: process.env.FLUME_CLIENT_ID,
-      client_secret: process.env.FLUME_CLIENT_SECRET,
-      username: process.env.FLUME_USERNAME,
-      password: process.env.FLUME_PASSWORD,
+      client_id: args.clientId,
+      client_secret: args.clientSecret,
+      username: args.username,
+      password: args.password,
     }),
   })
   const body = await parseJson(res)
   if (!res.ok) raise(res, body, "authentication")
-
-  const t = (body.data?.[0] ?? body) as Partial<TokenResponse>
-  if (!t.access_token) throw new FlumeError("Flume token response contained no access_token")
-  return t.access_token
+  return unwrapTokens(body)
 }
 
-/** The numeric user_id lives in the access token's JWT payload, not in a separate call. */
+/**
+ * Trade the stored refresh token for a fresh access token.
+ *
+ * This is the only token call the deployment makes. The returned refreshToken
+ * must be compared against the one sent and persisted when it differs — Flume
+ * returns one every time and does not document whether it rotates, so the
+ * caller handles both cases rather than assuming either.
+ */
+export async function refreshAccessToken(refreshToken: string): Promise<FlumeTokens> {
+  if (!flumeConfigured()) throw new FlumeError("Flume client credentials are not configured")
+
+  const res = await fetch(`${BASE}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      grant_type: "refresh_token",
+      client_id: process.env.FLUME_CLIENT_ID,
+      client_secret: process.env.FLUME_CLIENT_SECRET,
+      refresh_token: refreshToken,
+    }),
+  })
+  const body = await parseJson(res)
+  if (!res.ok) raise(res, body, "token refresh")
+  return unwrapTokens(body)
+}
+
+/** The numeric user_id lives in the access token's JWT payload, not a separate call. */
 export function decodeJwtUserId(accessToken: string): string {
   const parts = accessToken.split(".")
   if (parts.length < 2) throw new FlumeError("Malformed access token")
@@ -131,17 +171,16 @@ export async function listWaterSensors(userId: string, accessToken: string): Pro
 /**
  * Format a datetime the way Flume's query endpoint wants it: "YYYY-MM-DD HH:MM:SS".
  *
- * Built from UTC components on purpose. The previous version used local getters
- * and a comment saying the server timezone was pinned by APP_TIMEZONE — that pin
- * was deleted, production never set the variable, and on Vercel the process runs
- * UTC anyway. Reading the process timezone would make the query window depend on
- * where the code happens to run, which is the class of bug this codebase spent a
- * PR removing.
+ * Built from UTC components on purpose. An earlier version used local getters
+ * and a comment citing an APP_TIMEZONE pin in lib/db.ts — that pin was deleted,
+ * production never set the variable, and on Vercel the process runs UTC anyway.
+ * Reading the process timezone would make the query window depend on where the
+ * code happens to run.
  *
  * Flume interprets these as ACCOUNT-local time, so a UTC-built window can be off
  * by the account's offset. That is why syncFlumeData pads both ends by a day:
- * the overlap absorbs any offset, and rows dedupe on their datetime primary key,
- * so over-fetching costs nothing but under-fetching would silently lose a day.
+ * the overlap absorbs it, rows dedupe on their datetime primary key, and
+ * over-fetching is free while under-fetching would silently lose a day.
  */
 export function fmtFlumeDatetime(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0")
@@ -155,18 +194,14 @@ export function fmtFlumeDatetime(d: Date): string {
  * Query water usage and return rows in the app's shape.
  *
  * `bucket` is MIN — per-minute — and that is not a detail. This app attributes
- * water to sprinkler stations by minute of day: `localDateAndMin` in lib/analyze
- * turns a timestamp into a minute offset, and the schedule reconstruction lines
- * station run windows up against it. The previous version defaulted to "HR" on
- * the stated grounds that it matched the manual CSV export; the real exports are
- * per-minute (56,041 rows for five weeks), and hourly totals would make station
- * attribution meaningless.
+ * water to sprinkler stations by minute of day, so hourly totals would make the
+ * attribution meaningless. The real CSV exports are per-minute too.
  *
- * The datetime is returned EXACTLY as Flume sends it. The previous version ran
- * it through `new Date(...).toISOString()`, producing a UTC string with a `Z` —
- * which POST /api/rows now rejects with a 400, deliberately, because everything
- * downstream reads these as naive wall-clock time. Flume's own format,
- * "YYYY-MM-DD HH:MM:SS", is already precisely what the ingest accepts.
+ * The datetime is returned EXACTLY as Flume sends it. Running it through
+ * `new Date(...).toISOString()` produces a UTC string with a `Z`, which
+ * POST /api/rows rejects with a 400 by design — everything downstream reads
+ * these as naive wall-clock time, and Flume's own "YYYY-MM-DD HH:MM:SS" is
+ * already precisely what ingest accepts.
  */
 export async function queryUsage(args: {
   userId: string
