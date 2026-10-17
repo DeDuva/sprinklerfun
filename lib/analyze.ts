@@ -302,10 +302,17 @@ export function enrichRowsMultiConfig(
     groups.get(idx)!.push(row)
   }
 
-  // Enrich each group and merge
+  // Enrich each group and merge.
+  //
+  // Appended one at a time, NOT `results.push(...enriched)`: a spread passes
+  // every element as a separate call argument, and V8 runs out of stack at
+  // roughly 125,000 of them. One config segment holding that many minutes is
+  // about 87 days of per-minute data, and once production's did, every sync
+  // (which recomputes rollups and stats over the whole table) failed with
+  // "Maximum call stack size exceeded".
   const results: EnrichedRow[] = []
   for (const [idx, batch] of groups) {
-    results.push(...enrichRows(batch, segments[idx].config))
+    for (const row of enrichRows(batch, segments[idx].config)) results.push(row)
   }
   return results.sort((a, b) => a.datetime.localeCompare(b.datetime))
 }
@@ -663,8 +670,14 @@ export function buildStationStats(enriched: EnrichedRow[], config: AppConfig): S
   const stats: StationStats[] = Object.entries(grouped).map(([id, values]) => {
     const total = values.reduce((s, v) => s + v, 0)
     const avg = total / values.length
-    const min = Math.min(...values)
-    const max = Math.max(...values)
+    // A loop, not Math.min(...values): one station's minutes across the whole
+    // history can outgrow the call-argument limit (see enrichRowsMultiConfig).
+    let min = Infinity
+    let max = -Infinity
+    for (const v of values) {
+      if (v < min) min = v
+      if (v > max) max = v
+    }
     const std = Math.sqrt(values.reduce((s, v) => s + (v - avg) ** 2, 0) / values.length)
     return {
       id,

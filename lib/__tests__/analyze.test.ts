@@ -5,6 +5,7 @@ import {
   enrichRows,
   enrichRowsMultiConfig,
   buildDailyRows,
+  buildStationStats,
   buildWeeklyRows,
   aggregateForChart,
   computeStationWarnings,
@@ -805,6 +806,37 @@ describe("enrichRowsMultiConfig", () => {
     for (let i = 1; i < enriched.length; i++) {
       expect(enriched[i].datetime >= enriched[i - 1].datetime).toBe(true)
     }
+  })
+})
+
+// More than V8 will take as spread call arguments (about 125,000), which is
+// what production's daily sync hit once the per-minute table grew past it: the
+// cron failed every day with "Maximum call stack size exceeded".
+const OVER_SPREAD_LIMIT = 200_000
+
+describe("large per-minute histories", () => {
+  it("enrichRowsMultiConfig merges a segment larger than a spread can pass", () => {
+    const rows: FlumeRow[] = []
+    const t0 = Date.UTC(2024, 0, 1)
+    for (let i = 0; i < OVER_SPREAD_LIMIT; i++) {
+      rows.push({ datetime: new Date(t0 + i * 60_000).toISOString().replace("T", " ").slice(0, 19), gallons: 1 })
+    }
+    const enriched = enrichRowsMultiConfig(rows, [win("2024-01-01", makeConfig(), "only")])
+    expect(enriched).toHaveLength(OVER_SPREAD_LIMIT)
+    expect(enriched[0].datetime).toBe("2024-01-01 00:00:00")
+  })
+
+  it("buildStationStats takes min and max over more minutes than a spread can pass", () => {
+    const rows: EnrichedRow[] = []
+    for (let i = 0; i < OVER_SPREAD_LIMIT; i++) {
+      rows.push({
+        datetime: "2024-01-01 06:01:00", date: "2024-01-01", timeMin: 361,
+        gallons: i === 7 ? 1 : i === 8 ? 9 : 5,
+        station: "T1-01", timer: "timer1", isSprinklerDay: true,
+      })
+    }
+    const [stats] = buildStationStats(rows, makeConfig())
+    expect(stats).toMatchObject({ id: "T1-01", minGpm: 1, maxGpm: 9 })
   })
 })
 
