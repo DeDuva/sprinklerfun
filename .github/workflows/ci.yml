@@ -122,11 +122,12 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      # At 0 advisories as of the dependency work, so this starts green and stays
-      # meaningful. Dependabot opens the fixes; this is what stops one sitting
-      # unnoticed in the meantime.
+      # High/critical advisories fail. Production dependencies get no exceptions;
+      # an advisory with no patched version anywhere can be accepted by ID, with a
+      # review date, in scripts/audit.ts. Dependabot opens the fixes; this is what
+      # stops one sitting unnoticed in the meantime.
       - name: npm audit
-        run: npm audit --audit-level=high
+        run: npm run audit
 
   lint:
     name: lint
