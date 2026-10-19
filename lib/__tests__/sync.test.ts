@@ -359,6 +359,43 @@ describe("syncFlumeData: writing", () => {
   })
 })
 
+describe("syncFlumeData: a long per-minute history", () => {
+  beforeEach(() => {
+    configure()
+    process.env.FLUME_DEVICE_ID = "d"
+    process.env.FLUME_REFRESH_TOKEN = "t"
+    refreshAccessToken.mockResolvedValue({ accessToken: jwt(1), refreshToken: "t" })
+  })
+
+  // Production's cron failed every day from (at least) 2026-10-10 with "Maximum
+  // call stack size exceeded". Each sync recomputes rollups and stats over the
+  // WHOLE table, and enrichment merged its results with
+  // `results.push(...rows)` — one call argument per minute, which V8 cannot
+  // take past roughly 125,000. Per-minute sync adds 1,440 rows a day, so the
+  // table simply grew past it. 150 days is comfortably over the limit.
+  it("recomputes the derived tables over more minutes than a spread can pass", async () => {
+    await replaceWindows([win("w1")])
+    const DAYS = 150
+    const DAY = 86_400_000
+    const end = Date.now() - 4 * DAY
+    const start = end - DAYS * DAY
+    const history = []
+    for (let t = start; t < end; t += 60_000) {
+      history.push({ datetime: new Date(t).toISOString().replace("T", " ").slice(0, 19), gallons: 0.2 })
+    }
+    expect(history.length).toBeGreaterThan(200_000)
+    await insertRows(history)
+
+    queryUsage.mockResolvedValue([])
+    const res = await syncFlumeData()
+
+    expect(res.error).toBeUndefined()
+    expect(res.ok).toBe(true)
+    expect(res.rollupDays).toBeGreaterThanOrEqual(DAYS)
+    expect((await readRollups()).length).toBeGreaterThanOrEqual(DAYS)
+  }, 60_000)
+})
+
 describe("syncFlumeData: minutes Flume has not reported, or that have not happened", () => {
   // The production bug: Flume answers a per-minute query with a 0 for every
   // minute it has no reading for yet, including future ones. Stored first-wins
