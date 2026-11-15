@@ -1,5 +1,10 @@
 @AGENTS.md
 
+# Status
+
+Where the project is and what is next: [`ROADMAP.md`](ROADMAP.md). Update it in the same PR
+as any change that starts, finishes or pauses a piece of work.
+
 # Git workflow
 
 - All code changes must be made on a feature branch (never commit directly to `main`).
