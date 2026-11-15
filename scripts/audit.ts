@@ -25,15 +25,9 @@ import { execFileSync } from "node:child_process"
 
 type Exception = { id: string; reason: string; reviewBy: string }
 
-const EXCEPTIONS: Exception[] = [
-  {
-    id: "GHSA-vfj7-8cjw-p6xm",
-    reason:
-      "braces <= 3.0.3 stack-exhaustion DoS; no patched version exists. Reaches us only " +
-      "through dev tooling (eslint-config-next, shadcn CLI) via micromatch/fast-glob.",
-    reviewBy: "2027-01-18",
-  },
-]
+// None today. GHSA-vfj7-8cjw-p6xm (braces) was removed 2026-11-15: after the
+// deps roll-up nothing in the tree matches it any more.
+const EXCEPTIONS: Exception[] = []
 
 const BLOCKING = new Set(["high", "critical"])
 
